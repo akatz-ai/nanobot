@@ -31,6 +31,18 @@ if TYPE_CHECKING:
     from nanobot.cron.service import CronService
 
 
+def _camel_to_snake(name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def _normalize_keys(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {_camel_to_snake(str(k)): _normalize_keys(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_keys(item) for item in value]
+    return value
+
+
 class AgentLoop:
     """
     The agent loop is the core processing engine.
@@ -60,6 +72,7 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        memory_graph_config: dict | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
@@ -75,6 +88,9 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        self._memory_graph_config = (
+            _normalize_keys(memory_graph_config) if isinstance(memory_graph_config, dict) else None
+        )
 
         self.context = ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
@@ -99,7 +115,9 @@ class AgentLoop:
         self._consolidating: set[str] = set()  # Session keys with consolidation in progress
         self._consolidation_tasks: set[asyncio.Task] = set()  # Strong refs to in-flight tasks
         self._consolidation_locks: dict[str, asyncio.Lock] = {}
+        self._memory_module = None
         self._register_default_tools()
+        self._register_memory_graph_tools()
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -117,6 +135,49 @@ class AgentLoop:
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+    def _register_memory_graph_tools(self) -> None:
+        """Register optional memory graph tools from adapter package."""
+        if not self._memory_graph_config or not self._memory_graph_config.get("enabled"):
+            return
+        try:
+            from agent_memory_nanobot import NanobotMemoryModule
+
+            self._memory_module = NanobotMemoryModule(
+                provider=self.provider,
+                config=self._memory_graph_config,
+            )
+            for tool in self._memory_module.get_tools():
+                self.tools.register(tool)
+            logger.info("Memory graph tools registered")
+        except ImportError:
+            logger.warning("agent-memory-nanobot not installed, memory graph disabled")
+        except Exception as e:
+            logger.warning(f"Failed to initialize memory graph: {e}")
+
+    async def _retrieve_memory_context(
+        self,
+        session: Session,
+        user_message: str,
+    ) -> str | None:
+        """Retrieve compressed memory context for the current turn."""
+        if not self._memory_module or not self._memory_module.retriever:
+            return None
+        try:
+            if not self._memory_module.initialized:
+                await self._memory_module.initialize()
+            retrieval_cfg = {}
+            if isinstance(self._memory_graph_config, dict):
+                retrieval_cfg = self._memory_graph_config.get("retrieval") or {}
+            peer_key = retrieval_cfg.get("peer_key")
+            return await self._memory_module.retriever.retrieve_context(
+                current_message=user_message,
+                recent_turns=session.get_history(max_messages=4),
+                peer_key=peer_key,
+            )
+        except Exception as e:
+            logger.warning(f"Memory retrieval failed: {e}")
+            return None
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
@@ -308,10 +369,14 @@ class AgentLoop:
             key = f"{channel}:{chat_id}"
             session = self.sessions.get_or_create(key)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
+            memory_context = await self._retrieve_memory_context(session, msg.content)
             history = session.get_history(max_messages=self.memory_window)
             messages = self.context.build_messages(
                 history=history,
-                current_message=msg.content, channel=channel, chat_id=chat_id,
+                current_message=msg.content,
+                channel=channel,
+                chat_id=chat_id,
+                memory_context=memory_context,
             )
             final_content, _, all_msgs = await self._run_agent_loop(messages)
             self._save_turn(session, all_msgs, 1 + len(history))
@@ -384,12 +449,14 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
+        memory_context = await self._retrieve_memory_context(session, msg.content)
         history = session.get_history(max_messages=self.memory_window)
         initial_messages = self.context.build_messages(
             history=history,
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel, chat_id=msg.chat_id,
+            memory_context=memory_context,
         )
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
@@ -438,11 +505,23 @@ class AgentLoop:
         session.updated_at = datetime.now()
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
-        """Delegate to MemoryStore.consolidate(). Returns True on success."""
-        return await MemoryStore(self.workspace).consolidate(
+        """Consolidate file memory and optionally graph memory. Returns file-memory success."""
+        success = await MemoryStore(self.workspace).consolidate(
             session, self.provider, self.model,
             archive_all=archive_all, memory_window=self.memory_window,
         )
+        if self._memory_module and self._memory_module.consolidator:
+            try:
+                if not self._memory_module.initialized:
+                    await self._memory_module.initialize()
+                await self._memory_module.consolidator.consolidate_session(
+                    messages=session.get_history(max_messages=max(len(session.messages), 1)),
+                    peer_key=session.key,
+                )
+                logger.info("Memory graph consolidation complete")
+            except Exception as e:
+                logger.warning(f"Memory graph consolidation failed: {e}")
+        return success
 
     async def process_direct(
         self,

@@ -61,10 +61,12 @@ class ClaudeCodeProvider(LLMProvider):
         system_prompt, prompt = self._build_prompt(clean_messages, tools)
         session_key = self._derive_session_key(clean_messages, system_prompt)
 
+        # Enable Read tool when images are present so Claude Code can view them
+        has_images = isinstance(prompt, list)
         options = ClaudeAgentOptions(
             model=model_name,
             system_prompt=system_prompt or None,
-            tools=[],
+            tools=["Read"] if has_images else [],
         )
 
         previous_session_id = self._session_ids.get(session_key)
@@ -227,10 +229,13 @@ Rules:
 
     async def _run_query(
         self,
-        prompt: str,
+        prompt: str | list[dict[str, Any]],
         options: Any,
     ) -> tuple[str, str, dict[str, int], str | None]:
-        transport = SubprocessCLITransport(prompt=prompt, options=options)
+        # The SDK transport takes a string prompt but we write the user message
+        # manually via stream-json.  Pass a placeholder when content is blocks.
+        transport_prompt = prompt if isinstance(prompt, str) else "."
+        transport = SubprocessCLITransport(prompt=transport_prompt, options=options)
         query_engine = SDKQuery(transport=transport, is_streaming_mode=True)
 
         content_parts: list[str] = []
@@ -298,13 +303,21 @@ Rules:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str | list[dict[str, Any]]]:
+        """Build system prompt and user prompt from messages.
+
+        Returns (system_prompt, prompt) where prompt is either a plain string
+        or a list of Anthropic content blocks when images are present.
+        """
         system_parts: list[str] = []
         transcript: list[str] = []
+        # Collect image file paths from the last user message
+        last_user_image_paths: list[str] = []
 
         for message in messages:
             role = str(message.get("role", "user"))
-            content = self._content_to_text(message.get("content"))
+            content_raw = message.get("content")
+            content = self._content_to_text(content_raw)
 
             if role == "system":
                 if content:
@@ -332,16 +345,20 @@ Rules:
                     transcript.append(f"Tool {tool_name}{suffix} result:\n{content}")
                 continue
 
+            # User message — extract image file paths from content blocks
+            if role == "user":
+                last_user_image_paths = self._extract_image_paths(content_raw)
+
             if content:
                 transcript.append(f"User: {content}" if role == "user" else f"{role.title()}: {content}")
 
-        prompt = (
+        prompt_text = (
             "Use the conversation context below and provide the next assistant reply.\n\n"
             + "\n\n".join(transcript).strip()
             + "\n\nAssistant:"
         ).strip()
         if not transcript:
-            prompt = "Please provide a helpful assistant response."
+            prompt_text = "Please provide a helpful assistant response."
 
         system_prompt = "\n\n".join(part for part in system_parts if part).strip()
 
@@ -350,7 +367,31 @@ Rules:
             system_prompt += self._TOOL_CALLING_INSTRUCTIONS
             system_prompt += self._format_tools_for_prompt(tools)
 
-        return system_prompt, prompt
+        # If images are present, build content blocks with the image data
+        # AND provide file path references as fallback.
+        if last_user_image_paths:
+            import base64
+            import mimetypes
+            from pathlib import Path
+
+            content_blocks: list[dict[str, Any]] = []
+            for img_path in last_user_image_paths:
+                p = Path(img_path)
+                mime, _ = mimetypes.guess_type(img_path)
+                if p.is_file() and mime and mime.startswith("image/"):
+                    b64 = base64.b64encode(p.read_bytes()).decode()
+                    content_blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime,
+                            "data": b64,
+                        },
+                    })
+            content_blocks.append({"type": "text", "text": prompt_text})
+            return system_prompt, content_blocks
+
+        return system_prompt, prompt_text
 
     def _derive_session_key(self, messages: list[dict[str, Any]], system_prompt: str) -> str:
         for message in messages:
@@ -399,15 +440,49 @@ Rules:
                         parts.append(text)
                     continue
                 if item_type == "image_url":
-                    url = (item.get("image_url") or {}).get("url")
-                    if isinstance(url, str) and url:
-                        parts.append(f"[image: {url}]")
+                    # Don't dump base64 data into the text transcript;
+                    # images are handled separately via _extract_image_blocks.
+                    parts.append("[attached image]")
+                    continue
+                if item_type == "image":
+                    parts.append("[attached image]")
                     continue
                 text = item.get("text")
                 if isinstance(text, str):
                     parts.append(text)
             return "\n".join(part for part in parts if part).strip()
         return str(content)
+
+    @staticmethod
+    def _extract_image_paths(content: Any) -> list[str]:
+        """Extract image file paths from message content blocks.
+
+        Looks for ``[image: /path/to/file]`` references in text blocks,
+        which is how ``context.py._build_user_content`` formats images
+        before they are converted to base64 content blocks by the
+        ``_content_to_text`` method.  Also scans the raw text content
+        for ``[image: ...]`` markers inserted by the Telegram channel.
+        """
+        import re as _re
+
+        paths: list[str] = []
+        # Pattern matches [image: /some/path.jpg] references
+        path_pattern = _re.compile(r"\[image:\s*(/[^\]]+)\]")
+
+        if isinstance(content, str):
+            for m in path_pattern.finditer(content):
+                paths.append(m.group(1).strip())
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, str):
+                    for m in path_pattern.finditer(item):
+                        paths.append(m.group(1).strip())
+                elif isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        for m in path_pattern.finditer(text):
+                            paths.append(m.group(1).strip())
+        return paths
 
     @staticmethod
     def _parse_usage(usage: dict[str, Any] | None) -> dict[str, int]:

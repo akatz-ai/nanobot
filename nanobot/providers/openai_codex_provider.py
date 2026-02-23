@@ -46,7 +46,7 @@ class OpenAICodexProvider(LLMProvider):
             "input": input_items,
             "text": {"verbosity": "medium"},
             "include": ["reasoning.encrypted_content"],
-            "prompt_cache_key": _prompt_cache_key(messages),
+            "prompt_cache_key": _prompt_cache_key(messages, tools),
             "tool_choice": "auto",
             "parallel_tool_calls": True,
         }
@@ -130,7 +130,7 @@ def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    system_prompt = ""
+    system_parts: list[str] = []
     input_items: list[dict[str, Any]] = []
 
     for idx, msg in enumerate(messages):
@@ -138,7 +138,9 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[st
         content = msg.get("content")
 
         if role == "system":
-            system_prompt = content if isinstance(content, str) else ""
+            text = _content_to_text(content)
+            if text:
+                system_parts.append(text)
             continue
 
         if role == "user":
@@ -186,7 +188,35 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[st
             )
             continue
 
-    return system_prompt, input_items
+    return "\n\n".join(system_parts), input_items
+
+
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    if isinstance(content, dict):
+        text = content.get("text")
+        return text if isinstance(text, str) else json.dumps(content, ensure_ascii=False)
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") in {"text", "input_text", "output_text"}:
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+        return "\n".join(part for part in parts if part).strip()
+    return str(content)
 
 
 def _convert_user_message(content: Any) -> dict[str, Any]:
@@ -217,8 +247,28 @@ def _split_tool_call_id(tool_call_id: Any) -> tuple[str, str | None]:
     return "call_0", None
 
 
-def _prompt_cache_key(messages: list[dict[str, Any]]) -> str:
-    raw = json.dumps(messages, ensure_ascii=True, sort_keys=True)
+def _prompt_cache_key(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+) -> str:
+    """Compute a stable cache key from the static prompt prefix.
+
+    We key on the first system message plus tool schema, so per-turn user/history
+    changes (and dynamic memory snippets injected as later messages) do not churn
+    the cache key.
+    """
+    first_system = ""
+    for msg in messages:
+        if msg.get("role") == "system":
+            first_system = _content_to_text(msg.get("content")).strip()
+            break
+
+    payload = {
+        "v": 2,
+        "system": first_system,
+        "tools": _convert_tools(tools) if tools else [],
+    }
+    raw = json.dumps(payload, ensure_ascii=True, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 

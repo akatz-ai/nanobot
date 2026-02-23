@@ -120,16 +120,24 @@ class LiteLLMProvider(LLMProvider):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None]:
-        """Return copies of messages and tools with cache_control injected."""
+        """Return copies of messages/tools with cache_control on stable prefix only."""
+        first_system_index = next(
+            (idx for idx, msg in enumerate(messages) if msg.get("role") == "system"),
+            None,
+        )
+
         new_messages = []
-        for msg in messages:
-            if msg.get("role") == "system":
+        for idx, msg in enumerate(messages):
+            if idx == first_system_index and msg.get("role") == "system":
                 content = msg["content"]
                 if isinstance(content, str):
                     new_content = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
                 else:
                     new_content = list(content)
-                    new_content[-1] = {**new_content[-1], "cache_control": {"type": "ephemeral"}}
+                    if new_content:
+                        new_content[-1] = {**new_content[-1], "cache_control": {"type": "ephemeral"}}
+                    else:
+                        new_content = [{"type": "text", "text": "", "cache_control": {"type": "ephemeral"}}]
                 new_messages.append({**msg, "content": new_content})
             else:
                 new_messages.append(msg)

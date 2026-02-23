@@ -217,6 +217,26 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         is_oauth=True,                      # OAuth-based authentication
     ),
 
+    # Claude Code: uses local Claude CLI OAuth session, not API key.
+    ProviderSpec(
+        name="claude_code",
+        keywords=("claude-code", "claude_code"),
+        env_key="",                         # OAuth-based, no API key
+        display_name="Claude Code",
+        litellm_prefix="",                  # Not routed through LiteLLM
+        skip_prefixes=(),
+        env_extras=(),
+        is_gateway=False,
+        is_local=False,
+        detect_by_key_prefix="",
+        detect_by_base_keyword="",
+        default_api_base="",
+        strip_model_prefix=False,
+        model_overrides=(),
+        is_oauth=True,                      # OAuth via Claude CLI login
+        is_direct=True,                     # Direct SDK provider
+    ),
+
     # Github Copilot: uses OAuth, not API key.
     ProviderSpec(
         name="github_copilot",

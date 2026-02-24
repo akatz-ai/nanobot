@@ -242,7 +242,10 @@ def _make_provider(config: Config):
 
     # Claude Code (OAuth via local CLI)
     if provider_name == "claude_code" or model.startswith("claude-code/") or model.startswith("claude_code/"):
-        return ClaudeCodeProvider(default_model=model)
+        return ClaudeCodeProvider(
+            default_model=model,
+            workspace=config.workspace_path,
+        )
 
     # OpenAI Codex (OAuth)
     if provider_name == "openai_codex" or model.startswith("openai-codex/"):

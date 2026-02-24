@@ -6,7 +6,10 @@ import hashlib
 import json
 import re
 import uuid
+from pathlib import Path
 from typing import Any
+
+from loguru import logger
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.litellm_provider import LiteLLMProvider
@@ -32,10 +35,19 @@ _SESSION_RE = re.compile(
 class ClaudeCodeProvider(LLMProvider):
     """Use Claude Code CLI via the claude-agent-sdk package."""
 
-    def __init__(self, default_model: str = "claude-sonnet-4-5"):
+    def __init__(
+        self,
+        default_model: str = "claude-sonnet-4-5",
+        workspace: Path | None = None,
+        session_ids_path: Path | None = None,
+    ):
         super().__init__(api_key=None, api_base=None)
         self.default_model = default_model
-        self._session_ids: dict[str, str] = {}
+        self._session_ids_path = self._resolve_session_ids_path(
+            workspace=workspace,
+            session_ids_path=session_ids_path,
+        )
+        self._session_ids: dict[str, str] = self._load_session_ids()
         self._fallback_provider = LiteLLMProvider(default_model=default_model)
 
     async def chat(
@@ -67,6 +79,7 @@ class ClaudeCodeProvider(LLMProvider):
             model=model_name,
             system_prompt=system_prompt or None,
             tools=["Read"] if has_images else [],
+            effort="medium",
         )
 
         previous_session_id = self._session_ids.get(session_key)
@@ -77,7 +90,9 @@ class ClaudeCodeProvider(LLMProvider):
         try:
             content, finish_reason, usage, latest_session_id = await self._run_query(prompt, options)
             if latest_session_id:
-                self._session_ids[session_key] = latest_session_id
+                if self._session_ids.get(session_key) != latest_session_id:
+                    self._session_ids[session_key] = latest_session_id
+                    self._save_session_ids()
 
             # Parse XML tool calls from Claude's text response
             clean_content, xml_tool_calls = self._parse_xml_tool_calls(content)
@@ -416,6 +431,53 @@ Rules:
         digest_src = f"{system_prompt}\n{first_user}".encode("utf-8")
         digest = hashlib.sha1(digest_src).hexdigest()[:16]
         return f"claude-code:{digest}"
+
+    @staticmethod
+    def _resolve_session_ids_path(
+        workspace: Path | None,
+        session_ids_path: Path | None,
+    ) -> Path:
+        if session_ids_path is not None:
+            return session_ids_path.expanduser()
+        if workspace is not None:
+            return workspace.expanduser() / ".claude_session_ids.json"
+        return Path.home() / ".nanobot" / "workspace" / ".claude_session_ids.json"
+
+    def _load_session_ids(self) -> dict[str, str]:
+        if not self._session_ids_path.exists():
+            return {}
+        try:
+            data = json.loads(self._session_ids_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return {}
+            loaded: dict[str, str] = {}
+            for key, value in data.items():
+                if isinstance(key, str) and isinstance(value, str):
+                    loaded[key] = value
+            return loaded
+        except Exception as exc:
+            logger.warning(
+                "Failed to load Claude Code session IDs from {}: {}",
+                self._session_ids_path,
+                exc,
+            )
+            return {}
+
+    def _save_session_ids(self) -> None:
+        try:
+            self._session_ids_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = self._session_ids_path.with_suffix(f"{self._session_ids_path.suffix}.tmp")
+            temp_path.write_text(
+                json.dumps(self._session_ids, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            temp_path.replace(self._session_ids_path)
+        except Exception as exc:
+            logger.warning(
+                "Failed to save Claude Code session IDs to {}: {}",
+                self._session_ids_path,
+                exc,
+            )
 
     @staticmethod
     def _content_to_text(content: Any) -> str:

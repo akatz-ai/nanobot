@@ -287,6 +287,11 @@ class AgentLoop:
                     )
             else:
                 final_content = self._strip_think(response.content)
+                messages = self.context.add_assistant_message(
+                    messages,
+                    final_content,
+                    reasoning_content=response.reasoning_content,
+                )
                 break
 
         if final_content is None and iteration >= self.max_iterations:
@@ -371,15 +376,16 @@ class AgentLoop:
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             memory_context = await self._retrieve_memory_context(session, msg.content)
             history = session.get_history(max_messages=self.memory_window)
-            messages = self.context.build_messages(
+            initial_messages = self.context.build_messages(
                 history=history,
                 current_message=msg.content,
                 channel=channel,
                 chat_id=chat_id,
                 memory_context=memory_context,
             )
-            final_content, _, all_msgs = await self._run_agent_loop(messages)
-            self._save_turn(session, all_msgs, 1 + len(history))
+            turn_start = max(len(initial_messages) - 1, 0)
+            final_content, _, all_msgs = await self._run_agent_loop(initial_messages)
+            self._save_turn(session, all_msgs, turn_start)
             self.sessions.save(session)
             return OutboundMessage(channel=channel, chat_id=chat_id,
                                   content=final_content or "Background task completed.")
@@ -458,6 +464,7 @@ class AgentLoop:
             channel=msg.channel, chat_id=msg.chat_id,
             memory_context=memory_context,
         )
+        turn_start = max(len(initial_messages) - 1, 0)
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
             meta = dict(msg.metadata or {})
@@ -477,7 +484,7 @@ class AgentLoop:
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
 
-        self._save_turn(session, all_msgs, 1 + len(history))
+        self._save_turn(session, all_msgs, turn_start)
         self.sessions.save(session)
 
         if message_tool := self.tools.get("message"):
@@ -491,11 +498,13 @@ class AgentLoop:
 
     _TOOL_RESULT_MAX_CHARS = 500
 
-    def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
-        """Save new-turn messages into session, truncating large tool results."""
+    def _save_turn(self, session: Session, messages: list[dict], start_index: int) -> None:
+        """Save current-turn messages into session, truncating large tool results."""
         from datetime import datetime
-        for m in messages[skip:]:
+        for m in messages[max(start_index, 0):]:
             entry = {k: v for k, v in m.items() if k != "reasoning_content"}
+            if entry.get("role") not in {"user", "assistant", "tool"}:
+                continue
             if entry.get("role") == "tool" and isinstance(entry.get("content"), str):
                 content = entry["content"]
                 if len(content) > self._TOOL_RESULT_MAX_CHARS:

@@ -1,3 +1,4 @@
+import json
 import shutil
 from pathlib import Path
 from unittest.mock import patch
@@ -5,9 +6,13 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
+from nanobot.agent.loop import AgentLoop
+from nanobot.bus.queue import MessageBus
 from nanobot.agent.context import ContextBuilder
 from nanobot.cli.commands import app
 from nanobot.config.schema import Config
+from nanobot.providers.base import LLMProvider, LLMResponse
+from nanobot.providers.claude_code_provider import ClaudeCodeProvider
 from nanobot.providers.litellm_provider import LiteLLMProvider
 from nanobot.providers.openai_codex_provider import (
     _convert_messages,
@@ -17,6 +22,26 @@ from nanobot.providers.openai_codex_provider import (
 from nanobot.providers.registry import find_by_model
 
 runner = CliRunner()
+
+
+class _StubProvider(LLMProvider):
+    def __init__(self):
+        super().__init__(api_key=None, api_base=None)
+        self._calls = 0
+
+    async def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
+        self._calls += 1
+        return LLMResponse(content=f"reply-{self._calls}")
+
+    def get_default_model(self) -> str:
+        return "stub-model"
 
 
 @pytest.fixture
@@ -257,3 +282,56 @@ def test_litellm_cache_control_marks_only_first_system_message():
     assert new_messages[2]["content"] == "Dynamic retrieved memory"
     assert new_tools is not None
     assert new_tools[-1]["cache_control"] == {"type": "ephemeral"}
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_stores_each_user_message_once(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+
+    await agent.process_direct("first", session_key="cli:test", channel="cli", chat_id="test")
+    await agent.process_direct("second", session_key="cli:test", channel="cli", chat_id="test")
+
+    session = agent.sessions.get_or_create("cli:test")
+    roles = [m.get("role") for m in session.messages]
+    assert roles == ["user", "assistant", "user", "assistant"]
+
+    user_messages = [m.get("content") for m in session.messages if m.get("role") == "user"]
+    assert user_messages == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_claude_code_provider_persists_session_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    provider = ClaudeCodeProvider(
+        default_model="claude-code/claude-sonnet-4-5",
+        workspace=tmp_path,
+    )
+
+    async def _fake_run_query(prompt, options):
+        return "ok", "stop", {"total_tokens": 1}, "session-123"
+
+    monkeypatch.setattr(provider, "_run_query", _fake_run_query)
+
+    response = await provider.chat(
+        messages=[
+            {"role": "system", "content": "Channel: cli\nChat ID: 42"},
+            {"role": "user", "content": "hello"},
+        ]
+    )
+
+    assert response.content == "ok"
+
+    session_ids_path = tmp_path / ".claude_session_ids.json"
+    assert session_ids_path.exists()
+    data = json.loads(session_ids_path.read_text(encoding="utf-8"))
+    assert data == {"cli:42": "session-123"}
+
+    reloaded = ClaudeCodeProvider(
+        default_model="claude-code/claude-sonnet-4-5",
+        workspace=tmp_path,
+    )
+    assert reloaded._session_ids == {"cli:42": "session-123"}

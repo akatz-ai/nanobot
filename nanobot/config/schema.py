@@ -283,7 +283,14 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
-    memory_graph: dict | None = Field(default=None, alias="memoryGraph")
+    memory_graph: dict | None = Field(
+        default=None,
+        alias="memoryGraph",
+        description=(
+            "Optional graph-memory configuration. Supports consolidation.engine = "
+            "'legacy' or 'hybrid'."
+        ),
+    )
 
     @property
     def workspace_path(self) -> Path:

@@ -1,7 +1,9 @@
 import json
 import shutil
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -20,6 +22,7 @@ from nanobot.providers.openai_codex_provider import (
     _strip_model_prefix,
 )
 from nanobot.providers.registry import find_by_model
+from nanobot.session.manager import Session
 
 runner = CliRunner()
 
@@ -302,6 +305,85 @@ async def test_agent_loop_stores_each_user_message_once(tmp_path: Path):
 
     user_messages = [m.get("content") for m in session.messages if m.get("role") == "user"]
     assert user_messages == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_consolidate_memory_uses_hybrid_engine_path(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="stub-model",
+        memory_window=10,
+    )
+    agent._memory_graph_config = {"consolidation": {"engine": "hybrid"}}
+
+    hybrid = SimpleNamespace(compact=AsyncMock(return_value=SimpleNamespace()))
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+
+    session = Session(key="cli:test")
+    for i in range(12):
+        session.add_message("user", f"msg-{i}")
+
+    with patch("nanobot.agent.loop.MemoryStore.consolidate", new_callable=AsyncMock) as legacy_consolidate:
+        ok = await agent._consolidate_memory(session, archive_all=False)
+
+    assert ok is True
+    legacy_consolidate.assert_not_called()
+    hybrid.compact.assert_awaited_once()
+    assert session.last_consolidated == 7
+
+
+@pytest.mark.asyncio
+async def test_consolidate_memory_keeps_legacy_path(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="stub-model",
+        memory_window=10,
+    )
+    agent._memory_graph_config = {"consolidation": {"engine": "legacy"}}
+    consolidator = SimpleNamespace(consolidate_session=AsyncMock(return_value={"added": 1}))
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=None, consolidator=consolidator)
+
+    session = Session(key="cli:test")
+    for i in range(12):
+        session.add_message("user", f"msg-{i}")
+
+    with patch(
+        "nanobot.agent.loop.MemoryStore.consolidate",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as legacy_consolidate:
+        ok = await agent._consolidate_memory(session, archive_all=False)
+
+    assert ok is True
+    legacy_consolidate.assert_awaited_once()
+    consolidator.consolidate_session.assert_awaited_once()
+
+
+def test_context_builder_includes_daily_history_in_hybrid_mode(tmp_path: Path):
+    memory_dir = tmp_path / "memory"
+    history_dir = memory_dir / "history"
+    history_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text("## Memory\n- Long-term fact", encoding="utf-8")
+
+    today = datetime.now().date().isoformat()
+    (history_dir / f"{today}.md").write_text(
+        f"# {today}\n\n## 14:30 — Compaction (telegram:1)\n\n- [fact] Daily event",
+        encoding="utf-8",
+    )
+
+    builder = ContextBuilder(
+        tmp_path,
+        memory_graph_config={"consolidation": {"engine": "hybrid"}},
+    )
+    messages = builder.build_messages(history=[], current_message="hello")
+
+    system_messages = [m["content"] for m in messages if m.get("role") == "system"]
+    assert any("Long-term Memory (file)" in content for content in system_messages)
+    assert any("Daily History (today)" in content for content in system_messages)
 
 
 @pytest.mark.asyncio

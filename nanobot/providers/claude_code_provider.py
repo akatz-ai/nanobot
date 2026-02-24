@@ -12,6 +12,7 @@ from typing import Any
 from loguru import logger
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from nanobot.providers.content import content_to_text
 from nanobot.providers.litellm_provider import LiteLLMProvider
 
 try:
@@ -481,39 +482,7 @@ Rules:
 
     @staticmethod
     def _content_to_text(content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if content is None:
-            return ""
-        if isinstance(content, dict):
-            return json.dumps(content, ensure_ascii=False)
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    parts.append(item)
-                    continue
-                if not isinstance(item, dict):
-                    continue
-                item_type = item.get("type")
-                if item_type in {"text", "input_text", "output_text"}:
-                    text = item.get("text")
-                    if isinstance(text, str):
-                        parts.append(text)
-                    continue
-                if item_type == "image_url":
-                    # Don't dump base64 data into the text transcript;
-                    # images are handled separately via _extract_image_blocks.
-                    parts.append("[attached image]")
-                    continue
-                if item_type == "image":
-                    parts.append("[attached image]")
-                    continue
-                text = item.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-            return "\n".join(part for part in parts if part).strip()
-        return str(content)
+        return content_to_text(content)
 
     @staticmethod
     def _extract_image_paths(content: Any) -> list[str]:

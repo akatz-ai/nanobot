@@ -226,6 +226,9 @@ def _create_workspace_templates(workspace: Path):
         history_file.write_text("", encoding="utf-8")
         console.print("  [dim]Created memory/HISTORY.md[/dim]")
 
+    history_daily_dir = memory_dir / "history"
+    history_daily_dir.mkdir(exist_ok=True)
+
     (workspace / "skills").mkdir(exist_ok=True)
 
 

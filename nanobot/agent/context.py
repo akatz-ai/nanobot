@@ -4,6 +4,7 @@ import base64
 import mimetypes
 import platform
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,10 +22,12 @@ class ContextBuilder:
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, memory_graph_config: dict[str, Any] | None = None):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
+        consolidation_cfg = (memory_graph_config or {}).get("consolidation") or {}
+        self._memory_engine = str(consolidation_cfg.get("engine") or "legacy").lower()
     
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
         """
@@ -72,6 +75,13 @@ Skills with available="false" need dependencies installed first - you can try in
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
         
+        if self._memory_engine == "hybrid":
+            history_line = f"- Daily history: {workspace_path}/memory/history/YYYY-MM-DD.md"
+            recall_line = f"- Recall past events: grep {workspace_path}/memory/history/*.md"
+        else:
+            history_line = f"- History log: {workspace_path}/memory/HISTORY.md (grep-searchable)"
+            recall_line = f"- Recall past events: grep {workspace_path}/memory/HISTORY.md"
+
         return f"""# nanobot 🐈
 
 You are nanobot, a helpful AI assistant. 
@@ -82,7 +92,7 @@ You are nanobot, a helpful AI assistant.
 ## Workspace
 Your workspace is at: {workspace_path}
 - Long-term memory: {workspace_path}/memory/MEMORY.md
-- History log: {workspace_path}/memory/HISTORY.md (grep-searchable)
+{history_line}
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
 Reply directly with text for conversations. Only use the 'message' tool to send to a specific chat channel.
@@ -96,7 +106,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
 ## Memory
 - Remember important facts: write to {workspace_path}/memory/MEMORY.md
-- Recall past events: grep {workspace_path}/memory/HISTORY.md"""
+{recall_line}"""
     
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
@@ -153,6 +163,13 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
                 "role": "system",
                 "content": f"## Long-term Memory (file)\n{long_term_memory}",
             })
+        if self._memory_engine == "hybrid":
+            daily_history = self._read_daily_history()
+            if daily_history:
+                messages.append({
+                    "role": "system",
+                    "content": f"## Daily History (today)\n{daily_history}",
+                })
 
         # History
         messages.extend(history)
@@ -234,6 +251,12 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             "Use it for names, versions, dates, decisions, and user/project specifics.\n\n"
             f"{bullet_lines}"
         )
+
+    def _read_daily_history(self) -> str:
+        today = self.workspace / "memory" / "history" / f"{datetime.now().date().isoformat()}.md"
+        if not today.exists():
+            return ""
+        return today.read_text(encoding="utf-8")
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
         """Build user message content with optional base64-encoded images."""

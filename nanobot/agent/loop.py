@@ -92,7 +92,7 @@ class AgentLoop:
             _normalize_keys(memory_graph_config) if isinstance(memory_graph_config, dict) else None
         )
 
-        self.context = ContextBuilder(workspace)
+        self.context = ContextBuilder(workspace, memory_graph_config=self._memory_graph_config)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -145,6 +145,7 @@ class AgentLoop:
 
             self._memory_module = NanobotMemoryModule(
                 provider=self.provider,
+                workspace=self.workspace,
                 config=self._memory_graph_config,
             )
             for tool in self._memory_module.get_tools():
@@ -515,6 +516,49 @@ class AgentLoop:
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
         """Consolidate file memory and optionally graph memory. Returns file-memory success."""
+        consolidation_cfg = (
+            self._memory_graph_config.get("consolidation") or {}
+            if isinstance(self._memory_graph_config, dict)
+            else {}
+        )
+        engine = str(consolidation_cfg.get("engine") or "legacy").lower()
+
+        if engine == "hybrid" and self._memory_module and self._memory_module.hybrid:
+            try:
+                if not self._memory_module.initialized:
+                    await self._memory_module.initialize()
+
+                keep_count = 0 if archive_all else self.memory_window // 2
+                if not archive_all:
+                    if len(session.messages) <= keep_count:
+                        return True
+                    if len(session.messages) - session.last_consolidated <= 0:
+                        return True
+                    start_index = session.last_consolidated
+                    end_index = len(session.messages) - keep_count
+                    if end_index <= start_index:
+                        return True
+                else:
+                    start_index = 0
+                    end_index = len(session.messages)
+
+                await self._memory_module.hybrid.compact(
+                    session_key=session.key,
+                    messages=session.messages,
+                    start_index=start_index,
+                    end_index=end_index,
+                )
+                session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
+                logger.info(
+                    "Hybrid memory consolidation done: {} messages, last_consolidated={}",
+                    len(session.messages),
+                    session.last_consolidated,
+                )
+                return True
+            except Exception as e:
+                logger.warning(f"Hybrid memory consolidation failed: {e}")
+                return False
+
         success = await MemoryStore(self.workspace).consolidate(
             session, self.provider, self.model,
             archive_all=archive_all, memory_window=self.memory_window,
@@ -526,6 +570,7 @@ class AgentLoop:
                 await self._memory_module.consolidator.consolidate_session(
                     messages=session.get_history(max_messages=max(len(session.messages), 1)),
                     peer_key=session.key,
+                    source_session=session.key,
                 )
                 logger.info("Memory graph consolidation complete")
             except Exception as e:

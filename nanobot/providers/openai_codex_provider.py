@@ -12,6 +12,7 @@ from loguru import logger
 
 from oauth_cli_kit import get_token as get_codex_token
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from nanobot.providers.content import content_to_text
 
 DEFAULT_CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
 DEFAULT_ORIGINATOR = "nanobot"
@@ -192,31 +193,7 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[st
 
 
 def _content_to_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if content is None:
-        return ""
-    if isinstance(content, dict):
-        text = content.get("text")
-        return text if isinstance(text, str) else json.dumps(content, ensure_ascii=False)
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-                continue
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") in {"text", "input_text", "output_text"}:
-                text = item.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-                continue
-            text = item.get("text")
-            if isinstance(text, str):
-                parts.append(text)
-        return "\n".join(part for part in parts if part).strip()
-    return str(content)
+    return content_to_text(content)
 
 
 def _convert_user_message(content: Any) -> dict[str, Any]:

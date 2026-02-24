@@ -59,6 +59,7 @@ class DiscordConfig(Base):
     allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs
     gateway_url: str = "wss://gateway.discord.gg/?v=10&encoding=json"
     intents: int = 37377  # GUILDS + GUILD_MESSAGES + DIRECT_MESSAGES + MESSAGE_CONTENT
+    guild_id: str = ""  # Guild ID for dynamic channel creation
 
 
 class EmailConfig(Base):
@@ -192,10 +193,50 @@ class AgentDefaults(Base):
     memory_window: int = 100
 
 
+class AgentProfile(Base):
+    """Per-agent profile configuration. None values fall back to AgentDefaults."""
+
+    model: str | None = None
+    max_tokens: int | None = None
+    temperature: float | None = None
+    max_tool_iterations: int | None = None
+    memory_window: int | None = None
+    skills: list[str] | None = None  # Skill whitelist (None = all available)
+    system_identity: str | None = None  # Custom identity text for this agent
+    discord_channels: list[str] = Field(default_factory=list)  # Discord channel IDs mapped to this agent
+
+    def resolve(self, defaults: AgentDefaults) -> "ResolvedAgentProfile":
+        """Merge with defaults to produce a fully resolved profile."""
+        return ResolvedAgentProfile(
+            model=self.model or defaults.model,
+            max_tokens=self.max_tokens if self.max_tokens is not None else defaults.max_tokens,
+            temperature=self.temperature if self.temperature is not None else defaults.temperature,
+            max_tool_iterations=self.max_tool_iterations if self.max_tool_iterations is not None else defaults.max_tool_iterations,
+            memory_window=self.memory_window if self.memory_window is not None else defaults.memory_window,
+            skills=self.skills,
+            system_identity=self.system_identity,
+            discord_channels=self.discord_channels,
+        )
+
+
+class ResolvedAgentProfile(Base):
+    """Fully resolved agent profile (no None values for core settings)."""
+
+    model: str
+    max_tokens: int
+    temperature: float
+    max_tool_iterations: int
+    memory_window: int
+    skills: list[str] | None = None
+    system_identity: str | None = None
+    discord_channels: list[str] = Field(default_factory=list)
+
+
 class AgentsConfig(Base):
     """Agent configuration."""
 
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
+    profiles: dict[str, AgentProfile] = Field(default_factory=dict)  # Named agent profiles
 
 
 class ProviderConfig(Base):
@@ -204,6 +245,13 @@ class ProviderConfig(Base):
     api_key: str = ""
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
+
+
+class AnthropicDirectConfig(Base):
+    """Anthropic Direct API (OAuth) configuration."""
+
+    enabled: bool = True
+    model: str = ""
 
 
 class ProvidersConfig(Base):
@@ -226,6 +274,7 @@ class ProvidersConfig(Base):
     volcengine: ProviderConfig = Field(default_factory=ProviderConfig)  # VolcEngine (火山引擎) API gateway
     openai_codex: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenAI Codex (OAuth)
     claude_code: ProviderConfig | None = None  # Claude Code (OAuth via local CLI)
+    anthropic_direct: AnthropicDirectConfig = Field(default_factory=AnthropicDirectConfig)
     github_copilot: ProviderConfig = Field(default_factory=ProviderConfig)  # Github Copilot (OAuth)
 
 
@@ -297,7 +346,9 @@ class Config(BaseSettings):
         """Get expanded workspace path."""
         return Path(self.agents.defaults.workspace).expanduser()
 
-    def _match_provider(self, model: str | None = None) -> tuple["ProviderConfig | None", str | None]:
+    def _match_provider(
+        self, model: str | None = None
+    ) -> tuple["ProviderConfig | AnthropicDirectConfig | None", str | None]:
         """Match provider config and its registry name. Returns (config, spec_name)."""
         from nanobot.providers.registry import PROVIDERS
 
@@ -334,7 +385,7 @@ class Config(BaseSettings):
                 return p, spec.name
         return None, None
 
-    def get_provider(self, model: str | None = None) -> ProviderConfig | None:
+    def get_provider(self, model: str | None = None) -> ProviderConfig | AnthropicDirectConfig | None:
         """Get matched provider config (api_key, api_base, extra_headers). Falls back to first available."""
         p, _ = self._match_provider(model)
         return p
@@ -347,14 +398,14 @@ class Config(BaseSettings):
     def get_api_key(self, model: str | None = None) -> str | None:
         """Get API key for the given model. Falls back to first available key."""
         p = self.get_provider(model)
-        return p.api_key if p else None
+        return p.api_key if p and hasattr(p, "api_key") else None
 
     def get_api_base(self, model: str | None = None) -> str | None:
         """Get API base URL for the given model. Applies default URLs for known gateways."""
         from nanobot.providers.registry import find_by_name
 
         p, name = self._match_provider(model)
-        if p and p.api_base:
+        if p and hasattr(p, "api_base") and p.api_base:
             return p.api_base
         # Only gateways get a default api_base here. Standard providers
         # (like Moonshot) set their base URL via env vars in _setup_env

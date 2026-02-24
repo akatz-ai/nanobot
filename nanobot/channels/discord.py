@@ -299,3 +299,54 @@ class DiscordChannel(BaseChannel):
         task = self._typing_tasks.pop(channel_id, None)
         if task:
             task.cancel()
+
+    # ------------------------------------------------------------------
+    # Guild management REST API (for dynamic channel creation)
+    # ------------------------------------------------------------------
+
+    async def create_guild_channel(
+        self,
+        guild_id: str,
+        name: str,
+        topic: str | None = None,
+        category_id: str | None = None,
+    ) -> str | None:
+        """Create a text channel in a guild. Returns the new channel ID or None on failure."""
+        if not self._http:
+            logger.warning("Discord HTTP client not initialized")
+            return None
+
+        url = f"{DISCORD_API_BASE}/guilds/{guild_id}/channels"
+        headers = {"Authorization": f"Bot {self.config.token}"}
+        payload: dict[str, Any] = {"name": name, "type": 0}  # 0 = GUILD_TEXT
+        if topic:
+            payload["topic"] = topic
+        if category_id:
+            payload["parent_id"] = category_id
+
+        try:
+            resp = await self._http.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            channel_id = str(data["id"])
+            logger.info("Created Discord channel #{} ({})", name, channel_id)
+            return channel_id
+        except Exception as e:
+            logger.error("Failed to create Discord channel '{}': {}", name, e)
+            return None
+
+    async def list_guild_channels(self, guild_id: str) -> list[dict[str, Any]]:
+        """List all channels in a guild."""
+        if not self._http:
+            return []
+
+        url = f"{DISCORD_API_BASE}/guilds/{guild_id}/channels"
+        headers = {"Authorization": f"Bot {self.config.token}"}
+
+        try:
+            resp = await self._http.get(url, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("Failed to list Discord guild channels: {}", e)
+            return []

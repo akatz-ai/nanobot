@@ -232,16 +232,41 @@ def _create_workspace_templates(workspace: Path):
     (workspace / "skills").mkdir(exist_ok=True)
 
 
+def _setup_secondary_env_vars(config: Config) -> None:
+    """Set env vars for secondary providers (OpenAI, Groq, etc.) so litellm can find them."""
+    import os
+    mapping = [
+        ("openai", "OPENAI_API_KEY"),
+        ("groq", "GROQ_API_KEY"),
+    ]
+    for name, env_key in mapping:
+        p = getattr(config.providers, name, None)
+        if p and hasattr(p, "api_key") and p.api_key:
+            os.environ.setdefault(env_key, p.api_key)
+
+
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.claude_code_provider import ClaudeCodeProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
     from nanobot.providers.custom_provider import CustomProvider
+    from nanobot.providers.anthropic_auth import get_oauth_token, is_oauth_token
 
     model = config.agents.defaults.model
     provider_name = config.get_provider_name(model)
     p = config.get_provider(model)
+    api_key = p.api_key if p and hasattr(p, "api_key") else None
+
+    def _is_claude_model_name(model_name: str) -> bool:
+        model_lower = model_name.lower()
+        if model_lower.startswith(("claude-code/", "claude_code/")):
+            return True
+        if "/" in model_lower:
+            prefix = model_lower.split("/", 1)[0]
+            if prefix in {"anthropic", "claude", "anthropic-direct", "anthropic_direct"}:
+                return True
+        return "claude" in model_lower
 
     # Claude Code (OAuth via local CLI)
     if provider_name == "claude_code" or model.startswith("claude-code/") or model.startswith("claude_code/"):
@@ -262,18 +287,45 @@ def _make_provider(config: Config):
             default_model=model,
         )
 
+    # Explicit API key always wins and routes through LiteLLM.
+    if not model.startswith("bedrock/") and api_key:
+        return LiteLLMProvider(
+            api_key=api_key,
+            api_base=config.get_api_base(model),
+            default_model=model,
+            extra_headers=p.extra_headers if p and hasattr(p, "extra_headers") else None,
+            provider_name=provider_name,
+        )
+
+    # Fallback: Claude OAuth token (direct Anthropic API).
+    direct_cfg = config.providers.anthropic_direct
+    wants_anthropic_direct = provider_name == "anthropic_direct" or _is_claude_model_name(model)
+    if direct_cfg.enabled and wants_anthropic_direct:
+        oauth_token = get_oauth_token()
+        if oauth_token and is_oauth_token(oauth_token):
+            from nanobot.providers.anthropic_direct_provider import AnthropicDirectProvider
+
+            direct_model = direct_cfg.model or model
+            # Ensure secondary provider env vars are set for memory/consolidation ops
+            _setup_secondary_env_vars(config)
+            return AnthropicDirectProvider(oauth_token=oauth_token, default_model=direct_model)
+        if provider_name == "anthropic_direct" or _is_claude_model_name(model):
+            console.print("[red]Error: No Anthropic OAuth token configured.[/red]")
+            console.print("Run [cyan]claude login[/cyan] or set [cyan]CLAUDE_CODE_OAUTH_TOKEN[/cyan]")
+            raise typer.Exit(1)
+
     from nanobot.providers.registry import find_by_name
     spec = find_by_name(provider_name)
-    if not model.startswith("bedrock/") and not (p and p.api_key) and not (spec and spec.is_oauth):
+    if not model.startswith("bedrock/") and not api_key and not (spec and spec.is_oauth):
         console.print("[red]Error: No API key configured.[/red]")
         console.print("Set one in ~/.nanobot/config.json under providers section")
         raise typer.Exit(1)
 
     return LiteLLMProvider(
-        api_key=p.api_key if p else None,
+        api_key=api_key,
         api_base=config.get_api_base(model),
         default_model=model,
-        extra_headers=p.extra_headers if p else None,
+        extra_headers=p.extra_headers if p and hasattr(p, "extra_headers") else None,
         provider_name=provider_name,
     )
 
@@ -289,54 +341,72 @@ def gateway(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
     """Start the nanobot gateway."""
-    from nanobot.config.loader import load_config, get_data_dir
+    from nanobot.config.loader import load_config, get_config_path, get_data_dir
     from nanobot.bus.queue import MessageBus
-    from nanobot.agent.loop import AgentLoop
+    from nanobot.agent.router import AgentRouter
+    from nanobot.agent.profile_manager import AgentProfileManager
+    from nanobot.agent.tools.agent_manager import AgentManagerTool
     from nanobot.channels.manager import ChannelManager
-    from nanobot.session.manager import SessionManager
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
-    
+
     if verbose:
         import logging
         logging.basicConfig(level=logging.DEBUG)
-    
+
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
-    
+
     config = load_config()
     bus = MessageBus()
     provider = _make_provider(config)
-    session_manager = SessionManager(config.workspace_path)
-    
-    # Create cron service first (callback set after agent creation)
+
+    # Create cron service first (callback set after router creation)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
-    
-    # Create agent with cron service
-    agent = AgentLoop(
-        bus=bus,
+
+    # Create channel manager (shares the front-door bus)
+    channels = ChannelManager(config, bus)
+
+    # Create the multi-agent router
+    router = AgentRouter(
+        front_bus=bus,
+        config=config,
         provider=provider,
-        workspace=config.workspace_path,
-        model=config.agents.defaults.model,
-        temperature=config.agents.defaults.temperature,
-        max_tokens=config.agents.defaults.max_tokens,
-        max_iterations=config.agents.defaults.max_tool_iterations,
-        memory_window=config.agents.defaults.memory_window,
-        brave_api_key=config.tools.web.search.api_key or None,
-        exec_config=config.tools.exec,
         cron_service=cron,
-        restrict_to_workspace=config.tools.restrict_to_workspace,
-        session_manager=session_manager,
-        mcp_servers=config.tools.mcp_servers,
-        channels_config=config.channels,
-        memory_graph_config=config.memory_graph,
     )
 
-    # Set cron callback (needs agent)
+    async def _init_router():
+        """Initialize router and wire up tools (must be async for create_agent)."""
+        await router.initialize_from_config()
+
+        # Wire up agent manager tool on the default agent (only if Discord guild_id is set)
+        guild_id = config.channels.discord.guild_id
+        default = router.default_agent
+        if default and guild_id:
+            profile_manager = AgentProfileManager(config, get_config_path())
+            tool = AgentManagerTool(
+                router=router,
+                profile_manager=profile_manager,
+                channel_manager=channels,
+                guild_id=guild_id,
+            )
+            default.loop.tools.register(tool)
+            console.print(f"[green]✓[/green] Agent manager tool registered on '{router._default_agent_id}'")
+
+        # Log agent info
+        for aid, inst in router.agents.items():
+            tag = " (default)" if aid == router._default_agent_id else ""
+            ch_info = f", channels={inst.profile.discord_channels}" if inst.profile.discord_channels else ""
+            console.print(f"[green]✓[/green] Agent '{aid}'{tag}: model={inst.profile.model}{ch_info}")
+
+    # Set cron callback (routes through default agent)
     async def on_cron_job(job: CronJob) -> str | None:
-        """Execute a cron job through the agent."""
-        response = await agent.process_direct(
+        """Execute a cron job through the default agent."""
+        default = router.default_agent
+        if not default:
+            return None
+        response = await default.loop.process_direct(
             job.payload.message,
             session_key=f"cron:{job.id}",
             channel=job.payload.channel or "cli",
@@ -351,40 +421,40 @@ def gateway(
             ))
         return response
     cron.on_job = on_cron_job
-    
-    # Create channel manager
-    channels = ChannelManager(config, bus)
 
     def _pick_heartbeat_target() -> tuple[str, str]:
         """Pick a routable channel/chat target for heartbeat-triggered messages."""
         enabled = set(channels.enabled_channels)
-        # Prefer the most recently updated non-internal session on an enabled channel.
-        for item in session_manager.list_sessions():
-            key = item.get("key") or ""
-            if ":" not in key:
-                continue
-            channel, chat_id = key.split(":", 1)
-            if channel in {"cli", "system"}:
-                continue
-            if channel in enabled and chat_id:
-                return channel, chat_id
-        # Fallback keeps prior behavior but remains explicit.
+        default = router.default_agent
+        if default:
+            for item in default.loop.sessions.list_sessions():
+                key = item.get("key") or ""
+                if ":" not in key:
+                    continue
+                channel, chat_id = key.split(":", 1)
+                if channel in {"cli", "system"}:
+                    continue
+                if channel in enabled and chat_id:
+                    return channel, chat_id
         return "cli", "direct"
 
     # Create heartbeat service
     async def on_heartbeat(prompt: str) -> str:
-        """Execute heartbeat through the agent."""
+        """Execute heartbeat through the default agent."""
+        default = router.default_agent
+        if not default:
+            return ""
         channel, chat_id = _pick_heartbeat_target()
 
         async def _silent(*_args, **_kwargs):
             pass
 
-        return await agent.process_direct(
+        return await default.loop.process_direct(
             prompt,
             session_key="heartbeat",
             channel=channel,
             chat_id=chat_id,
-            on_progress=_silent,  # suppress: heartbeat should not push progress to external channels
+            on_progress=_silent,
         )
 
     async def on_heartbeat_notify(response: str) -> None:
@@ -392,7 +462,7 @@ def gateway(
         from nanobot.bus.events import OutboundMessage
         channel, chat_id = _pick_heartbeat_target()
         if channel == "cli":
-            return  # No external channel available to deliver to
+            return
         await bus.publish_outbound(OutboundMessage(channel=channel, chat_id=chat_id, content=response))
 
     heartbeat = HeartbeatService(
@@ -402,35 +472,35 @@ def gateway(
         interval_s=30 * 60,  # 30 minutes
         enabled=True
     )
-    
+
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
         console.print("[yellow]Warning: No channels enabled[/yellow]")
-    
+
     cron_status = cron.status()
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
-    
+
     console.print(f"[green]✓[/green] Heartbeat: every 30m")
-    
+
     async def run():
         try:
+            await _init_router()
             await cron.start()
             await heartbeat.start()
             await asyncio.gather(
-                agent.run(),
+                router.start(),
                 channels.start_all(),
             )
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         finally:
-            await agent.close_mcp()
             heartbeat.stop()
             cron.stop()
-            agent.stop()
+            await router.stop()
             await channels.stop_all()
-    
+
     asyncio.run(run())
 
 
@@ -1028,9 +1098,18 @@ def status():
         from nanobot.providers.registry import PROVIDERS
 
         console.print(f"Model: {config.agents.defaults.model}")
+
+        if config.providers.anthropic_direct.enabled:
+            from nanobot.providers.anthropic_auth import get_oauth_token
+
+            token = get_oauth_token()
+            oauth_status = "[green]✓ token found[/green]" if token else "[yellow]no token[/yellow]"
+            console.print(f"Anthropic Direct (OAuth): {oauth_status}")
         
         # Check API keys from registry
         for spec in PROVIDERS:
+            if spec.name == "anthropic_direct":
+                continue
             p = getattr(config.providers, spec.name, None)
             if p is None:
                 continue

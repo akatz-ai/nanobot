@@ -228,6 +228,12 @@ class ChannelManager:
             for name, channel in self.channels.items()
         }
     
+    def get_discord_channel(self):
+        """Get the Discord channel instance, if enabled."""
+        from nanobot.channels.discord import DiscordChannel
+        ch = self.channels.get("discord")
+        return ch if isinstance(ch, DiscordChannel) else None
+
     @property
     def enabled_channels(self) -> list[str]:
         """Get list of enabled channel names."""

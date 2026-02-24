@@ -407,8 +407,21 @@ class TelegramChannel(BaseChannel):
                 logger.error("Failed to download media: {}", e)
                 content_parts.append(f"[{media_type}: download failed]")
         
+        # Include quoted message context when replying to a message
+        reply_context = ""
+        if message.reply_to_message:
+            replied = message.reply_to_message
+            replied_text = replied.text or replied.caption or ""
+            if replied_text:
+                replied_sender = "you" if replied.from_user and replied.from_user.is_bot else (
+                    replied.from_user.first_name if replied.from_user else "someone"
+                )
+                reply_context = f"[replying to {replied_sender}: {replied_text}]\n"
+
         content = "\n".join(content_parts) if content_parts else "[empty message]"
-        
+        if reply_context:
+            content = reply_context + content
+
         logger.debug("Telegram message from {}: {}...", sender_id, content[:50])
         
         str_chat_id = str(chat_id)
@@ -427,7 +440,8 @@ class TelegramChannel(BaseChannel):
                 "user_id": user.id,
                 "username": user.username,
                 "first_name": user.first_name,
-                "is_group": message.chat.type != "private"
+                "is_group": message.chat.type != "private",
+                **({"reply_to_message_id": message.reply_to_message.message_id} if message.reply_to_message else {}),
             }
         )
     

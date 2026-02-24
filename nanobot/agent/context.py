@@ -21,6 +21,8 @@ class ContextBuilder:
     """
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
+    _MAX_LONG_TERM_MEMORY_CHARS = 12000
+    _MAX_DAILY_HISTORY_CHARS = 8000
     
     def __init__(self, workspace: Path, memory_graph_config: dict[str, Any] | None = None):
         self.workspace = workspace
@@ -159,16 +161,26 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
         long_term_memory = self.memory.read_long_term()
         if long_term_memory:
+            bounded_memory = self._clip_block(
+                long_term_memory,
+                max_chars=self._MAX_LONG_TERM_MEMORY_CHARS,
+                prefer_tail=False,
+            )
             messages.append({
                 "role": "system",
-                "content": f"## Long-term Memory (file)\n{long_term_memory}",
+                "content": f"## Long-term Memory (file)\n{bounded_memory}",
             })
         if self._memory_engine == "hybrid":
             daily_history = self._read_daily_history()
             if daily_history:
+                bounded_daily_history = self._clip_block(
+                    daily_history,
+                    max_chars=self._MAX_DAILY_HISTORY_CHARS,
+                    prefer_tail=True,
+                )
                 messages.append({
                     "role": "system",
-                    "content": f"## Daily History (today)\n{daily_history}",
+                    "content": f"## Daily History (today)\n{bounded_daily_history}",
                 })
 
         # History
@@ -257,6 +269,22 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         if not today.exists():
             return ""
         return today.read_text(encoding="utf-8")
+
+    @staticmethod
+    def _clip_block(text: str, max_chars: int, *, prefer_tail: bool) -> str:
+        """Clip large memory blocks to keep prompt size bounded."""
+        if len(text) <= max_chars:
+            return text
+        omitted = len(text) - max_chars
+        notice = f"\n\n[... truncated {omitted} chars ...]"
+        payload_budget = max(0, max_chars - len(notice))
+        if payload_budget <= 0:
+            return text[:max_chars]
+        if prefer_tail:
+            kept = text[-payload_budget:]
+        else:
+            kept = text[:payload_budget]
+        return kept.rstrip() + notice
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
         """Build user message content with optional base64-encoded images."""

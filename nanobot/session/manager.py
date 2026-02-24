@@ -1,6 +1,7 @@
 """Session management for conversation history."""
 
 import json
+import os
 import shutil
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -134,19 +135,43 @@ class SessionManager:
             last_consolidated = 0
 
             with open(path, encoding="utf-8") as f:
-                for line in f:
+                for lineno, line in enumerate(f, start=1):
                     line = line.strip()
                     if not line:
                         continue
 
-                    data = json.loads(line)
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError as e:
+                        logger.warning("Skipping malformed session line {} in {}: {}", lineno, path, e)
+                        continue
+
+                    if not isinstance(data, dict):
+                        logger.warning("Skipping non-object session line {} in {}", lineno, path)
+                        continue
 
                     if data.get("_type") == "metadata":
                         metadata = data.get("metadata", {})
-                        created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
-                        last_consolidated = data.get("last_consolidated", 0)
+                        if data.get("created_at"):
+                            try:
+                                created_at = datetime.fromisoformat(data["created_at"])
+                            except ValueError:
+                                logger.warning(
+                                    "Invalid created_at in metadata at line {} in {}",
+                                    lineno,
+                                    path,
+                                )
+                        raw_last_consolidated = data.get("last_consolidated", 0)
+                        try:
+                            parsed_last_consolidated = int(raw_last_consolidated)
+                        except (TypeError, ValueError):
+                            parsed_last_consolidated = 0
+                        last_consolidated = max(0, parsed_last_consolidated)
                     else:
                         messages.append(data)
+
+            if last_consolidated > len(messages):
+                last_consolidated = len(messages)
 
             return Session(
                 key=key,
@@ -162,19 +187,28 @@ class SessionManager:
     def save(self, session: Session) -> None:
         """Save a session to disk."""
         path = self._get_session_path(session.key)
+        temp_path = path.with_suffix(f"{path.suffix}.tmp")
 
-        with open(path, "w", encoding="utf-8") as f:
-            metadata_line = {
-                "_type": "metadata",
-                "key": session.key,
-                "created_at": session.created_at.isoformat(),
-                "updated_at": session.updated_at.isoformat(),
-                "metadata": session.metadata,
-                "last_consolidated": session.last_consolidated
-            }
-            f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
-            for msg in session.messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                metadata_line = {
+                    "_type": "metadata",
+                    "key": session.key,
+                    "created_at": session.created_at.isoformat(),
+                    "updated_at": session.updated_at.isoformat(),
+                    "metadata": session.metadata,
+                    "last_consolidated": session.last_consolidated
+                }
+                f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
+                for msg in session.messages:
+                    f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            temp_path.replace(path)
+        except Exception:
+            if temp_path.exists():
+                temp_path.unlink(missing_ok=True)
+            raise
 
         self._cache[session.key] = session
     

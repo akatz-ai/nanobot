@@ -1,6 +1,7 @@
 """Test session management with cache-friendly message handling."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -176,6 +177,124 @@ class TestSessionPersistence:
 
         session.clear()
         assert len(session.messages) == 0
+
+    def test_load_skips_malformed_lines(self, temp_manager):
+        """Malformed JSONL lines should be skipped without dropping the whole session."""
+        path = temp_manager._get_session_path("test:malformed_lines")
+        metadata = {
+            "_type": "metadata",
+            "key": "test:malformed_lines",
+            "created_at": "2026-01-01T00:00:00",
+            "updated_at": "2026-01-01T00:00:00",
+            "metadata": {},
+            "last_consolidated": 1,
+        }
+        path.write_text(
+            "\n".join(
+                [
+                    json.dumps(metadata, ensure_ascii=False),
+                    json.dumps({"role": "user", "content": "hello"}, ensure_ascii=False),
+                    '{"role":"assistant","content":"bad"',
+                    json.dumps({"role": "assistant", "content": "world"}, ensure_ascii=False),
+                ]
+            ) + "\n",
+            encoding="utf-8",
+        )
+
+        temp_manager.invalidate("test:malformed_lines")
+        loaded = temp_manager.get_or_create("test:malformed_lines")
+
+        assert loaded.last_consolidated == 1
+        assert [m["content"] for m in loaded.messages] == ["hello", "world"]
+
+    def test_load_with_malformed_metadata_keeps_messages(self, temp_manager):
+        """Corrupted metadata line should not prevent loading valid message lines."""
+        path = temp_manager._get_session_path("test:bad_metadata")
+        path.write_text(
+            "\n".join(
+                [
+                    "{invalid metadata json",
+                    json.dumps({"role": "user", "content": "hello"}, ensure_ascii=False),
+                ]
+            ) + "\n",
+            encoding="utf-8",
+        )
+
+        temp_manager.invalidate("test:bad_metadata")
+        loaded = temp_manager.get_or_create("test:bad_metadata")
+
+        assert loaded.last_consolidated == 0
+        assert [m["content"] for m in loaded.messages] == ["hello"]
+
+    def test_save_uses_atomic_replace(self, temp_manager, monkeypatch: pytest.MonkeyPatch):
+        """Session save should go through a temp file and atomic replace."""
+        session = create_session_with_messages("test:atomic", 2)
+        replace_calls = 0
+        original_replace = Path.replace
+
+        def _record_replace(self: Path, target: Path):
+            nonlocal replace_calls
+            replace_calls += 1
+            return original_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", _record_replace)
+        temp_manager.save(session)
+
+        assert replace_calls == 1
+
+    def test_load_coerces_invalid_last_consolidated(self, temp_manager):
+        """Invalid metadata last_consolidated values should be sanitized."""
+        path = temp_manager._get_session_path("test:bad_last_consolidated")
+        path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "_type": "metadata",
+                            "key": "test:bad_last_consolidated",
+                            "created_at": "2026-01-01T00:00:00",
+                            "updated_at": "2026-01-01T00:00:00",
+                            "metadata": {},
+                            "last_consolidated": "not-an-int",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps({"role": "user", "content": "msg0"}, ensure_ascii=False),
+                    json.dumps({"role": "assistant", "content": "msg1"}, ensure_ascii=False),
+                ]
+            ) + "\n",
+            encoding="utf-8",
+        )
+        temp_manager.invalidate("test:bad_last_consolidated")
+        loaded = temp_manager.get_or_create("test:bad_last_consolidated")
+        assert loaded.last_consolidated == 0
+
+    def test_load_clamps_last_consolidated_to_message_count(self, temp_manager):
+        """Out-of-range last_consolidated should be clamped to current message length."""
+        path = temp_manager._get_session_path("test:clamped_last_consolidated")
+        path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "_type": "metadata",
+                            "key": "test:clamped_last_consolidated",
+                            "created_at": "2026-01-01T00:00:00",
+                            "updated_at": "2026-01-01T00:00:00",
+                            "metadata": {},
+                            "last_consolidated": 999,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps({"role": "user", "content": "msg0"}, ensure_ascii=False),
+                    json.dumps({"role": "assistant", "content": "msg1"}, ensure_ascii=False),
+                ]
+            ) + "\n",
+            encoding="utf-8",
+        )
+        temp_manager.invalidate("test:clamped_last_consolidated")
+        loaded = temp_manager.get_or_create("test:clamped_last_consolidated")
+        assert loaded.last_consolidated == 2
 
 
 class TestConsolidationTriggerConditions:
@@ -524,6 +643,100 @@ class TestConsolidationDeduplicationGuard:
         assert consolidation_calls == 1, (
             f"Expected exactly 1 consolidation, got {consolidation_calls}"
         )
+
+    @pytest.mark.asyncio
+    async def test_background_consolidation_persists_checkpoint(
+        self, tmp_path: Path
+    ) -> None:
+        """Successful background consolidation should persist last_consolidated immediately."""
+        from nanobot.agent.loop import AgentLoop
+        from nanobot.bus.events import InboundMessage
+        from nanobot.bus.queue import MessageBus
+        from nanobot.providers.base import LLMResponse
+
+        bus = MessageBus()
+        provider = MagicMock()
+        provider.get_default_model.return_value = "test-model"
+        loop = AgentLoop(
+            bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
+        )
+
+        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        loop.tools.get_definitions = MagicMock(return_value=[])
+
+        session = loop.sessions.get_or_create("cli:test")
+        for i in range(15):
+            session.add_message("user", f"msg{i}")
+            session.add_message("assistant", f"resp{i}")
+        loop.sessions.save(session)
+
+        async def _fake_consolidate(sess, archive_all: bool = False) -> bool:
+            await asyncio.sleep(0.05)
+            if not archive_all:
+                sess.last_consolidated = len(sess.messages) - (loop.memory_window // 2)
+            return True
+
+        loop._consolidate_memory = _fake_consolidate  # type: ignore[method-assign]
+
+        msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
+        await loop._process_message(msg)
+        await asyncio.sleep(0.15)
+
+        in_memory = loop.sessions.get_or_create("cli:test").last_consolidated
+        path = loop.sessions._get_session_path("cli:test")
+        with open(path, encoding="utf-8") as f:
+            metadata = json.loads(f.readline())
+
+        assert in_memory > 0
+        assert metadata["last_consolidated"] == in_memory
+
+    @pytest.mark.asyncio
+    async def test_global_consolidation_lock_serializes_cross_session_writes(
+        self, tmp_path: Path
+    ) -> None:
+        """Cross-session consolidations should not run file-memory writes concurrently."""
+        from nanobot.agent.loop import AgentLoop
+        from nanobot.bus.queue import MessageBus
+
+        bus = MessageBus()
+        provider = MagicMock()
+        provider.get_default_model.return_value = "test-model"
+        loop = AgentLoop(
+            bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
+        )
+
+        s1 = Session(key="cli:one")
+        s2 = Session(key="cli:two")
+        for i in range(12):
+            s1.add_message("user", f"s1-{i}")
+            s2.add_message("user", f"s2-{i}")
+
+        active = 0
+        max_active = 0
+
+        async def _slow_consolidate(*args, **kwargs):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.05)
+            active -= 1
+            session_arg = next((arg for arg in args if isinstance(arg, Session)), None)
+            assert session_arg is not None
+            keep_count = kwargs.get("memory_window", 10) // 2
+            session_arg.last_consolidated = len(session_arg.messages) - keep_count
+            return True
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "nanobot.agent.loop.MemoryStore.consolidate",
+                AsyncMock(side_effect=_slow_consolidate),
+            )
+            await asyncio.gather(
+                loop._consolidate_memory(s1),
+                loop._consolidate_memory(s2),
+            )
+
+        assert max_active == 1
 
     @pytest.mark.asyncio
     async def test_new_command_guard_prevents_concurrent_consolidation(

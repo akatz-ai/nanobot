@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -44,6 +45,10 @@ _SAVE_MEMORY_TOOL = [
 
 class MemoryStore:
     """Two-layer memory: MEMORY.md (long-term facts) + HISTORY.md (grep-searchable log)."""
+    _MAX_CONSOLIDATION_INPUT_CHARS = 28000
+    _MAX_CONSOLIDATION_MESSAGES = 400
+    _MAX_LINE_CONTENT_CHARS = 700
+    _MAX_CONTENT_BLOCK_ITEMS = 10
 
     def __init__(self, workspace: Path):
         self.memory_dir = ensure_dir(workspace / "memory")
@@ -66,6 +71,99 @@ class MemoryStore:
         long_term = self.read_long_term()
         return f"## Long-term Memory\n{long_term}" if long_term else ""
 
+    @classmethod
+    def _clean_text(cls, text: str) -> str:
+        text = re.sub(r"data:[^;\s]+;base64,[A-Za-z0-9+/=\s]+", "[image data omitted]", text)
+        # Long opaque tokens (often base64 blobs) degrade consolidation quality.
+        text = re.sub(r"[A-Za-z0-9+/=]{180,}", "[blob omitted]", text)
+        return " ".join(text.split()).strip()
+
+    @classmethod
+    def _clip_text(cls, text: str, max_chars: int) -> str:
+        if max_chars <= 0:
+            return ""
+        if max_chars <= 3:
+            return text[:max_chars]
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 3].rstrip() + "..."
+
+    @classmethod
+    def _compact_content(cls, content: object) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return cls._clip_text(cls._clean_text(content), cls._MAX_LINE_CONTENT_CHARS)
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content[: cls._MAX_CONTENT_BLOCK_ITEMS]:
+                if isinstance(item, str):
+                    cleaned = cls._clean_text(item)
+                    if cleaned:
+                        parts.append(cleaned)
+                    continue
+                if not isinstance(item, dict):
+                    rendered = cls._clean_text(json.dumps(item, ensure_ascii=False))
+                    if rendered:
+                        parts.append(rendered)
+                    continue
+                item_type = str(item.get("type") or "")
+                if item_type in {"image_url", "input_image", "image"}:
+                    parts.append("[image]")
+                    continue
+                text_value = item.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    parts.append(cls._clean_text(text_value))
+                    continue
+                if item_type:
+                    parts.append(f"[{item_type}]")
+            compact = " | ".join(part for part in parts if part)
+            return cls._clip_text(compact, cls._MAX_LINE_CONTENT_CHARS)
+        rendered = cls._clean_text(json.dumps(content, ensure_ascii=False))
+        return cls._clip_text(rendered, cls._MAX_LINE_CONTENT_CHARS)
+
+    def _build_consolidation_lines(self, old_messages: list[dict]) -> list[str]:
+        selected = old_messages
+        omitted_earlier = 0
+        if len(selected) > self._MAX_CONSOLIDATION_MESSAGES:
+            omitted_earlier = len(selected) - self._MAX_CONSOLIDATION_MESSAGES
+            selected = selected[-self._MAX_CONSOLIDATION_MESSAGES:]
+
+        lines: list[str] = []
+        used_chars = 0
+
+        if omitted_earlier > 0:
+            prefix = f"[... omitted {omitted_earlier} earlier messages ...]"
+            lines.append(prefix)
+            used_chars += len(prefix) + 1
+
+        for idx, m in enumerate(selected):
+            compact = self._compact_content(m.get("content"))
+            if not compact:
+                continue
+            tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
+            role = str(m.get("role") or "?").upper()
+            stamp = str(m.get("timestamp") or "?")[:16]
+            line = f"[{stamp}] {role}{tools}: {compact}"
+            projected = used_chars + len(line) + 1
+            if projected > self._MAX_CONSOLIDATION_INPUT_CHARS:
+                omitted_later = len(selected) - idx
+                marker = f"[... omitted {omitted_later} messages due to input size cap ...]"
+                remaining = self._MAX_CONSOLIDATION_INPUT_CHARS - used_chars - 1
+                if remaining > 0:
+                    lines.append(self._clip_text(marker, remaining))
+                elif lines:
+                    # Replace the previous line so we always expose truncation state.
+                    previous = lines.pop()
+                    used_chars = max(0, used_chars - len(previous) - 1)
+                    remaining = self._MAX_CONSOLIDATION_INPUT_CHARS - used_chars - 1
+                    if remaining > 0:
+                        lines.append(self._clip_text(marker, remaining))
+                break
+            lines.append(line)
+            used_chars = projected
+        return lines
+
     async def consolidate(
         self,
         session: Session,
@@ -80,8 +178,9 @@ class MemoryStore:
         Returns True on success (including no-op), False on failure.
         """
         if archive_all:
-            old_messages = session.messages
+            old_messages = list(session.messages)
             keep_count = 0
+            target_last_consolidated = 0
             logger.info("Memory consolidation (archive_all): {} messages", len(session.messages))
         else:
             keep_count = memory_window // 2
@@ -89,17 +188,14 @@ class MemoryStore:
                 return True
             if len(session.messages) - session.last_consolidated <= 0:
                 return True
-            old_messages = session.messages[session.last_consolidated:-keep_count]
+            end_index = len(session.messages) - keep_count
+            old_messages = session.messages[session.last_consolidated:end_index]
             if not old_messages:
                 return True
+            target_last_consolidated = end_index
             logger.info("Memory consolidation: {} to consolidate, {} keep", len(old_messages), keep_count)
 
-        lines = []
-        for m in old_messages:
-            if not m.get("content"):
-                continue
-            tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
-            lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
+        lines = self._build_consolidation_lines(old_messages)
 
         current_memory = self.read_long_term()
         prompt = f"""Process this conversation and call the save_memory tool with your consolidation.
@@ -108,7 +204,7 @@ class MemoryStore:
 {current_memory or "(empty)"}
 
 ## Conversation to Process
-{chr(10).join(lines)}"""
+{chr(10).join(lines) or "(empty)"}"""
 
         try:
             response = await provider.chat(
@@ -135,7 +231,7 @@ class MemoryStore:
                 if update != current_memory:
                     self.write_long_term(update)
 
-            session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
+            session.last_consolidated = target_last_consolidated
             logger.info("Memory consolidation done: {} messages, last_consolidated={}", len(session.messages), session.last_consolidated)
             return True
         except Exception:

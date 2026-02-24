@@ -115,6 +115,7 @@ class AgentLoop:
         self._consolidating: set[str] = set()  # Session keys with consolidation in progress
         self._consolidation_tasks: set[asyncio.Task] = set()  # Strong refs to in-flight tasks
         self._consolidation_locks: dict[str, asyncio.Lock] = {}
+        self._memory_file_lock = asyncio.Lock()  # Serialize global memory file writes across sessions.
         self._memory_module = None
         self._register_default_tools()
         self._register_memory_graph_tools()
@@ -440,7 +441,11 @@ class AgentLoop:
             async def _consolidate_and_unlock():
                 try:
                     async with lock:
-                        await self._consolidate_memory(session)
+                        if await self._consolidate_memory(session):
+                            # Persist consolidation checkpoint immediately to survive restarts.
+                            self.sessions.save(session)
+                except Exception:
+                    logger.exception("Background consolidation failed for {}", session.key)
                 finally:
                     self._consolidating.discard(session.key)
                     self._prune_consolidation_lock(session.key, lock)
@@ -516,66 +521,69 @@ class AgentLoop:
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
         """Consolidate file memory and optionally graph memory. Returns file-memory success."""
-        consolidation_cfg = (
-            self._memory_graph_config.get("consolidation") or {}
-            if isinstance(self._memory_graph_config, dict)
-            else {}
-        )
-        engine = str(consolidation_cfg.get("engine") or "legacy").lower()
+        async with self._memory_file_lock:
+            consolidation_cfg = (
+                self._memory_graph_config.get("consolidation") or {}
+                if isinstance(self._memory_graph_config, dict)
+                else {}
+            )
+            engine = str(consolidation_cfg.get("engine") or "legacy").lower()
 
-        if engine == "hybrid" and self._memory_module and self._memory_module.hybrid:
-            try:
-                if not self._memory_module.initialized:
-                    await self._memory_module.initialize()
+            if engine == "hybrid" and self._memory_module and self._memory_module.hybrid:
+                try:
+                    if not self._memory_module.initialized:
+                        await self._memory_module.initialize()
 
-                keep_count = 0 if archive_all else self.memory_window // 2
-                if not archive_all:
-                    if len(session.messages) <= keep_count:
-                        return True
-                    if len(session.messages) - session.last_consolidated <= 0:
-                        return True
-                    start_index = session.last_consolidated
-                    end_index = len(session.messages) - keep_count
-                    if end_index <= start_index:
-                        return True
-                else:
-                    start_index = 0
-                    end_index = len(session.messages)
+                    keep_count = 0 if archive_all else self.memory_window // 2
+                    if not archive_all:
+                        if len(session.messages) <= keep_count:
+                            return True
+                        if len(session.messages) - session.last_consolidated <= 0:
+                            return True
+                        start_index = session.last_consolidated
+                        end_index = len(session.messages) - keep_count
+                        if end_index <= start_index:
+                            return True
+                        target_last_consolidated = end_index
+                    else:
+                        start_index = 0
+                        end_index = len(session.messages)
+                        target_last_consolidated = 0
 
-                await self._memory_module.hybrid.compact(
-                    session_key=session.key,
-                    messages=session.messages,
-                    start_index=start_index,
-                    end_index=end_index,
-                )
-                session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
-                logger.info(
-                    "Hybrid memory consolidation done: {} messages, last_consolidated={}",
-                    len(session.messages),
-                    session.last_consolidated,
-                )
-                return True
-            except Exception as e:
-                logger.warning(f"Hybrid memory consolidation failed: {e}")
-                return False
+                    await self._memory_module.hybrid.compact(
+                        session_key=session.key,
+                        messages=session.messages,
+                        start_index=start_index,
+                        end_index=end_index,
+                    )
+                    session.last_consolidated = target_last_consolidated
+                    logger.info(
+                        "Hybrid memory consolidation done: {} messages, last_consolidated={}",
+                        len(session.messages),
+                        session.last_consolidated,
+                    )
+                    return True
+                except Exception as e:
+                    logger.warning(f"Hybrid memory consolidation failed: {e}")
+                    return False
 
-        success = await MemoryStore(self.workspace).consolidate(
-            session, self.provider, self.model,
-            archive_all=archive_all, memory_window=self.memory_window,
-        )
-        if self._memory_module and self._memory_module.consolidator:
-            try:
-                if not self._memory_module.initialized:
-                    await self._memory_module.initialize()
-                await self._memory_module.consolidator.consolidate_session(
-                    messages=session.get_history(max_messages=max(len(session.messages), 1)),
-                    peer_key=session.key,
-                    source_session=session.key,
-                )
-                logger.info("Memory graph consolidation complete")
-            except Exception as e:
-                logger.warning(f"Memory graph consolidation failed: {e}")
-        return success
+            success = await MemoryStore(self.workspace).consolidate(
+                session, self.provider, self.model,
+                archive_all=archive_all, memory_window=self.memory_window,
+            )
+            if self._memory_module and self._memory_module.consolidator:
+                try:
+                    if not self._memory_module.initialized:
+                        await self._memory_module.initialize()
+                    await self._memory_module.consolidator.consolidate_session(
+                        messages=session.get_history(max_messages=max(len(session.messages), 1)),
+                        peer_key=session.key,
+                        source_session=session.key,
+                    )
+                    logger.info("Memory graph consolidation complete")
+                except Exception as e:
+                    logger.warning(f"Memory graph consolidation failed: {e}")
+            return success
 
     async def process_direct(
         self,

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import shutil
 from datetime import datetime
@@ -11,9 +12,10 @@ from typer.testing import CliRunner
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.queue import MessageBus
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.memory import MemoryStore
 from nanobot.cli.commands import app
 from nanobot.config.schema import Config
-from nanobot.providers.base import LLMProvider, LLMResponse
+from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.claude_code_provider import ClaudeCodeProvider
 from nanobot.providers.litellm_provider import LiteLLMProvider
 from nanobot.providers.openai_codex_provider import (
@@ -384,6 +386,175 @@ def test_context_builder_includes_daily_history_in_hybrid_mode(tmp_path: Path):
     system_messages = [m["content"] for m in messages if m.get("role") == "system"]
     assert any("Long-term Memory (file)" in content for content in system_messages)
     assert any("Daily History (today)" in content for content in system_messages)
+
+
+def test_context_builder_caps_long_term_memory_in_prompt(tmp_path: Path):
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir(parents=True)
+    huge_memory = "START " + ("A" * 15000) + " END"
+    (memory_dir / "MEMORY.md").write_text(huge_memory, encoding="utf-8")
+
+    builder = ContextBuilder(tmp_path)
+    messages = builder.build_messages(history=[], current_message="hello")
+    long_term = next(
+        m["content"] for m in messages
+        if m.get("role") == "system" and "Long-term Memory (file)" in m.get("content", "")
+    )
+
+    assert "START" in long_term
+    assert "END" not in long_term
+    assert "truncated" in long_term
+    assert len(long_term) <= len("## Long-term Memory (file)\n") + builder._MAX_LONG_TERM_MEMORY_CHARS
+
+
+def test_context_builder_caps_daily_history_in_hybrid_mode(tmp_path: Path):
+    memory_dir = tmp_path / "memory"
+    history_dir = memory_dir / "history"
+    history_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text("ok", encoding="utf-8")
+
+    today = datetime.now().date().isoformat()
+    huge_daily = "HEAD " + ("B" * 12000) + " TAIL"
+    (history_dir / f"{today}.md").write_text(huge_daily, encoding="utf-8")
+
+    builder = ContextBuilder(
+        tmp_path,
+        memory_graph_config={"consolidation": {"engine": "hybrid"}},
+    )
+    messages = builder.build_messages(history=[], current_message="hello")
+    daily = next(
+        m["content"] for m in messages
+        if m.get("role") == "system" and "Daily History (today)" in m.get("content", "")
+    )
+
+    assert "TAIL" in daily
+    assert "HEAD" not in daily
+    assert "truncated" in daily
+    assert len(daily) <= len("## Daily History (today)\n") + builder._MAX_DAILY_HISTORY_CHARS
+
+
+def test_memory_store_consolidation_lines_sanitize_and_cap(tmp_path: Path):
+    store = MemoryStore(tmp_path)
+    store._MAX_CONSOLIDATION_INPUT_CHARS = 300
+    store._MAX_CONSOLIDATION_MESSAGES = 60
+    big_blob = "A" * 5000
+    old_messages = []
+    for i in range(120):
+        old_messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{big_blob}"}},
+                    {"type": "text", "text": f"note-{i} {big_blob}"},
+                ],
+                "timestamp": "2026-02-24T12:00:00",
+            }
+        )
+
+    lines = store._build_consolidation_lines(old_messages)
+    rendered = "\n".join(lines)
+
+    assert "[... omitted" in lines[0]
+    assert "data:image" not in rendered
+    assert "[blob omitted]" in rendered
+    assert len(rendered) <= store._MAX_CONSOLIDATION_INPUT_CHARS
+    assert sum("omitted" in line for line in lines) >= 2
+
+
+@pytest.mark.asyncio
+async def test_memory_store_consolidate_uses_sanitized_prompt(tmp_path: Path):
+    class _CaptureProvider(LLMProvider):
+        def __init__(self):
+            super().__init__(api_key=None, api_base=None)
+            self.last_messages = None
+
+        async def chat(self, messages, tools=None, model=None, max_tokens=4096, temperature=0.7):
+            self.last_messages = messages
+            return LLMResponse(
+                content="ok",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="tc-1",
+                        name="save_memory",
+                        arguments={
+                            "history_entry": "[2026-02-24 12:00] summary",
+                            "memory_update": "memory unchanged",
+                        },
+                    )
+                ],
+            )
+
+        def get_default_model(self) -> str:
+            return "stub-model"
+
+    provider = _CaptureProvider()
+    store = MemoryStore(tmp_path)
+    session = Session(key="cli:test")
+    huge_blob = "X" * 8000
+    session.messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{huge_blob}"}},
+                {"type": "text", "text": f"user text {huge_blob}"},
+            ],
+            "timestamp": "2026-02-24T12:00:00",
+        }
+    ]
+
+    ok = await store.consolidate(session, provider, model="stub-model", archive_all=True, memory_window=50)
+
+    assert ok is True
+    assert provider.last_messages is not None
+    prompt = provider.last_messages[1]["content"]
+    assert "data:image" not in prompt
+    assert huge_blob not in prompt
+    assert "[image]" in prompt
+
+
+@pytest.mark.asyncio
+async def test_memory_store_consolidate_uses_snapshot_boundary_for_last_consolidated(tmp_path: Path):
+    class _DelayedProvider(LLMProvider):
+        def __init__(self):
+            super().__init__(api_key=None, api_base=None)
+            self.ready = asyncio.Event()
+
+        async def chat(self, messages, tools=None, model=None, max_tokens=4096, temperature=0.7):
+            await self.ready.wait()
+            return LLMResponse(
+                content="ok",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="tc-1",
+                        name="save_memory",
+                        arguments={
+                            "history_entry": "[2026-02-24 12:00] summary",
+                            "memory_update": "memory unchanged",
+                        },
+                    )
+                ],
+            )
+
+        def get_default_model(self) -> str:
+            return "stub-model"
+
+    provider = _DelayedProvider()
+    store = MemoryStore(tmp_path)
+    session = Session(key="cli:test")
+    for i in range(20):
+        session.add_message("user", f"msg-{i}")
+
+    task = asyncio.create_task(
+        store.consolidate(session, provider, model="stub-model", archive_all=False, memory_window=10)
+    )
+    await asyncio.sleep(0)
+    session.add_message("user", "late-msg")
+    provider.ready.set()
+    ok = await task
+
+    assert ok is True
+    # Snapshot boundary should stay at original end_index=15, not include late message.
+    assert session.last_consolidated == 15
 
 
 @pytest.mark.asyncio

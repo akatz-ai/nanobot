@@ -180,6 +180,26 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         supports_prompt_caching=True,
     ),
 
+    # Anthropic Direct: OAuth token from Claude CLI, direct Messages API calls.
+    ProviderSpec(
+        name="anthropic_direct",
+        keywords=("anthropic-direct",),
+        env_key="CLAUDE_CODE_OAUTH_TOKEN",
+        display_name="Anthropic Direct (OAuth)",
+        litellm_prefix="",
+        skip_prefixes=(),
+        env_extras=(),
+        is_gateway=False,
+        is_local=False,
+        detect_by_key_prefix="sk-ant-oat",
+        detect_by_base_keyword="",
+        default_api_base="https://api.anthropic.com/v1",
+        strip_model_prefix=False,
+        model_overrides=(),
+        is_oauth=True,
+        is_direct=True,
+    ),
+
     # OpenAI: LiteLLM recognizes "gpt-*" natively, no prefix needed.
     ProviderSpec(
         name="openai",

@@ -49,6 +49,11 @@ class SubagentManager:
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
+        self._skill_index_xml: str = ""
+
+    def set_skill_index(self, skill_index_xml: str) -> None:
+        """Set the resolved parent skill index to include in subagent prompts."""
+        self._skill_index_xml = skill_index_xml
     
     async def spawn(
         self,
@@ -248,9 +253,19 @@ You are a subagent spawned by the main agent to complete a specific task.
 
 ## Workspace
 Your workspace is at: {self.workspace}
-Skills are available at: {self.workspace}/skills/ (read SKILL.md files as needed)
+Local custom skills are at: {self.workspace}/skills/ (read SKILL.md files as needed)
+{self._render_skill_index_section()}
 
 When you have completed the task, provide a clear summary of your findings or actions."""
+
+    def _render_skill_index_section(self) -> str:
+        """Render parent skill index for subagent inheritance."""
+        if not self._skill_index_xml:
+            return ""
+        return f"""
+## Parent Skill Index
+Use this resolved skill index from the parent agent to discover available skills:
+{self._skill_index_xml}"""
     
     def get_running_count(self) -> int:
         """Return the number of currently running subagents."""

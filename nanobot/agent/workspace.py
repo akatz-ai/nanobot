@@ -16,6 +16,23 @@ def get_agent_workspace(base_workspace: Path, agent_id: str) -> Path:
     return base_workspace / "agents" / agent_id
 
 
+def get_base_workspace(workspace: Path) -> Path:
+    """Resolve the root workspace path from any agent workspace path.
+
+    Named agent workspaces are expected at base/agents/{agent_id}. For those
+    paths, this returns base. For all other paths (including default agent),
+    this returns workspace unchanged.
+    """
+    if workspace.parent.name == "agents":
+        return workspace.parent.parent
+    return workspace
+
+
+def get_global_skills_dir(workspace: Path) -> Path:
+    """Get the shared/global skills directory for an agent workspace."""
+    return get_base_workspace(workspace) / "skills"
+
+
 def init_agent_workspace(
     base_workspace: Path,
     agent_id: str,

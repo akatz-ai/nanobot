@@ -5,6 +5,9 @@ import os
 import re
 import shutil
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 # Default builtin skills directory (relative to this file)
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
@@ -18,12 +21,61 @@ class SkillsLoader:
     specific tools or perform certain tasks.
     """
     
-    def __init__(self, workspace: Path, builtin_skills_dir: Path | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        builtin_skills_dir: Path | None = None,
+        global_skills_dir: Path | None = None,
+    ):
         self.workspace = workspace
         self.workspace_skills = workspace / "skills"
+        if global_skills_dir is None:
+            if workspace.parent.name == "agents":
+                global_skills_dir = workspace.parent.parent / "skills"
+            else:
+                global_skills_dir = self.workspace_skills
+        self.global_skills = global_skills_dir
         self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
+        self._skill_content_cache: dict[str, str | None] = {}
+        self._skill_metadata_cache: dict[str, dict | None] = {}
+
+    def clear_cache(self) -> None:
+        """Clear per-build caches to avoid stale reads across turns."""
+        self._skill_content_cache.clear()
+        self._skill_metadata_cache.clear()
+
+    def _skill_roots(self) -> list[tuple[str, Path]]:
+        """Get ordered skill roots by priority, de-duplicated by directory path."""
+        roots: list[tuple[str, Path | None]] = [
+            ("workspace", self.workspace_skills),
+            ("global", self.global_skills),
+            ("builtin", self.builtin_skills),
+        ]
+        seen: set[Path] = set()
+        result: list[tuple[str, Path]] = []
+
+        for source, path in roots:
+            if path is None:
+                continue
+            key = path.expanduser().resolve(strict=False)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append((source, path))
+
+        return result
     
-    def list_skills(self, filter_unavailable: bool = True) -> list[dict[str, str]]:
+    @staticmethod
+    def _normalize_skill_names(skill_names: list[str] | set[str] | None) -> set[str] | None:
+        if skill_names is None:
+            return None
+        return set(skill_names)
+
+    def list_skills(
+        self,
+        filter_unavailable: bool = True,
+        skill_names: list[str] | set[str] | None = None,
+    ) -> list[dict[str, str]]:
         """
         List all available skills.
         
@@ -33,23 +85,25 @@ class SkillsLoader:
         Returns:
             List of skill info dicts with 'name', 'path', 'source'.
         """
+        allowed_names = self._normalize_skill_names(skill_names)
         skills = []
-        
-        # Workspace skills (highest priority)
-        if self.workspace_skills.exists():
-            for skill_dir in self.workspace_skills.iterdir():
-                if skill_dir.is_dir():
-                    skill_file = skill_dir / "SKILL.md"
-                    if skill_file.exists():
-                        skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "workspace"})
-        
-        # Built-in skills
-        if self.builtin_skills and self.builtin_skills.exists():
-            for skill_dir in self.builtin_skills.iterdir():
-                if skill_dir.is_dir():
-                    skill_file = skill_dir / "SKILL.md"
-                    if skill_file.exists() and not any(s["name"] == skill_dir.name for s in skills):
-                        skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "builtin"})
+        seen_names: set[str] = set()
+
+        for source, root in self._skill_roots():
+            if not root.exists():
+                continue
+            for skill_dir in sorted(root.iterdir(), key=lambda p: p.name):
+                if not skill_dir.is_dir() or skill_dir.name in seen_names:
+                    continue
+                if allowed_names is not None and skill_dir.name not in allowed_names:
+                    continue
+                skill_file = skill_dir / "SKILL.md"
+                if not skill_file.exists():
+                    continue
+                skills.append(
+                    {"name": skill_dir.name, "path": str(skill_file), "source": source}
+                )
+                seen_names.add(skill_dir.name)
         
         # Filter by requirements
         if filter_unavailable:
@@ -66,17 +120,17 @@ class SkillsLoader:
         Returns:
             Skill content or None if not found.
         """
-        # Check workspace first
-        workspace_skill = self.workspace_skills / name / "SKILL.md"
-        if workspace_skill.exists():
-            return workspace_skill.read_text(encoding="utf-8")
-        
-        # Check built-in
-        if self.builtin_skills:
-            builtin_skill = self.builtin_skills / name / "SKILL.md"
-            if builtin_skill.exists():
-                return builtin_skill.read_text(encoding="utf-8")
-        
+        if name in self._skill_content_cache:
+            return self._skill_content_cache[name]
+
+        for _, root in self._skill_roots():
+            skill_file = root / name / "SKILL.md"
+            if skill_file.exists():
+                content = skill_file.read_text(encoding="utf-8")
+                self._skill_content_cache[name] = content
+                return content
+
+        self._skill_content_cache[name] = None
         return None
     
     def load_skills_for_context(self, skill_names: list[str]) -> str:
@@ -98,7 +152,12 @@ class SkillsLoader:
         
         return "\n\n---\n\n".join(parts) if parts else ""
     
-    def build_skills_summary(self) -> str:
+    def build_skills_summary(
+        self,
+        skill_names: list[str] | None = None,
+        skills: list[dict[str, str]] | None = None,
+        readable_skill_names: set[str] | None = None,
+    ) -> str:
         """
         Build a summary of all skills (name, description, path, availability).
         
@@ -108,7 +167,11 @@ class SkillsLoader:
         Returns:
             XML-formatted skills summary.
         """
-        all_skills = self.list_skills(filter_unavailable=False)
+        all_skills = (
+            skills
+            if skills is not None
+            else self.list_skills(filter_unavailable=False, skill_names=skill_names)
+        )
         if not all_skills:
             return ""
         
@@ -126,7 +189,10 @@ class SkillsLoader:
             lines.append(f"  <skill available=\"{str(available).lower()}\">")
             lines.append(f"    <name>{name}</name>")
             lines.append(f"    <description>{desc}</description>")
-            lines.append(f"    <location>{path}</location>")
+            if readable_skill_names is None or s["name"] in readable_skill_names:
+                lines.append(f"    <location>{path}</location>")
+            else:
+                lines.append("    <location>inlined</location>")
             
             # Show missing requirements for unavailable skills
             if not available:
@@ -161,18 +227,27 @@ class SkillsLoader:
     def _strip_frontmatter(self, content: str) -> str:
         """Remove YAML frontmatter from markdown content."""
         if content.startswith("---"):
-            match = re.match(r"^---\n.*?\n---\n", content, re.DOTALL)
+            match = re.match(r"^---\r?\n.*?\r?\n---(?:\r?\n|$)", content, re.DOTALL)
             if match:
                 return content[match.end():].strip()
         return content
     
-    def _parse_nanobot_metadata(self, raw: str) -> dict:
-        """Parse skill metadata JSON from frontmatter (supports nanobot and openclaw keys)."""
-        try:
-            data = json.loads(raw)
-            return data.get("nanobot", data.get("openclaw", {})) if isinstance(data, dict) else {}
-        except (json.JSONDecodeError, TypeError):
+    def _parse_nanobot_metadata(self, raw: Any) -> dict:
+        """Parse skill metadata field (supports legacy JSON strings and YAML dicts)."""
+        data: Any = raw
+        if isinstance(raw, str):
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+
+        if not isinstance(data, dict):
             return {}
+        if isinstance(data.get("nanobot"), dict):
+            return data["nanobot"]
+        if isinstance(data.get("openclaw"), dict):
+            return data["openclaw"]
+        return data
     
     def _check_requirements(self, skill_meta: dict) -> bool:
         """Check if skill requirements are met (bins, env vars)."""
@@ -188,17 +263,54 @@ class SkillsLoader:
     def _get_skill_meta(self, name: str) -> dict:
         """Get nanobot metadata for a skill (cached in frontmatter)."""
         meta = self.get_skill_metadata(name) or {}
-        return self._parse_nanobot_metadata(meta.get("metadata", ""))
-    
-    def get_always_skills(self) -> list[str]:
+        skill_meta = self._parse_nanobot_metadata(meta.get("metadata", {}))
+        for key in ("requires", "always", "os"):
+            if key in meta and key not in skill_meta:
+                skill_meta[key] = meta[key]
+        return skill_meta
+
+    def get_always_skills(self, skill_names: list[str] | None = None) -> list[str]:
         """Get skills marked as always=true that meet requirements."""
         result = []
-        for s in self.list_skills(filter_unavailable=True):
+        for s in self.list_skills(filter_unavailable=True, skill_names=skill_names):
             meta = self.get_skill_metadata(s["name"]) or {}
-            skill_meta = self._parse_nanobot_metadata(meta.get("metadata", ""))
-            if skill_meta.get("always") or meta.get("always"):
+            skill_meta = self._parse_nanobot_metadata(meta.get("metadata", {}))
+            always_meta = skill_meta.get("always")
+            always_top = meta.get("always")
+            if always_meta is True or always_top is True:
                 result.append(s["name"])
         return result
+
+    def _parse_frontmatter(self, content: str) -> dict | None:
+        """Parse YAML frontmatter, preserving legacy metadata JSON compatibility."""
+        if not content.startswith("---"):
+            return None
+
+        match = re.match(r"^---\s*\r?\n(.*?)\r?\n---(?:\s*\r?\n|$)", content, re.DOTALL)
+        if not match:
+            return None
+
+        raw_frontmatter = match.group(1)
+        try:
+            parsed = yaml.safe_load(raw_frontmatter) or {}
+        except yaml.YAMLError:
+            return None
+
+        if not isinstance(parsed, dict):
+            return None
+
+        metadata_field = parsed.get("metadata")
+        if isinstance(metadata_field, str):
+            try:
+                legacy_metadata = json.loads(metadata_field)
+            except json.JSONDecodeError:
+                legacy_metadata = None
+            if isinstance(legacy_metadata, dict):
+                parsed["metadata"] = legacy_metadata
+                for key, value in legacy_metadata.items():
+                    parsed.setdefault(key, value)
+
+        return parsed
     
     def get_skill_metadata(self, name: str) -> dict | None:
         """
@@ -210,19 +322,14 @@ class SkillsLoader:
         Returns:
             Metadata dict or None.
         """
+        if name in self._skill_metadata_cache:
+            return self._skill_metadata_cache[name]
+
         content = self.load_skill(name)
         if not content:
+            self._skill_metadata_cache[name] = None
             return None
-        
-        if content.startswith("---"):
-            match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
-            if match:
-                # Simple YAML parsing
-                metadata = {}
-                for line in match.group(1).split("\n"):
-                    if ":" in line:
-                        key, value = line.split(":", 1)
-                        metadata[key.strip()] = value.strip().strip('"\'')
-                return metadata
-        
-        return None
+
+        metadata = self._parse_frontmatter(content)
+        self._skill_metadata_cache[name] = metadata
+        return metadata

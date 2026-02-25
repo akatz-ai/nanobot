@@ -173,6 +173,7 @@ class AgentRouter:
             mcp_servers=self.config.tools.mcp_servers,
             channels_config=self.config.channels,
             memory_graph_config=self.config.memory_graph,
+            skill_names=profile.skills,
         )
 
         instance = AgentInstance(

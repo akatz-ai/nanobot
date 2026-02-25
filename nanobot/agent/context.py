@@ -4,6 +4,7 @@ import base64
 import mimetypes
 import platform
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ class ContextBuilder:
     """
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
+    _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
     _MAX_LONG_TERM_MEMORY_CHARS = 12000
     _MAX_DAILY_HISTORY_CHARS = 8000
     
@@ -179,6 +181,16 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 ## Memory
 - Remember important facts: write to {workspace_path}/memory/MEMORY.md
 {recall_line}"""
+
+    @staticmethod
+    def _build_runtime_context(channel: str | None, chat_id: str | None) -> str:
+        """Build untrusted runtime metadata block for injection before the user message."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
+        tz = time.strftime("%Z") or "UTC"
+        lines = [f"Current Time: {now} ({tz})"]
+        if channel and chat_id:
+            lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
+        return ContextBuilder._RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines)
     
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
@@ -209,7 +221,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         Args:
             history: Previous conversation messages.
             current_message: The new user message (or None for resume turns).
-            skill_names: Optional skills to include.
+            skill_names: Optional list of skills to include.
             media: Optional list of local file paths for images/media.
             channel: Current channel (telegram, feishu, etc.).
             chat_id: Current chat/user ID.
@@ -225,11 +237,12 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         system_prompt = self.build_system_prompt(skill_names)
         messages.append({"role": "system", "content": system_prompt})
 
-        if channel and chat_id:
-            messages.append({
-                "role": "system",
-                "content": f"## Current Session\nChannel: {channel}\nChat ID: {chat_id}",
-            })
+        # Runtime context (current session metadata)
+        runtime_ctx = self._build_runtime_context(channel, chat_id)
+        messages.append({
+            "role": "system",
+            "content": f"## Current Session\n{runtime_ctx}",
+        })
 
         long_term_memory = self.memory.read_long_term()
         if long_term_memory:
@@ -407,63 +420,24 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         return images + [{"type": "text", "text": text}]
     
     def add_tool_result(
-        self,
-        messages: list[dict[str, Any]],
-        tool_call_id: str,
-        tool_name: str,
-        result: str
+        self, messages: list[dict[str, Any]],
+        tool_call_id: str, tool_name: str, result: str,
     ) -> list[dict[str, Any]]:
-        """
-        Add a tool result to the message list.
-        
-        Args:
-            messages: Current message list.
-            tool_call_id: ID of the tool call.
-            tool_name: Name of the tool.
-            result: Tool execution result.
-        
-        Returns:
-            Updated message list.
-        """
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "name": tool_name,
-            "content": result
-        })
+        """Add a tool result to the message list."""
+        messages.append({"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": result})
         return messages
     
     def add_assistant_message(
-        self,
-        messages: list[dict[str, Any]],
+        self, messages: list[dict[str, Any]],
         content: str | None,
         tool_calls: list[dict[str, Any]] | None = None,
         reasoning_content: str | None = None,
     ) -> list[dict[str, Any]]:
-        """
-        Add an assistant message to the message list.
-        
-        Args:
-            messages: Current message list.
-            content: Message content.
-            tool_calls: Optional tool calls.
-            reasoning_content: Thinking output (Kimi, DeepSeek-R1, etc.).
-        
-        Returns:
-            Updated message list.
-        """
-        msg: dict[str, Any] = {"role": "assistant"}
-
-        # Always include content — some providers (e.g. StepFun) reject
-        # assistant messages that omit the key entirely.
-        msg["content"] = content
-
+        """Add an assistant message to the message list."""
+        msg: dict[str, Any] = {"role": "assistant", "content": content}
         if tool_calls:
             msg["tool_calls"] = tool_calls
-
-        # Include reasoning content when provided (required by some thinking models)
         if reasoning_content is not None:
             msg["reasoning_content"] = reasoning_content
-
         messages.append(msg)
         return messages

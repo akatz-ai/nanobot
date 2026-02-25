@@ -458,8 +458,8 @@ def gateway_worker(
         return "cli", "direct"
 
     # Create heartbeat service
-    async def on_heartbeat(prompt: str) -> str:
-        """Execute heartbeat through the default agent."""
+    async def on_heartbeat_execute(tasks: str) -> str:
+        """Phase 2: execute heartbeat tasks through the full agent loop."""
         default = router.default_agent
         if not default:
             return ""
@@ -469,7 +469,7 @@ def gateway_worker(
             pass
 
         return await default.loop.process_direct(
-            prompt,
+            tasks,
             session_key="heartbeat",
             channel=channel,
             chat_id=chat_id,
@@ -484,12 +484,16 @@ def gateway_worker(
             return
         await bus.publish_outbound(OutboundMessage(channel=channel, chat_id=chat_id, content=response))
 
+    hb_cfg = config.gateway.heartbeat
+    default_agent = router.default_agent
     heartbeat = HeartbeatService(
         workspace=config.workspace_path,
-        on_heartbeat=on_heartbeat,
+        provider=provider,
+        model=default_agent.loop.model if default_agent else config.agents.defaults.model,
+        on_execute=on_heartbeat_execute,
         on_notify=on_heartbeat_notify,
-        interval_s=30 * 60,  # 30 minutes
-        enabled=True
+        interval_s=hb_cfg.interval_s,
+        enabled=hb_cfg.enabled,
     )
 
     # Create usage dashboard if configured
@@ -520,10 +524,11 @@ def gateway_worker(
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
 
-    console.print(f"[green]✓[/green] Heartbeat: every 30m")
+    console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
 
     if usage_dashboard:
         console.print(f"[green]✓[/green] Usage dashboard: channel={dash_cfg.channel_id}, interval={dash_cfg.poll_interval_s}s")
+
 
     async def run():
         try:

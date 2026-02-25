@@ -615,6 +615,104 @@ async def test_memory_store_consolidate_uses_snapshot_boundary_for_last_consolid
 
 
 @pytest.mark.asyncio
+async def test_memory_store_consolidate_rejects_malformed_memory_update(tmp_path: Path):
+    class _MalformedProvider(LLMProvider):
+        def __init__(self):
+            super().__init__(api_key=None, api_base=None)
+
+        async def chat(self, messages, tools=None, model=None, max_tokens=4096, temperature=0.7):
+            return LLMResponse(
+                content="ok",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="tc-1",
+                        name="save_memory",
+                        arguments={
+                            "history_entry": "[2026-02-24 12:00] summary",
+                            "memory_update": "this is not canonical memory markdown",
+                        },
+                    )
+                ],
+            )
+
+        def get_default_model(self) -> str:
+            return "stub-model"
+
+    provider = _MalformedProvider()
+    store = MemoryStore(tmp_path)
+    session = Session(key="cli:test")
+    session.add_message("user", "note")
+
+    ok = await store.consolidate(session, provider, model="stub-model", archive_all=True, memory_window=50)
+
+    assert ok is True
+    memory_file = tmp_path / "memory" / "MEMORY.md"
+    assert not memory_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_memory_store_consolidate_archives_overflow_sections(tmp_path: Path):
+    class _LargeUpdateProvider(LLMProvider):
+        def __init__(self):
+            super().__init__(api_key=None, api_base=None)
+
+        async def chat(self, messages, tools=None, model=None, max_tokens=4096, temperature=0.7):
+            huge_recent = "recent detail " * 500
+            memory_update = f"""# MEMORY
+
+## Identity & Preferences
+- User prefers concise summaries.
+
+## Active Projects
+- Memory hardening rollout.
+
+## Decisions
+- Enforce strict budgets.
+
+## Reference Facts
+- History files are source audit logs.
+
+## Recent Context
+- {huge_recent}
+"""
+            return LLMResponse(
+                content="ok",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="tc-1",
+                        name="save_memory",
+                        arguments={
+                            "history_entry": "[2026-02-24 12:00] summary",
+                            "memory_update": memory_update,
+                        },
+                    )
+                ],
+            )
+
+        def get_default_model(self) -> str:
+            return "stub-model"
+
+    provider = _LargeUpdateProvider()
+    store = MemoryStore(tmp_path)
+    store._MEMORY_MD_MAX_CHARS = 800
+    store._MEMORY_MD_MAX_TOKENS = 220
+    session = Session(key="cli:test")
+    session.add_message("user", "note")
+
+    ok = await store.consolidate(session, provider, model="stub-model", archive_all=True, memory_window=50)
+
+    assert ok is True
+    memory_text = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert len(memory_text) <= 800
+    assert "archived due to size budget" in memory_text
+
+    today = datetime.now().date().isoformat()
+    overflow_history = tmp_path / "memory" / "history" / f"{today}.md"
+    assert overflow_history.exists()
+    assert "MEMORY.md overflow archive" in overflow_history.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
 async def test_claude_code_provider_persists_session_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     provider = ClaudeCodeProvider(
         default_model="claude-code/claude-sonnet-4-5",

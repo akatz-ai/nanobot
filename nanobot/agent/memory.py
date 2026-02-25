@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -32,8 +34,9 @@ _SAVE_MEMORY_TOOL = [
                     },
                     "memory_update": {
                         "type": "string",
-                        "description": "Full updated long-term memory as markdown. Include all existing "
-                        "facts plus new ones. Return unchanged if nothing new.",
+                        "description": "Full updated long-term memory as markdown using canonical MEMORY.md "
+                        "headings (# MEMORY, Identity & Preferences, Active Projects, Decisions, "
+                        "Reference Facts, Recent Context). Return unchanged if nothing new.",
                     },
                 },
                 "required": ["history_entry", "memory_update"],
@@ -49,9 +52,19 @@ class MemoryStore:
     _MAX_CONSOLIDATION_MESSAGES = 400
     _MAX_LINE_CONTENT_CHARS = 700
     _MAX_CONTENT_BLOCK_ITEMS = 10
+    _MEMORY_MD_MAX_TOKENS = 4000
+    _MEMORY_MD_MAX_CHARS = 16000
+    _CANONICAL_SECTIONS = (
+        "Identity & Preferences",
+        "Active Projects",
+        "Decisions",
+        "Reference Facts",
+        "Recent Context",
+    )
 
     def __init__(self, workspace: Path):
         self.memory_dir = ensure_dir(workspace / "memory")
+        self.history_dir = ensure_dir(self.memory_dir / "history")
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "HISTORY.md"
 
@@ -197,8 +210,19 @@ class MemoryStore:
 
         lines = self._build_consolidation_lines(old_messages)
 
-        current_memory = self.read_long_term()
+        current_memory = self._coerce_to_canonical(self.read_long_term())
         prompt = f"""Process this conversation and call the save_memory tool with your consolidation.
+
+Use this exact MEMORY.md structure:
+# MEMORY
+## Identity & Preferences
+## Active Projects
+## Decisions
+## Reference Facts
+## Recent Context
+
+Hard limits for memory_update: <= {self._MEMORY_MD_MAX_TOKENS} tokens and <= {self._MEMORY_MD_MAX_CHARS} chars.
+Reject chatter and transient details.
 
 ## Current Long-term Memory
 {current_memory or "(empty)"}
@@ -228,8 +252,24 @@ class MemoryStore:
             if update := args.get("memory_update"):
                 if not isinstance(update, str):
                     update = json.dumps(update, ensure_ascii=False)
-                if update != current_memory:
-                    self.write_long_term(update)
+                normalized = self._strip_code_fence(update)
+                if not normalized.strip():
+                    logger.warning("Memory consolidation: rejected empty memory_update")
+                elif not self._is_valid_canonical_structure(normalized):
+                    logger.warning("Memory consolidation: rejected malformed memory_update")
+                else:
+                    canonical = self._coerce_to_canonical(normalized)
+                    bounded, overflow_sections = self._enforce_memory_budget(canonical)
+                    if not self._fits_memory_budget(bounded):
+                        logger.warning("Memory consolidation: rejected over-budget memory_update")
+                    else:
+                        self._archive_memory_overflow(
+                            overflow_sections=overflow_sections,
+                            session_key=session.key,
+                            timestamp=datetime.now(),
+                        )
+                        if bounded != current_memory:
+                            self.write_long_term(bounded)
 
             session.last_consolidated = target_last_consolidated
             logger.info("Memory consolidation done: {} messages, last_consolidated={}", len(session.messages), session.last_consolidated)
@@ -237,3 +277,140 @@ class MemoryStore:
         except Exception:
             logger.exception("Memory consolidation failed")
             return False
+
+    @staticmethod
+    def _strip_code_fence(text: str) -> str:
+        candidate = (text or "").strip()
+        if candidate.startswith("```"):
+            lines = candidate.splitlines()
+            if len(lines) >= 2 and lines[-1].strip() == "```":
+                return "\n".join(lines[1:-1]).strip()
+        return candidate
+
+    def _coerce_to_canonical(self, content: str) -> str:
+        text = self._strip_code_fence(content or "").strip()
+        if not text:
+            return self._render_canonical({name: [] for name in self._CANONICAL_SECTIONS})
+
+        if not self._is_valid_canonical_structure(text):
+            facts = [line.strip() for line in text.splitlines() if line.strip()]
+            sections = {name: [] for name in self._CANONICAL_SECTIONS}
+            sections["Reference Facts"] = [f"- {line}" for line in facts]
+            return self._render_canonical(sections)
+
+        return self._render_canonical(self._parse_canonical_sections(text))
+
+    def _is_valid_canonical_structure(self, content: str) -> bool:
+        lines = [line.strip() for line in content.strip().splitlines() if line.strip()]
+        if not lines or lines[0] != "# MEMORY":
+            return False
+        headers = [line[3:].strip() for line in lines if line.startswith("## ")]
+        if len(headers) != len(set(headers)):
+            return False
+        return all(section in headers for section in self._CANONICAL_SECTIONS)
+
+    def _parse_canonical_sections(self, content: str) -> dict[str, list[str]]:
+        sections = {name: [] for name in self._CANONICAL_SECTIONS}
+        current: str | None = None
+        for raw_line in content.strip().splitlines():
+            line = raw_line.rstrip()
+            if line.startswith("# "):
+                continue
+            if line.startswith("## "):
+                header = line[3:].strip()
+                current = header if header in sections else None
+                continue
+            if current is not None:
+                sections[current].append(line)
+        return sections
+
+    def _render_canonical(self, sections: dict[str, list[str]]) -> str:
+        lines = ["# MEMORY", ""]
+        for header in self._CANONICAL_SECTIONS:
+            body = sections.get(header, [])
+            if not body or not any(line.strip() for line in body):
+                body = ["- (none)"]
+            lines.append(f"## {header}")
+            lines.extend(body)
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        return max(1, (len(text) + 3) // 4)
+
+    def _fits_memory_budget(self, content: str) -> bool:
+        return (
+            len(content) <= self._MEMORY_MD_MAX_CHARS
+            and self._estimate_tokens(content) <= self._MEMORY_MD_MAX_TOKENS
+        )
+
+    def _enforce_memory_budget(self, content: str) -> tuple[str, list[tuple[str, list[str]]]]:
+        if self._fits_memory_budget(content):
+            return content, []
+
+        sections = self._parse_canonical_sections(content)
+        overflow: dict[str, list[str]] = {}
+
+        for header in reversed(self._CANONICAL_SECTIONS):
+            if self._fits_memory_budget(self._render_canonical(sections)):
+                break
+            body = [line for line in sections.get(header, []) if line.strip()]
+            if not body:
+                continue
+            overflow.setdefault(header, []).extend(body)
+            sections[header] = ["- (archived due to size budget)"]
+
+        for header in self._CANONICAL_SECTIONS:
+            body = sections.get(header, [])
+            while len(body) > 1 and not self._fits_memory_budget(self._render_canonical(sections)):
+                removed = body.pop()
+                if removed.strip():
+                    overflow.setdefault(header, []).insert(0, removed)
+            if not any(line.strip() for line in body):
+                sections[header] = ["- (archived due to size budget)"]
+
+        bounded = self._render_canonical(sections)
+        overflow_sections = [(header, lines) for header, lines in overflow.items() if lines]
+        return bounded, overflow_sections
+
+    def _archive_memory_overflow(
+        self,
+        overflow_sections: list[tuple[str, list[str]]],
+        *,
+        session_key: str,
+        timestamp: datetime,
+    ) -> None:
+        if not overflow_sections:
+            return
+
+        history_file = self.history_dir / f"{timestamp.date().isoformat()}.md"
+        heading = f"# {timestamp.date().isoformat()}\n\n"
+        if not history_file.exists():
+            history_file.write_text(heading, encoding="utf-8")
+
+        payload = json.dumps(overflow_sections, ensure_ascii=False, sort_keys=True)
+        marker_id = hashlib.sha256(
+            f"{session_key}|{timestamp.isoformat()}|{payload}".encode("utf-8")
+        ).hexdigest()[:16]
+        marker = f"<!-- memory_overflow_id: {marker_id} -->"
+
+        existing = history_file.read_text(encoding="utf-8")
+        if marker in existing:
+            return
+
+        lines = [
+            marker,
+            f"## {timestamp.strftime('%H:%M')} — MEMORY.md overflow archive ({session_key})",
+            "",
+            "Moved sections from MEMORY.md to enforce compaction budget:",
+            "",
+        ]
+        for header, body in overflow_sections:
+            lines.append(f"### {header}")
+            lines.extend(body)
+            lines.append("")
+
+        section = "\n".join(lines).rstrip()
+        separator = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
+        history_file.write_text(f"{existing}{separator}{section}\n", encoding="utf-8")

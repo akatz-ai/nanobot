@@ -1,0 +1,1087 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nanobot — Memory Audit Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        bg: { 900: '#0a0a0f', 800: '#12121a', 700: '#1a1a26', 600: '#22222e' },
+        accent: { 500: '#6366f1', 400: '#818cf8', 300: '#a5b4fc' },
+        surface: { 800: '#16161f', 700: '#1e1e2a', 600: '#282836' },
+      },
+      fontFamily: {
+        mono: ['"JetBrains Mono"', '"Fira Code"', 'ui-monospace', 'monospace'],
+      }
+    }
+  }
+}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Inter', sans-serif; background: #0a0a0f; color: #e2e8f0; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #12121a; }
+  ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #555; }
+  .markdown-body { line-height: 1.7; }
+  .markdown-body h1 { font-size: 1.5rem; font-weight: 700; margin: 1.2rem 0 0.6rem; color: #a5b4fc; border-bottom: 1px solid #282836; padding-bottom: 0.4rem; }
+  .markdown-body h2 { font-size: 1.2rem; font-weight: 600; margin: 1rem 0 0.5rem; color: #818cf8; }
+  .markdown-body h3 { font-size: 1.05rem; font-weight: 600; margin: 0.8rem 0 0.4rem; color: #94a3b8; }
+  .markdown-body p { margin: 0.4rem 0; }
+  .markdown-body ul, .markdown-body ol { margin: 0.4rem 0; padding-left: 1.5rem; }
+  .markdown-body li { margin: 0.2rem 0; }
+  .markdown-body code { background: #1e1e2a; padding: 0.15rem 0.4rem; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.85em; color: #c4b5fd; }
+  .markdown-body pre { background: #12121a; border: 1px solid #282836; border-radius: 6px; padding: 0.8rem; overflow-x: auto; margin: 0.6rem 0; }
+  .markdown-body pre code { background: none; padding: 0; color: #e2e8f0; }
+  .markdown-body strong { color: #f1f5f9; }
+  .markdown-body a { color: #818cf8; text-decoration: underline; }
+  .markdown-body blockquote { border-left: 3px solid #6366f1; padding-left: 1rem; color: #94a3b8; margin: 0.6rem 0; }
+  .markdown-body table { border-collapse: collapse; width: 100%; margin: 0.6rem 0; }
+  .markdown-body th, .markdown-body td { border: 1px solid #282836; padding: 0.4rem 0.8rem; text-align: left; }
+  .markdown-body th { background: #1a1a26; color: #a5b4fc; font-weight: 600; }
+  .tab-btn { transition: all 0.15s; }
+  .tab-btn.active { color: #818cf8; border-color: #6366f1; }
+  .fade-in { animation: fadeIn 0.2s ease-out; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  .spinner { border: 2px solid #282836; border-top-color: #6366f1; border-radius: 50%; width: 20px; height: 20px; animation: spin 0.6s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .budget-bar { height: 6px; border-radius: 3px; transition: width 0.4s ease; }
+  .msg-system { border-left: 3px solid #64748b; background: #16161f; }
+  .msg-user { border-left: 3px solid #3b82f6; background: #0f172a; }
+  .msg-assistant { border-left: 3px solid #22c55e; background: #0a1a0f; }
+  .msg-tool { border-left: 3px solid #f59e0b; background: #1a1400; }
+  .collapsible-content { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; }
+  .collapsible-content.open { max-height: 100000px; }
+  .consolidation-marker { border-top: 2px dashed #f59e0b; margin: 0.5rem 0; padding-top: 0.5rem; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- Top nav -->
+<header class="sticky top-0 z-50 bg-bg-900/95 backdrop-blur border-b border-surface-600">
+  <div class="max-w-[1600px] mx-auto px-4 h-12 flex items-center gap-4">
+    <div class="flex items-center gap-2">
+      <div class="w-2 h-2 rounded-full bg-accent-500 animate-pulse"></div>
+      <span class="font-semibold text-sm tracking-wide text-slate-200">NANOBOT</span>
+      <span class="text-xs text-slate-500 ml-1">Memory Audit</span>
+    </div>
+    <nav id="breadcrumbs" class="flex items-center gap-1 text-xs text-slate-500 ml-4"></nav>
+    <div class="ml-auto flex items-center gap-3">
+      <span id="status-dot" class="text-xs text-slate-600"></span>
+    </div>
+  </div>
+</header>
+
+<!-- Main content -->
+<main id="app" class="max-w-[1600px] mx-auto px-4 py-6">
+  <div class="spinner mx-auto mt-20"></div>
+</main>
+
+<script>
+// ---------------------------------------------------------------------------
+// State & Router
+// ---------------------------------------------------------------------------
+const state = { view: 'agents', agent: null, tab: 'memory', sessionKey: null, graphTab: 'browse' };
+const API = '';
+
+function navigate(view, params = {}) {
+  Object.assign(state, { view, ...params });
+  render();
+}
+
+async function api(path, opts) {
+  const res = await fetch(API + path, opts);
+  if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+function html(tag, attrs = {}, children = []) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'className') el.className = v;
+    else if (k === 'innerHTML') el.innerHTML = v;
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2).toLowerCase(), v);
+    else el.setAttribute(k, v);
+  }
+  for (const c of (Array.isArray(children) ? children : [children])) {
+    if (typeof c === 'string') el.appendChild(document.createTextNode(c));
+    else if (c) el.appendChild(c);
+  }
+  return el;
+}
+
+function md(text) { return marked.parse(text || '', { breaks: true }); }
+function truncate(s, n = 80) { return s && s.length > n ? s.slice(0, n) + '…' : s || ''; }
+function fmtDate(iso) { if (!iso) return '—'; try { return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return iso; } }
+function fmtBytes(n) { if (n < 1024) return n + ' B'; if (n < 1048576) return (n/1024).toFixed(1) + ' KB'; return (n/1048576).toFixed(1) + ' MB'; }
+function fmtMs(ms) { if (!ms) return '—'; return new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
+function $(sel) { return document.querySelector(sel); }
+
+function setBreadcrumbs(...parts) {
+  const bc = $('#breadcrumbs');
+  bc.innerHTML = '';
+  parts.forEach((p, i) => {
+    if (i > 0) bc.appendChild(html('span', { className: 'text-slate-600 mx-1' }, '/'));
+    if (p.onClick) {
+      const a = html('span', { className: 'cursor-pointer hover:text-accent-400 transition-colors', onClick: p.onClick }, p.label);
+      bc.appendChild(a);
+    } else {
+      bc.appendChild(html('span', { className: 'text-slate-400' }, p.label));
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Render dispatcher
+// ---------------------------------------------------------------------------
+function render() {
+  const app = $('#app');
+  app.innerHTML = '<div class="flex justify-center mt-20"><div class="spinner"></div></div>';
+  switch (state.view) {
+    case 'agents': renderAgents(); break;
+    case 'agent-detail': renderAgentDetail(); break;
+    case 'session': renderSession(); break;
+    case 'graph': renderGraph(); break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. Agent Overview
+// ---------------------------------------------------------------------------
+async function renderAgents() {
+  setBreadcrumbs({ label: 'Agents' });
+  const data = await api('/api/agents');
+  const app = $('#app');
+  app.innerHTML = '';
+
+  // Header
+  const hdr = html('div', { className: 'flex items-center justify-between mb-6' }, [
+    html('div', {}, [
+      html('h1', { className: 'text-xl font-semibold text-slate-100' }, 'Agent Overview'),
+      html('p', { className: 'text-sm text-slate-500 mt-1' }, `${data.agents.length} registered agents`),
+    ]),
+    html('button', { className: 'px-3 py-1.5 text-xs bg-surface-700 hover:bg-surface-600 rounded-md border border-surface-600 text-slate-300 transition-colors', onClick: () => navigate('graph', { graphTab: 'browse' }) }, 'Graph Explorer →'),
+  ]);
+  app.appendChild(hdr);
+
+  // Card grid
+  const grid = html('div', { className: 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 fade-in' });
+  for (const a of data.agents) {
+    const memPct = Math.min(a.memoryChars / 16000 * 100, 100);
+    const memColor = memPct > 90 ? '#ef4444' : memPct > 70 ? '#f59e0b' : '#22c55e';
+    const card = html('div', {
+      className: 'bg-surface-800 border border-surface-600 rounded-lg p-5 hover:border-accent-500/40 cursor-pointer transition-all group',
+      onClick: () => navigate('agent-detail', { agent: a.name, tab: 'memory' }),
+    }, [
+      html('div', { className: 'flex items-center justify-between mb-3' }, [
+        html('div', { className: 'flex items-center gap-2' }, [
+          html('div', { className: 'w-8 h-8 rounded-lg bg-accent-500/10 flex items-center justify-center text-accent-400 font-mono text-sm font-bold' }, a.name[0].toUpperCase()),
+          html('div', {}, [
+            html('h3', { className: 'font-semibold text-slate-200 group-hover:text-accent-300 transition-colors' }, a.name),
+            html('p', { className: 'text-xs text-slate-500 font-mono' }, truncate(a.model || 'default', 30)),
+          ]),
+        ]),
+      ]),
+      html('div', { className: 'grid grid-cols-3 gap-3 text-center mt-3' }, [
+        html('div', { className: 'bg-bg-800 rounded-md p-2' }, [
+          html('div', { className: 'text-lg font-semibold text-slate-200' }, String(a.sessionCount)),
+          html('div', { className: 'text-[10px] text-slate-500 uppercase tracking-wider' }, 'Sessions'),
+        ]),
+        html('div', { className: 'bg-bg-800 rounded-md p-2' }, [
+          html('div', { className: 'text-lg font-semibold text-slate-200' }, String(a.messageCount)),
+          html('div', { className: 'text-[10px] text-slate-500 uppercase tracking-wider' }, 'Messages'),
+        ]),
+        html('div', { className: 'bg-bg-800 rounded-md p-2' }, [
+          html('div', { className: 'text-lg font-semibold text-slate-200' }, String(a.historyFileCount)),
+          html('div', { className: 'text-[10px] text-slate-500 uppercase tracking-wider' }, 'History'),
+        ]),
+      ]),
+      // Memory budget bar
+      html('div', { className: 'mt-3' }, [
+        html('div', { className: 'flex justify-between text-[10px] text-slate-500 mb-1' }, [
+          html('span', {}, 'MEMORY.md'),
+          html('span', {}, `${(a.memoryChars/1000).toFixed(1)}K / 16K chars`),
+        ]),
+        html('div', { className: 'w-full h-1.5 bg-bg-900 rounded-full overflow-hidden' }, [
+          html('div', { className: 'budget-bar', style: `width:${memPct}%;background:${memColor}` }),
+        ]),
+      ]),
+    ]);
+    grid.appendChild(card);
+  }
+  app.appendChild(grid);
+}
+
+// ---------------------------------------------------------------------------
+// 2. Agent Detail (tabs: Memory, Sessions, Identity)
+// ---------------------------------------------------------------------------
+async function renderAgentDetail() {
+  const name = state.agent;
+  setBreadcrumbs(
+    { label: 'Agents', onClick: () => navigate('agents') },
+    { label: name },
+  );
+  const app = $('#app');
+  app.innerHTML = '';
+
+  // Tab bar
+  const tabs = ['memory', 'sessions', 'identity'];
+  const tabBar = html('div', { className: 'flex gap-1 border-b border-surface-600 mb-5' });
+  for (const t of tabs) {
+    const btn = html('button', {
+      className: `tab-btn px-4 py-2 text-sm font-medium border-b-2 ${state.tab === t ? 'active text-accent-400 border-accent-500' : 'text-slate-500 border-transparent hover:text-slate-300'}`,
+      onClick: () => { state.tab = t; renderAgentDetail(); },
+    }, t.charAt(0).toUpperCase() + t.slice(1));
+    tabBar.appendChild(btn);
+  }
+  app.appendChild(tabBar);
+
+  const content = html('div', { className: 'fade-in' });
+  app.appendChild(content);
+
+  if (state.tab === 'memory') await renderMemoryTab(name, content);
+  else if (state.tab === 'sessions') await renderSessionsTab(name, content);
+  else if (state.tab === 'identity') await renderIdentityTab(name, content);
+}
+
+// --- Memory Tab ---
+async function renderMemoryTab(name, container) {
+  const [memData, histData] = await Promise.all([
+    api(`/api/agents/${name}/memory`),
+    api(`/api/agents/${name}/history`),
+  ]);
+
+  // Budget card
+  const budgetPct = memData.budgetCharPercent;
+  const budgetColor = budgetPct > 90 ? '#ef4444' : budgetPct > 70 ? '#f59e0b' : '#22c55e';
+  const stats = html('div', { className: 'grid grid-cols-4 gap-3 mb-5' });
+  [
+    { label: 'Characters', value: memData.chars.toLocaleString() },
+    { label: 'Est. Tokens', value: memData.tokens.toLocaleString() },
+    { label: 'Char Budget', value: `${budgetPct}%` },
+    { label: 'Token Budget', value: `${memData.budgetTokenPercent}%` },
+  ].forEach(s => {
+    stats.appendChild(html('div', { className: 'bg-surface-800 border border-surface-600 rounded-md p-3 text-center' }, [
+      html('div', { className: 'text-xl font-semibold text-slate-200' }, s.value),
+      html('div', { className: 'text-[10px] text-slate-500 uppercase tracking-wider mt-1' }, s.label),
+    ]));
+  });
+  container.appendChild(stats);
+
+  // Budget bar
+  const barWrap = html('div', { className: 'mb-5' }, [
+    html('div', { className: 'w-full h-2 bg-bg-900 rounded-full overflow-hidden' }, [
+      html('div', { className: 'budget-bar', style: `width:${Math.min(budgetPct,100)}%;background:${budgetColor}` }),
+    ]),
+  ]);
+  container.appendChild(barWrap);
+
+  // Two columns: MEMORY.md | History
+  const cols = html('div', { className: 'grid grid-cols-1 lg:grid-cols-3 gap-5' });
+
+  // Memory content
+  const memCard = html('div', { className: 'lg:col-span-2 bg-surface-800 border border-surface-600 rounded-lg overflow-hidden' }, [
+    html('div', { className: 'px-4 py-3 border-b border-surface-600 flex justify-between items-center' }, [
+      html('h3', { className: 'text-sm font-semibold text-slate-300' }, 'MEMORY.md'),
+      html('span', { className: 'text-xs text-slate-500 font-mono' }, `${memData.chars} chars`),
+    ]),
+    html('div', { className: 'p-4 max-h-[70vh] overflow-y-auto markdown-body', innerHTML: md(memData.content) }),
+  ]);
+  cols.appendChild(memCard);
+
+  // History sidebar
+  const histCard = html('div', { className: 'bg-surface-800 border border-surface-600 rounded-lg overflow-hidden' }, [
+    html('div', { className: 'px-4 py-3 border-b border-surface-600' }, [
+      html('h3', { className: 'text-sm font-semibold text-slate-300' }, `History (${histData.files.length} files)`),
+    ]),
+  ]);
+  const histList = html('div', { className: 'max-h-[70vh] overflow-y-auto divide-y divide-surface-600' });
+  const histContent = html('div', { id: 'hist-content', className: 'hidden' });
+
+  for (const f of histData.files) {
+    const item = html('div', {
+      className: 'px-4 py-2.5 hover:bg-surface-700 cursor-pointer transition-colors flex justify-between items-center',
+      onClick: async () => {
+        const d = await api(`/api/agents/${name}/history/${f.date}`);
+        histContent.className = 'p-4 border-t border-surface-600 max-h-96 overflow-y-auto markdown-body';
+        histContent.innerHTML = `<div class="text-xs text-slate-500 mb-2 font-mono">${f.date}</div>` + md(d.content);
+      },
+    }, [
+      html('span', { className: 'text-sm text-slate-300 font-mono' }, f.date),
+      html('span', { className: 'text-xs text-slate-500' }, fmtBytes(f.size)),
+    ]);
+    histList.appendChild(item);
+  }
+  histCard.appendChild(histList);
+  histCard.appendChild(histContent);
+  cols.appendChild(histCard);
+
+  container.appendChild(cols);
+}
+
+// --- Sessions Tab ---
+async function renderSessionsTab(name, container) {
+  const data = await api(`/api/agents/${name}/sessions`);
+
+  const table = html('div', { className: 'bg-surface-800 border border-surface-600 rounded-lg overflow-hidden' });
+  const thead = html('div', { className: 'grid grid-cols-6 gap-2 px-4 py-2.5 text-[10px] uppercase tracking-wider text-slate-500 border-b border-surface-600 font-semibold' });
+  ['Key', 'Messages', 'Consolidated', 'Created', 'Updated', 'Size'].forEach(h => thead.appendChild(html('div', {}, h)));
+  table.appendChild(thead);
+
+  const tbody = html('div', { className: 'divide-y divide-surface-600/50 max-h-[70vh] overflow-y-auto' });
+  for (const s of data.sessions) {
+    const row = html('div', {
+      className: 'grid grid-cols-6 gap-2 px-4 py-2.5 hover:bg-surface-700 cursor-pointer transition-colors items-center',
+      onClick: () => navigate('session', { agent: name, sessionKey: s.file.replace('.jsonl', '') }),
+    }, [
+      html('div', { className: 'text-sm text-accent-300 font-mono truncate', title: s.key }, truncate(s.key, 35)),
+      html('div', { className: 'text-sm text-slate-300' }, String(s.messageCount)),
+      html('div', { className: 'text-sm text-slate-400' }, `${s.lastConsolidated || 0}`),
+      html('div', { className: 'text-xs text-slate-500' }, fmtDate(s.createdAt)),
+      html('div', { className: 'text-xs text-slate-500' }, fmtDate(s.updatedAt)),
+      html('div', { className: 'text-xs text-slate-500 font-mono' }, fmtBytes(s.size || 0)),
+    ]);
+    tbody.appendChild(row);
+  }
+  table.appendChild(tbody);
+  container.appendChild(table);
+}
+
+// --- Identity Tab ---
+async function renderIdentityTab(name, container) {
+  const data = await api(`/api/agents/${name}/identity`);
+
+  const sections = [
+    { label: 'IDENTITY.md', content: data.identity },
+    { label: 'SOUL.md', content: data.soul },
+    { label: 'USER.md', content: data.user },
+  ];
+
+  for (const s of sections) {
+    if (!s.content) continue;
+    const card = html('div', { className: 'bg-surface-800 border border-surface-600 rounded-lg overflow-hidden mb-4' }, [
+      html('div', { className: 'px-4 py-3 border-b border-surface-600 flex justify-between items-center cursor-pointer', onClick: (e) => {
+        const body = e.currentTarget.nextElementSibling;
+        body.classList.toggle('open');
+      }}, [
+        html('h3', { className: 'text-sm font-semibold text-slate-300' }, s.label),
+        html('span', { className: 'text-xs text-slate-500' }, `${s.content.length} chars`),
+      ]),
+      html('div', { className: 'collapsible-content open' }, [
+        html('div', { className: 'p-4 max-h-[60vh] overflow-y-auto markdown-body', innerHTML: md(s.content) }),
+      ]),
+    ]);
+    container.appendChild(card);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3. Session Viewer
+// ---------------------------------------------------------------------------
+
+// Label display names and colors for context log entries
+const CTX_LABEL_META = {
+  system_prompt:    { name: 'System Prompt',    color: 'text-purple-400', icon: '📋' },
+  session_info:     { name: 'Session Info',     color: 'text-slate-400',  icon: '🔗' },
+  long_term_memory: { name: 'Long-term Memory', color: 'text-cyan-400',   icon: '🧠' },
+  daily_history:    { name: 'Daily History',    color: 'text-teal-400',   icon: '📅' },
+  retrieved_memory: { name: 'Retrieved Memory', color: 'text-pink-400',   icon: '🔍' },
+  resume_notice:    { name: 'Resume Notice',    color: 'text-amber-400',  icon: '⚡' },
+  other:            { name: 'Other',            color: 'text-slate-500',  icon: '•' },
+};
+
+function buildContextPanel(ctxEntry) {
+  /**
+   * Build a collapsible panel showing all injected system messages for a turn.
+   * ctxEntry is one entry from the context log.
+   */
+  const panel = html('div', { className: 'mt-2 border border-purple-500/20 rounded-md bg-purple-950/10 overflow-hidden' });
+
+  // Summary bar
+  const sysMsgs = ctxEntry.system_messages || [];
+  const labels = sysMsgs.map(s => s.label).filter(l => l !== 'system_prompt');
+  const hasMem = ctxEntry.memory_context_raw ? true : false;
+  const chips = [];
+  if (hasMem) chips.push('🔍 Retrieved Memory');
+  for (const l of labels) {
+    const m = CTX_LABEL_META[l] || CTX_LABEL_META.other;
+    chips.push(`${m.icon} ${m.name}`);
+  }
+  const summaryText = chips.length ? chips.join(' · ') : 'System prompt only';
+
+  const summaryBar = html('div', {
+    className: 'flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-purple-900/20 transition-colors',
+    onClick: () => { details.classList.toggle('hidden'); arrow.textContent = details.classList.contains('hidden') ? '▶' : '▼'; },
+  }, [
+    html('span', { className: 'text-purple-400 text-xs' }, '🧠'),
+    html('span', { className: 'text-[10px] text-purple-300 font-semibold uppercase tracking-wider' }, 'LLM Context'),
+    html('span', { className: 'text-[10px] text-slate-500 ml-1' }, `(${ctxEntry.total_messages} msgs · ~${(ctxEntry.total_chars / 1000).toFixed(1)}k chars)`),
+    html('span', { className: 'text-[10px] text-slate-500 ml-auto flex-shrink-0' }, summaryText),
+  ]);
+  const arrow = html('span', { className: 'text-[10px] text-purple-400 ml-1 flex-shrink-0' }, '▶');
+  summaryBar.appendChild(arrow);
+  panel.appendChild(summaryBar);
+
+  // Details (hidden by default)
+  const details = html('div', { className: 'hidden border-t border-purple-500/20' });
+
+  // System prompt section
+  const promptHash = ctxEntry.system_prompt_hash || '?';
+  const promptLen = ctxEntry.system_prompt_length || 0;
+  const promptChanged = ctxEntry.system_prompt_changed;
+  const promptSection = html('div', { className: 'px-3 py-2 border-b border-surface-700/50' });
+  const promptHeader = html('div', { className: 'flex items-center gap-2' }, [
+    html('span', { className: 'text-purple-400 text-xs' }, '📋'),
+    html('span', { className: 'text-[10px] font-semibold text-purple-300 uppercase tracking-wider' }, 'System Prompt'),
+    html('span', { className: 'text-[10px] text-slate-600 font-mono' }, `hash:${promptHash} · ${(promptLen / 1000).toFixed(1)}k chars`),
+    promptChanged ? html('span', { className: 'text-[10px] text-amber-400 font-semibold' }, '(changed)') : null,
+  ].filter(Boolean));
+  promptSection.appendChild(promptHeader);
+
+  if (ctxEntry.system_prompt_full) {
+    const promptPre = html('pre', {
+      className: 'hidden text-xs text-slate-400 mt-2 whitespace-pre-wrap break-words max-h-80 overflow-y-auto bg-bg-900/50 rounded p-2',
+    }, ctxEntry.system_prompt_full);
+    const promptToggle = html('button', {
+      className: 'text-[10px] text-purple-400 hover:text-purple-300 mt-1',
+      onClick: (e) => {
+        e.stopPropagation();
+        promptPre.classList.toggle('hidden');
+        promptToggle.textContent = promptPre.classList.contains('hidden') ? 'Show full prompt' : 'Hide prompt';
+      },
+    }, 'Show full prompt');
+    promptSection.appendChild(promptToggle);
+    promptSection.appendChild(promptPre);
+  }
+  details.appendChild(promptSection);
+
+  // Each injected system message (except the base prompt)
+  for (const sm of sysMsgs) {
+    if (sm.label === 'system_prompt') continue;
+    const meta = CTX_LABEL_META[sm.label] || CTX_LABEL_META.other;
+    const section = html('div', { className: 'px-3 py-2 border-b border-surface-700/50' });
+    section.appendChild(html('div', { className: 'flex items-center gap-2' }, [
+      html('span', { className: `text-xs ${meta.color}` }, meta.icon),
+      html('span', { className: `text-[10px] font-semibold ${meta.color} uppercase tracking-wider` }, meta.name),
+      html('span', { className: 'text-[10px] text-slate-600' }, `${(sm.length / 1000).toFixed(1)}k chars`),
+    ]));
+    if (sm.content) {
+      const contentPre = html('pre', {
+        className: 'hidden text-xs text-slate-400 mt-2 whitespace-pre-wrap break-words max-h-60 overflow-y-auto bg-bg-900/50 rounded p-2',
+      }, sm.content);
+      const toggle = html('button', {
+        className: `text-[10px] ${meta.color} hover:brightness-125 mt-1`,
+        onClick: (e) => {
+          e.stopPropagation();
+          contentPre.classList.toggle('hidden');
+          toggle.textContent = contentPre.classList.contains('hidden') ? 'Show content' : 'Hide content';
+        },
+      }, 'Show content');
+      section.appendChild(toggle);
+      section.appendChild(contentPre);
+    }
+    details.appendChild(section);
+  }
+
+  // Raw retrieved memory (the unformatted string before injection)
+  if (ctxEntry.memory_context_raw) {
+    const memSection = html('div', { className: 'px-3 py-2 border-b border-surface-700/50' });
+    memSection.appendChild(html('div', { className: 'flex items-center gap-2' }, [
+      html('span', { className: 'text-xs text-pink-400' }, '🔍'),
+      html('span', { className: 'text-[10px] font-semibold text-pink-300 uppercase tracking-wider' }, 'Raw Retrieved Memory (pre-format)'),
+      html('span', { className: 'text-[10px] text-slate-600' }, `${ctxEntry.memory_context_raw.length} chars`),
+    ]));
+    const memPre = html('pre', {
+      className: 'text-xs text-pink-200/70 mt-2 whitespace-pre-wrap break-words max-h-60 overflow-y-auto bg-bg-900/50 rounded p-2',
+    }, ctxEntry.memory_context_raw);
+    memSection.appendChild(memPre);
+    details.appendChild(memSection);
+  }
+
+  // Resume notice
+  if (ctxEntry.resume_notice) {
+    const rSection = html('div', { className: 'px-3 py-2' });
+    rSection.appendChild(html('div', { className: 'flex items-center gap-2' }, [
+      html('span', { className: 'text-xs text-amber-400' }, '⚡'),
+      html('span', { className: 'text-[10px] font-semibold text-amber-300 uppercase tracking-wider' }, 'Resume Notice'),
+    ]));
+    rSection.appendChild(html('pre', {
+      className: 'text-xs text-amber-200/70 mt-1 whitespace-pre-wrap',
+    }, ctxEntry.resume_notice));
+    details.appendChild(rSection);
+  }
+
+  panel.appendChild(details);
+  return panel;
+}
+
+async function renderSession() {
+  const { agent, sessionKey } = state;
+  setBreadcrumbs(
+    { label: 'Agents', onClick: () => navigate('agents') },
+    { label: agent, onClick: () => navigate('agent-detail', { agent, tab: 'sessions' }) },
+    { label: 'Session' },
+  );
+
+  const app = $('#app');
+  app.innerHTML = '<div class="flex justify-center mt-20"><div class="spinner"></div></div>';
+
+  // Fetch session data and context log in parallel
+  const [data, ctxData] = await Promise.all([
+    api(`/api/agents/${agent}/sessions/${sessionKey}`),
+    api(`/api/agents/${agent}/sessions/${sessionKey}/context`).catch(() => ({ entries: [] })),
+  ]);
+  app.innerHTML = '';
+
+  // Build index: message index → context entry
+  // The context log records user_message_index (the session message count at turn start).
+  // We match each context entry to the closest user message at or after that index.
+  const ctxByMsgIdx = new Map();
+  for (const entry of (ctxData.entries || [])) {
+    const idx = entry.user_message_index;
+    if (idx != null) ctxByMsgIdx.set(idx, entry);
+  }
+  // Also build a sequential list for fallback matching by turn order
+  const ctxEntries = ctxData.entries || [];
+  let ctxCursor = 0;
+
+  // Header
+  const hdr = html('div', { className: 'mb-4 flex items-center justify-between' }, [
+    html('div', {}, [
+      html('h2', { className: 'text-lg font-semibold text-slate-200 font-mono' }, data.metadata.key || sessionKey),
+      html('p', { className: 'text-xs text-slate-500 mt-1' }, [
+        `${data.messageCount} messages · consolidated through #${data.metadata.last_consolidated || 0} · created ${fmtDate(data.metadata.created_at)}`,
+        ctxEntries.length ? ` · ${ctxEntries.length} context log entries` : '',
+      ].join('')),
+    ]),
+  ]);
+  app.appendChild(hdr);
+
+  // Context log legend (if we have entries)
+  if (ctxEntries.length > 0) {
+    const legend = html('div', { className: 'mb-3 flex items-center gap-3 text-[10px] text-slate-500' }, [
+      html('span', { className: 'text-purple-400' }, '🧠 Context log available — click the purple bar on user messages to see what the LLM received'),
+    ]);
+    app.appendChild(legend);
+  }
+
+  // Message timeline
+  const timeline = html('div', { className: 'space-y-2 fade-in' });
+  const lastConsolidated = data.metadata.last_consolidated || 0;
+  let markerShown = false;
+
+  data.messages.forEach((msg, idx) => {
+    // Consolidation boundary
+    if (!markerShown && idx >= lastConsolidated && lastConsolidated > 0) {
+      markerShown = true;
+      timeline.appendChild(html('div', { className: 'consolidation-marker flex items-center gap-2 text-xs text-amber-400/80 py-1' }, [
+        html('span', {}, `▲ Consolidated through message #${lastConsolidated}`),
+        html('div', { className: 'flex-1 border-t border-dashed border-amber-500/30' }),
+      ]));
+    }
+
+    const role = msg.role || 'unknown';
+    const roleClass = `msg-${role === 'system' ? 'system' : role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : 'tool'}`;
+    const roleLabel = role.toUpperCase();
+    const roleColors = { system: 'text-slate-400', user: 'text-blue-400', assistant: 'text-green-400', tool: 'text-amber-400' };
+
+    const msgEl = html('div', { className: `${roleClass} rounded-md px-4 py-3` });
+
+    // Header row
+    const hdrRow = html('div', { className: 'flex items-center gap-2 mb-1.5' }, [
+      html('span', { className: `text-[10px] font-bold uppercase tracking-wider ${roleColors[role] || 'text-slate-400'}` }, roleLabel),
+      html('span', { className: 'text-[10px] text-slate-600 font-mono' }, `#${idx}`),
+    ]);
+    if (msg.timestamp) {
+      hdrRow.appendChild(html('span', { className: 'text-[10px] text-slate-600 ml-auto' }, fmtDate(msg.timestamp)));
+    }
+    msgEl.appendChild(hdrRow);
+
+    // Context panel for user messages
+    if (role === 'user') {
+      // Try exact match first, then sequential fallback
+      let ctxEntry = ctxByMsgIdx.get(idx);
+      if (!ctxEntry && ctxCursor < ctxEntries.length) {
+        // Sequential fallback: assign the next unmatched context entry to this user message
+        const candidate = ctxEntries[ctxCursor];
+        const candidateIdx = candidate.user_message_index;
+        // Accept if the candidate index is close to this message index (within a few)
+        if (candidateIdx == null || Math.abs(candidateIdx - idx) <= 3) {
+          ctxEntry = candidate;
+          ctxCursor++;
+        }
+      }
+      if (ctxEntry) {
+        msgEl.appendChild(buildContextPanel(ctxEntry));
+      }
+    }
+
+    // Content
+    const content = msg.content || '';
+    if (role === 'tool' && msg.tool_call_id) {
+      // Tool result
+      msgEl.appendChild(html('div', { className: 'text-xs text-amber-300/60 font-mono mb-1' }, `tool_call_id: ${msg.tool_call_id}`));
+      const pre = html('div', { className: 'font-mono text-xs text-slate-300 whitespace-pre-wrap break-all max-h-40 overflow-y-auto bg-bg-900/50 rounded p-2' }, truncate(content, 2000));
+      const toggle = html('button', { className: 'text-[10px] text-accent-400 hover:text-accent-300 mt-1', onClick: () => {
+        if (pre.style.maxHeight === 'none') { pre.style.maxHeight = '10rem'; toggle.textContent = 'Show more'; }
+        else { pre.style.maxHeight = 'none'; toggle.textContent = 'Show less'; }
+      }}, content.length > 2000 ? 'Show more' : '');
+      msgEl.appendChild(pre);
+      if (content.length > 500) msgEl.appendChild(toggle);
+    } else if (content.length > 3000) {
+      // Long content — collapsible
+      const preview = html('div', { className: 'text-sm text-slate-300 whitespace-pre-wrap break-words max-h-48 overflow-hidden' }, content.slice(0, 1500) + '…');
+      const full = html('div', { className: 'text-sm text-slate-300 whitespace-pre-wrap break-words hidden' }, content);
+      const toggle = html('button', { className: 'text-[10px] text-accent-400 hover:text-accent-300 mt-1', onClick: () => {
+        const showing = full.classList.contains('hidden');
+        preview.classList.toggle('hidden', showing);
+        full.classList.toggle('hidden', !showing);
+        toggle.textContent = showing ? 'Show less' : `Show all (${content.length} chars)`;
+      }}, `Show all (${content.length} chars)`);
+      msgEl.appendChild(preview);
+      msgEl.appendChild(full);
+      msgEl.appendChild(toggle);
+    } else {
+      msgEl.appendChild(html('div', { className: 'text-sm text-slate-300 whitespace-pre-wrap break-words' }, content));
+    }
+
+    // Tool calls (from assistant messages)
+    if (msg.tool_calls && msg.tool_calls.length) {
+      for (const tc of msg.tool_calls) {
+        const fn = tc.function || tc;
+        const tcEl = html('div', { className: 'mt-2 bg-bg-900/50 rounded-md p-2 border border-surface-600' }, [
+          html('div', { className: 'flex items-center gap-2 cursor-pointer', onClick: (e) => {
+            e.currentTarget.nextElementSibling.classList.toggle('hidden');
+          }}, [
+            html('span', { className: 'text-xs text-amber-300 font-mono font-semibold' }, `${fn.name || 'tool'}`),
+            html('span', { className: 'text-[10px] text-slate-500' }, '(click to toggle args)'),
+          ]),
+          html('pre', { className: 'hidden text-xs text-slate-400 mt-1 whitespace-pre-wrap break-all max-h-60 overflow-y-auto' },
+            typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments, null, 2)
+          ),
+        ]);
+        msgEl.appendChild(tcEl);
+      }
+    }
+
+    timeline.appendChild(msgEl);
+  });
+
+  app.appendChild(timeline);
+}
+
+// ---------------------------------------------------------------------------
+// 4. Graph Explorer
+// ---------------------------------------------------------------------------
+async function renderGraph() {
+  setBreadcrumbs(
+    { label: 'Agents', onClick: () => navigate('agents') },
+    { label: 'Graph Explorer' },
+  );
+  const app = $('#app');
+  app.innerHTML = '';
+
+  // Tab bar
+  const tabs = ['browse', 'search', 'stats'];
+  const tabBar = html('div', { className: 'flex gap-1 border-b border-surface-600 mb-5' });
+  for (const t of tabs) {
+    const btn = html('button', {
+      className: `tab-btn px-4 py-2 text-sm font-medium border-b-2 ${state.graphTab === t ? 'active text-accent-400 border-accent-500' : 'text-slate-500 border-transparent hover:text-slate-300'}`,
+      onClick: () => { state.graphTab = t; renderGraph(); },
+    }, t.charAt(0).toUpperCase() + t.slice(1));
+    tabBar.appendChild(btn);
+  }
+  app.appendChild(tabBar);
+
+  const content = html('div', { className: 'fade-in' });
+  app.appendChild(content);
+
+  if (state.graphTab === 'browse') await renderGraphBrowse(content);
+  else if (state.graphTab === 'search') renderGraphSearch(content);
+  else if (state.graphTab === 'stats') await renderGraphStats(content);
+}
+
+// --- Graph Browse ---
+let browseState = { peerKey: '', type: '', offset: 0, limit: 50, forgotten: 0 };
+
+async function renderGraphBrowse(container) {
+  // Filters
+  const filters = html('div', { className: 'flex gap-3 mb-4 flex-wrap items-end' });
+
+  const mkInput = (label, val, key) => {
+    const wrap = html('div', {}, [
+      html('label', { className: 'block text-[10px] text-slate-500 uppercase tracking-wider mb-1' }, label),
+      html('input', { className: 'bg-surface-800 border border-surface-600 rounded-md px-3 py-1.5 text-sm text-slate-300 w-40 focus:outline-none focus:border-accent-500', value: val, placeholder: label, onInput: (e) => { browseState[key] = e.target.value; } }),
+    ]);
+    return wrap;
+  };
+  filters.appendChild(mkInput('Peer Key', browseState.peerKey, 'peerKey'));
+  filters.appendChild(mkInput('Type', browseState.type, 'type'));
+
+  // Forgotten toggle
+  const forgottenWrap = html('div', {}, [
+    html('label', { className: 'block text-[10px] text-slate-500 uppercase tracking-wider mb-1' }, 'Show Forgotten'),
+    html('button', {
+      className: `px-3 py-1.5 text-xs rounded-md border ${browseState.forgotten ? 'bg-amber-500/20 border-amber-500/50 text-amber-300' : 'bg-surface-800 border-surface-600 text-slate-400'}`,
+      onClick: () => { browseState.forgotten = browseState.forgotten ? 0 : 1; loadBrowse(); },
+    }, browseState.forgotten ? 'Yes' : 'No'),
+  ]);
+  filters.appendChild(forgottenWrap);
+
+  const searchBtn = html('button', { className: 'px-4 py-1.5 text-sm bg-accent-500 hover:bg-accent-400 text-white rounded-md transition-colors self-end', onClick: () => { browseState.offset = 0; loadBrowse(); } }, 'Filter');
+  filters.appendChild(searchBtn);
+  container.appendChild(filters);
+
+  const resultsDiv = html('div', { id: 'browse-results' });
+  container.appendChild(resultsDiv);
+
+  async function loadBrowse() {
+    const rd = document.getElementById('browse-results');
+    rd.innerHTML = '<div class="flex justify-center py-8"><div class="spinner"></div></div>';
+    const params = new URLSearchParams({ limit: browseState.limit, offset: browseState.offset, forgotten: browseState.forgotten });
+    if (browseState.peerKey) params.set('peer_key', browseState.peerKey);
+    if (browseState.type) params.set('type', browseState.type);
+    try {
+      const data = await api(`/api/graph/memories?${params}`);
+      rd.innerHTML = '';
+
+      if (!data.memories.length) {
+        rd.appendChild(html('div', { className: 'text-center text-slate-500 py-8' }, 'No memories found'));
+        return;
+      }
+
+      const table = html('div', { className: 'bg-surface-800 border border-surface-600 rounded-lg overflow-hidden' });
+
+      // Header
+      const thead = html('div', { className: 'grid grid-cols-12 gap-1 px-3 py-2 text-[10px] uppercase tracking-wider text-slate-500 border-b border-surface-600' });
+      [
+        { label: 'Content', span: 5 },
+        { label: 'Type', span: 1 },
+        { label: 'Imp', span: 1 },
+        { label: 'Peer', span: 2 },
+        { label: 'Entities', span: 2 },
+        { label: 'Date', span: 1 },
+      ].forEach(h => thead.appendChild(html('div', { className: `col-span-${h.span}` }, h.label)));
+      table.appendChild(thead);
+
+      const tbody = html('div', { className: 'divide-y divide-surface-600/50 max-h-[65vh] overflow-y-auto' });
+      for (const m of data.memories) {
+        const impColor = m.importance >= 0.7 ? 'text-amber-300' : m.importance >= 0.4 ? 'text-slate-300' : 'text-slate-500';
+        const entities = (m.entities || []).slice(0, 3).join(', ');
+        const row = html('div', {
+          className: 'grid grid-cols-12 gap-1 px-3 py-2 hover:bg-surface-700 cursor-pointer transition-colors items-start text-xs',
+          onClick: () => showMemoryDetail(m.id),
+        }, [
+          html('div', { className: 'col-span-5 text-slate-300 break-words line-clamp-2' }, truncate(m.content, 150)),
+          html('div', { className: 'col-span-1 text-slate-400 font-mono' }, m.memory_type || '—'),
+          html('div', { className: `col-span-1 font-mono ${impColor}` }, String(m.importance?.toFixed?.(2) ?? m.importance)),
+          html('div', { className: 'col-span-2 text-slate-500 font-mono truncate', title: m.peer_key }, truncate(m.peer_key || '—', 20)),
+          html('div', { className: 'col-span-2 text-slate-500 truncate', title: entities }, entities || '—'),
+          html('div', { className: 'col-span-1 text-slate-600' }, fmtMs(m.created_at_ms)),
+        ]);
+        tbody.appendChild(row);
+      }
+      table.appendChild(tbody);
+      rd.appendChild(table);
+
+      // Pagination
+      const pag = html('div', { className: 'flex items-center justify-between mt-3' }, [
+        html('span', { className: 'text-xs text-slate-500' }, `Showing ${browseState.offset + 1}–${browseState.offset + data.memories.length}`),
+        html('div', { className: 'flex gap-2' }, [
+          html('button', {
+            className: `px-3 py-1 text-xs rounded border ${browseState.offset > 0 ? 'border-surface-600 text-slate-300 hover:bg-surface-700' : 'border-surface-700 text-slate-600 cursor-not-allowed'}`,
+            onClick: () => { if (browseState.offset > 0) { browseState.offset -= browseState.limit; loadBrowse(); } },
+          }, '← Prev'),
+          html('button', {
+            className: `px-3 py-1 text-xs rounded border ${data.memories.length >= browseState.limit ? 'border-surface-600 text-slate-300 hover:bg-surface-700' : 'border-surface-700 text-slate-600 cursor-not-allowed'}`,
+            onClick: () => { if (data.memories.length >= browseState.limit) { browseState.offset += browseState.limit; loadBrowse(); } },
+          }, 'Next →'),
+        ]),
+      ]);
+      rd.appendChild(pag);
+    } catch (e) {
+      rd.innerHTML = `<div class="text-red-400 text-sm p-4">${e.message}</div>`;
+    }
+  }
+
+  await loadBrowse();
+}
+
+// Memory detail modal
+async function showMemoryDetail(id) {
+  try {
+    const data = await api(`/api/graph/memories/${id}`);
+    const m = data.memory;
+    const overlay = html('div', {
+      className: 'fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4',
+      onClick: (e) => { if (e.target === overlay) overlay.remove(); },
+    });
+    const modal = html('div', { className: 'bg-surface-800 border border-surface-600 rounded-lg max-w-2xl w-full max-h-[80vh] overflow-y-auto p-5' });
+
+    modal.appendChild(html('div', { className: 'flex justify-between items-start mb-4' }, [
+      html('h3', { className: 'text-sm font-semibold text-accent-300' }, 'Memory Detail'),
+      html('button', { className: 'text-slate-500 hover:text-slate-300 text-lg', onClick: () => overlay.remove() }, '×'),
+    ]));
+
+    const fields = [
+      ['ID', m.id],
+      ['Content', m.content],
+      ['Type', m.memory_type],
+      ['Importance', m.importance],
+      ['Source', m.source],
+      ['Source Session', m.source_session],
+      ['Peer Key', m.peer_key],
+      ['Context Tag', m.context_tag],
+      ['Entities', JSON.stringify(m.entities)],
+      ['Created', fmtMs(m.created_at_ms)],
+      ['Updated', fmtMs(m.updated_at_ms)],
+      ['Last Accessed', fmtMs(m.last_accessed_at_ms)],
+      ['Access Count', m.access_count],
+      ['Forgotten', m.forgotten ? 'Yes' : 'No'],
+      ['Version', m.version],
+    ];
+
+    for (const [label, value] of fields) {
+      if (value === null || value === undefined) continue;
+      const isLong = String(value).length > 100;
+      modal.appendChild(html('div', { className: 'mb-2' }, [
+        html('div', { className: 'text-[10px] text-slate-500 uppercase tracking-wider' }, label),
+        html('div', { className: `text-sm ${isLong ? 'font-mono text-xs whitespace-pre-wrap break-all bg-bg-900 rounded p-2 mt-1 max-h-48 overflow-y-auto' : ''} text-slate-300` }, String(value)),
+      ]));
+    }
+
+    // Neighbors button
+    modal.appendChild(html('button', {
+      className: 'mt-3 px-3 py-1.5 text-xs bg-surface-700 border border-surface-600 rounded-md text-accent-300 hover:bg-surface-600 transition-colors',
+      onClick: async () => {
+        const nbData = await api(`/api/graph/neighbors/${m.id}?depth=1`);
+        const nbDiv = modal.querySelector('#nb-results') || html('div', { id: 'nb-results', className: 'mt-3' });
+        nbDiv.innerHTML = `<div class="text-xs text-slate-400 mb-2">${nbData.nodes.length} neighbors, ${nbData.edges.length} edges</div>`;
+        for (const n of nbData.nodes) {
+          if (n.id === m.id) continue;
+          nbDiv.appendChild(html('div', { className: 'bg-bg-900 rounded p-2 mb-1 text-xs' }, [
+            html('span', { className: 'text-accent-400 font-mono' }, truncate(n.id, 12)),
+            html('span', { className: 'text-slate-400 ml-2' }, truncate(n.content, 100)),
+          ]));
+        }
+        if (!modal.querySelector('#nb-results')) modal.appendChild(nbDiv);
+      },
+    }, 'Load Neighbors'));
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// --- Graph Search ---
+function renderGraphSearch(container) {
+  const searchState = { query: '', mode: 'hybrid', peerKey: '', maxResults: 10 };
+
+  const form = html('div', { className: 'bg-surface-800 border border-surface-600 rounded-lg p-4 mb-4' });
+
+  const row1 = html('div', { className: 'flex gap-3 mb-3 flex-wrap' });
+  // Query input
+  const queryInput = html('input', {
+    className: 'flex-1 min-w-[300px] bg-bg-900 border border-surface-600 rounded-md px-4 py-2 text-sm text-slate-200 focus:outline-none focus:border-accent-500 font-mono',
+    placeholder: 'Enter search query...',
+    onInput: (e) => { searchState.query = e.target.value; },
+    onKeydown: (e) => { if (e.key === 'Enter') doSearch(); },
+  });
+  row1.appendChild(queryInput);
+
+  // Mode select
+  const modeWrap = html('div', { className: 'flex gap-1' });
+  for (const m of ['hybrid', 'vector', 'keyword']) {
+    const btn = html('button', {
+      className: `px-3 py-2 text-xs rounded-md border transition-colors mode-btn-${m}`,
+      onClick: (e) => {
+        searchState.mode = m;
+        container.querySelectorAll('[class*="mode-btn-"]').forEach(b => {
+          b.className = b.className.replace(/bg-accent-500\/20 border-accent-500\/50 text-accent-300/g, 'bg-surface-700 border-surface-600 text-slate-400');
+        });
+        e.target.className = `px-3 py-2 text-xs rounded-md border transition-colors mode-btn-${m} bg-accent-500/20 border-accent-500/50 text-accent-300`;
+      },
+    }, m);
+    if (m === 'hybrid') btn.className += ' bg-accent-500/20 border-accent-500/50 text-accent-300';
+    else btn.className += ' bg-surface-700 border-surface-600 text-slate-400';
+    modeWrap.appendChild(btn);
+  }
+  row1.appendChild(modeWrap);
+  form.appendChild(row1);
+
+  const row2 = html('div', { className: 'flex gap-3 items-end' });
+  row2.appendChild(html('div', {}, [
+    html('label', { className: 'block text-[10px] text-slate-500 uppercase tracking-wider mb-1' }, 'Peer Key (optional)'),
+    html('input', { className: 'bg-bg-900 border border-surface-600 rounded-md px-3 py-1.5 text-sm text-slate-300 w-48 focus:outline-none focus:border-accent-500', onInput: (e) => { searchState.peerKey = e.target.value; } }),
+  ]));
+  row2.appendChild(html('button', { className: 'px-5 py-1.5 text-sm bg-accent-500 hover:bg-accent-400 text-white rounded-md transition-colors', onClick: () => doSearch() }, 'Search'));
+  form.appendChild(row2);
+  container.appendChild(form);
+
+  const resultsDiv = html('div', { id: 'search-results' });
+  container.appendChild(resultsDiv);
+
+  async function doSearch() {
+    if (!searchState.query) return;
+    const rd = document.getElementById('search-results');
+    rd.innerHTML = '<div class="flex justify-center py-8"><div class="spinner"></div></div>';
+    try {
+      const data = await api('/api/graph/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: searchState.query, mode: searchState.mode, peer_key: searchState.peerKey || null, max_results: searchState.maxResults }),
+      });
+      rd.innerHTML = '';
+      rd.appendChild(html('div', { className: 'text-xs text-slate-500 mb-3' }, `${data.results.length} results via ${data.mode} search`));
+
+      for (const r of data.results) {
+        const impColor = (r.importance || 0) >= 0.7 ? 'text-amber-300' : 'text-slate-400';
+        const card = html('div', {
+          className: 'bg-surface-800 border border-surface-600 rounded-md p-3 mb-2 hover:border-accent-500/30 cursor-pointer transition-colors',
+          onClick: () => showMemoryDetail(r.id),
+        }, [
+          html('div', { className: 'flex items-center gap-2 mb-1' }, [
+            html('span', { className: 'text-[10px] font-mono text-accent-400' }, truncate(r.id, 12)),
+            html('span', { className: 'text-[10px] px-1.5 py-0.5 bg-surface-600 rounded text-slate-400' }, r.memory_type || '—'),
+            html('span', { className: `text-[10px] font-mono ${impColor}` }, `imp:${r.importance?.toFixed?.(2) ?? '?'}`),
+            r._score !== undefined ? html('span', { className: 'text-[10px] font-mono text-green-400' }, `score:${r._score?.toFixed?.(3) ?? r._score}`) : null,
+            r._distance !== undefined ? html('span', { className: 'text-[10px] font-mono text-blue-400' }, `dist:${r._distance?.toFixed?.(3) ?? r._distance}`) : null,
+          ].filter(Boolean)),
+          html('div', { className: 'text-sm text-slate-300 mt-1' }, r.content),
+          html('div', { className: 'text-[10px] text-slate-500 mt-1 flex gap-3' }, [
+            r.peer_key ? html('span', {}, `peer: ${r.peer_key}`) : null,
+            r.entities?.length ? html('span', {}, `entities: ${r.entities.join(', ')}`) : null,
+          ].filter(Boolean)),
+        ]);
+        rd.appendChild(card);
+      }
+    } catch (e) {
+      rd.innerHTML = `<div class="text-red-400 text-sm p-4">${e.message}</div>`;
+    }
+  }
+}
+
+// --- Graph Stats ---
+async function renderGraphStats(container) {
+  const data = await api('/api/graph/stats');
+
+  if (!data.available) {
+    container.appendChild(html('div', { className: 'text-center text-slate-500 py-8' }, `Graph database not available${data.error ? ': ' + data.error : ''}`));
+    return;
+  }
+
+  // Summary cards
+  const cards = html('div', { className: 'grid grid-cols-2 md:grid-cols-4 gap-3 mb-6' });
+  [
+    { label: 'Total Memories', value: data.totalMemories },
+    { label: 'Total Edges', value: data.totalEdges },
+    { label: 'Forgotten', value: data.forgottenCount },
+    { label: 'Avg Importance', value: data.avgImportance },
+  ].forEach(s => {
+    cards.appendChild(html('div', { className: 'bg-surface-800 border border-surface-600 rounded-lg p-4 text-center' }, [
+      html('div', { className: 'text-2xl font-bold text-slate-200' }, String(s.value)),
+      html('div', { className: 'text-[10px] text-slate-500 uppercase tracking-wider mt-1' }, s.label),
+    ]));
+  });
+  container.appendChild(cards);
+
+  // Type distribution
+  const cols = html('div', { className: 'grid grid-cols-1 md:grid-cols-2 gap-4' });
+
+  // Type dist
+  const typeCard = html('div', { className: 'bg-surface-800 border border-surface-600 rounded-lg p-4' }, [
+    html('h3', { className: 'text-sm font-semibold text-slate-300 mb-3' }, 'Memory Types'),
+  ]);
+  const typeEntries = Object.entries(data.typeDistribution || {});
+  const maxTypeVal = Math.max(...typeEntries.map(e => e[1]), 1);
+  for (const [type, count] of typeEntries) {
+    const pct = (count / maxTypeVal * 100);
+    typeCard.appendChild(html('div', { className: 'mb-2' }, [
+      html('div', { className: 'flex justify-between text-xs mb-0.5' }, [
+        html('span', { className: 'text-slate-400 font-mono' }, type),
+        html('span', { className: 'text-slate-500' }, String(count)),
+      ]),
+      html('div', { className: 'w-full h-1.5 bg-bg-900 rounded-full overflow-hidden' }, [
+        html('div', { className: 'h-full rounded-full bg-accent-500/60', style: `width:${pct}%` }),
+      ]),
+    ]));
+  }
+  cols.appendChild(typeCard);
+
+  // Peer key dist
+  const peerCard = html('div', { className: 'bg-surface-800 border border-surface-600 rounded-lg p-4' }, [
+    html('h3', { className: 'text-sm font-semibold text-slate-300 mb-3' }, 'Peer Keys'),
+  ]);
+  const peerEntries = Object.entries(data.peerKeyDistribution || {});
+  const maxPeerVal = Math.max(...peerEntries.map(e => e[1]), 1);
+  for (const [pk, count] of peerEntries) {
+    const pct = (count / maxPeerVal * 100);
+    peerCard.appendChild(html('div', { className: 'mb-2' }, [
+      html('div', { className: 'flex justify-between text-xs mb-0.5' }, [
+        html('span', { className: 'text-slate-400 font-mono truncate', title: pk }, truncate(pk, 30)),
+        html('span', { className: 'text-slate-500' }, String(count)),
+      ]),
+      html('div', { className: 'w-full h-1.5 bg-bg-900 rounded-full overflow-hidden' }, [
+        html('div', { className: 'h-full rounded-full bg-green-500/50', style: `width:${pct}%` }),
+      ]),
+    ]));
+  }
+  cols.appendChild(peerCard);
+  container.appendChild(cols);
+
+  // Timeline
+  const timeEntries = Object.entries(data.creationTimeline || {});
+  if (timeEntries.length) {
+    const timeCard = html('div', { className: 'bg-surface-800 border border-surface-600 rounded-lg p-4 mt-4' }, [
+      html('h3', { className: 'text-sm font-semibold text-slate-300 mb-3' }, 'Creation Timeline'),
+    ]);
+    const maxTimeVal = Math.max(...timeEntries.map(e => e[1]), 1);
+    const chart = html('div', { className: 'flex items-end gap-0.5 h-32' });
+    for (const [date, count] of timeEntries) {
+      const pct = (count / maxTimeVal * 100);
+      const bar = html('div', { className: 'flex-1 min-w-[3px] flex flex-col items-center justify-end group relative' }, [
+        html('div', {
+          className: 'w-full bg-accent-500/40 hover:bg-accent-500/70 rounded-t transition-colors cursor-default',
+          style: `height:${Math.max(pct, 2)}%`,
+          title: `${date}: ${count}`,
+        }),
+      ]);
+      chart.appendChild(bar);
+    }
+    timeCard.appendChild(chart);
+
+    // Date labels (first, middle, last)
+    if (timeEntries.length > 2) {
+      const labels = html('div', { className: 'flex justify-between text-[10px] text-slate-600 mt-1' }, [
+        html('span', {}, timeEntries[0][0]),
+        html('span', {}, timeEntries[Math.floor(timeEntries.length / 2)][0]),
+        html('span', {}, timeEntries[timeEntries.length - 1][0]),
+      ]);
+      timeCard.appendChild(labels);
+    }
+
+    container.appendChild(timeCard);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', () => {
+  marked.setOptions({ gfm: true, breaks: true });
+  render();
+});
+</script>
+</body>
+</html>

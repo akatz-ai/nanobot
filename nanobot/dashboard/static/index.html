@@ -390,13 +390,14 @@ async function renderIdentityTab(name, container) {
 
 // Label display names and colors for context log entries
 const CTX_LABEL_META = {
-  system_prompt:    { name: 'System Prompt',    color: 'text-purple-400', icon: '📋' },
-  session_info:     { name: 'Session Info',     color: 'text-slate-400',  icon: '🔗' },
-  long_term_memory: { name: 'Long-term Memory', color: 'text-cyan-400',   icon: '🧠' },
-  daily_history:    { name: 'Daily History',    color: 'text-teal-400',   icon: '📅' },
-  retrieved_memory: { name: 'Retrieved Memory', color: 'text-pink-400',   icon: '🔍' },
-  resume_notice:    { name: 'Resume Notice',    color: 'text-amber-400',  icon: '⚡' },
-  other:            { name: 'Other',            color: 'text-slate-500',  icon: '•' },
+  system_prompt:      { name: 'System Prompt',      color: 'text-purple-400', icon: '📋' },
+  session_info:       { name: 'Session Info',       color: 'text-slate-400',  icon: '🔗' },
+  long_term_memory:   { name: 'Long-term Memory',   color: 'text-cyan-400',   icon: '🧠' },
+  daily_history:      { name: 'Daily History',      color: 'text-teal-400',   icon: '📅' },
+  retrieved_memory:   { name: 'Retrieved Memory',   color: 'text-pink-400',   icon: '🔍' },
+  resume_notice:      { name: 'Resume Notice',      color: 'text-amber-400',  icon: '⚡' },
+  continuity_context: { name: 'Continuity Context', color: 'text-orange-400', icon: '🔄' },
+  other:              { name: 'Other',              color: 'text-slate-500',  icon: '•' },
 };
 
 function buildContextPanel(ctxEntry) {
@@ -554,6 +555,23 @@ async function renderSession() {
   const ctxEntries = ctxData.entries || [];
   let ctxCursor = 0;
 
+  // Find the first post-compaction continuity context from the context log.
+  // This is the snapshot that was injected after compaction so the agent
+  // retained awareness of the active conversation thread.
+  let continuityEntry = null;
+  let continuityContent = null;
+  for (const entry of ctxEntries) {
+    const sysMsgs = entry.system_messages || [];
+    const cc = sysMsgs.find(sm => sm.label === 'continuity_context');
+    if (cc && cc.content) {
+      continuityEntry = entry;
+      continuityContent = cc.content;
+      break;
+    }
+  }
+  // Also check session metadata for pending (unconsumed) continuity context
+  const pendingContinuity = (data.metadata.metadata || {}).continuity_context || null;
+
   // Header
   const hdr = html('div', { className: 'mb-4 flex items-center justify-between' }, [
     html('div', {}, [
@@ -561,6 +579,8 @@ async function renderSession() {
       html('p', { className: 'text-xs text-slate-500 mt-1' }, [
         `${data.messageCount} messages · consolidated through #${data.metadata.last_consolidated || 0} · created ${fmtDate(data.metadata.created_at)}`,
         ctxEntries.length ? ` · ${ctxEntries.length} context log entries` : '',
+        continuityContent ? ' · 🔄 continuity injected' : '',
+        pendingContinuity ? ' · ⏳ continuity pending' : '',
       ].join('')),
     ]),
   ]);
@@ -583,10 +603,67 @@ async function renderSession() {
     // Consolidation boundary
     if (!markerShown && idx >= lastConsolidated && lastConsolidated > 0) {
       markerShown = true;
-      timeline.appendChild(html('div', { className: 'consolidation-marker flex items-center gap-2 text-xs text-amber-400/80 py-1' }, [
+      const markerEl = html('div', { className: 'consolidation-marker' });
+
+      // Boundary header line
+      markerEl.appendChild(html('div', { className: 'flex items-center gap-2 text-xs text-amber-400/80 py-1' }, [
         html('span', {}, `▲ Consolidated through message #${lastConsolidated}`),
         html('div', { className: 'flex-1 border-t border-dashed border-amber-500/30' }),
       ]));
+
+      // Show continuity context (the snapshot injected into the next turn)
+      const ccText = continuityContent || pendingContinuity;
+      if (ccText) {
+        const ccPanel = html('div', { className: 'mt-1 mb-2 border border-orange-500/30 rounded-md bg-orange-950/15 overflow-hidden' });
+
+        // Header bar
+        const ccHeader = html('div', {
+          className: 'flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-orange-900/20 transition-colors',
+          onClick: () => {
+            ccBody.classList.toggle('hidden');
+            ccArrow.textContent = ccBody.classList.contains('hidden') ? '▶' : '▼';
+          },
+        }, [
+          html('span', { className: 'text-orange-400 text-xs' }, '🔄'),
+          html('span', { className: 'text-[10px] font-semibold text-orange-300 uppercase tracking-wider' }, 'Post-Compaction Continuity Injection'),
+          html('span', { className: 'text-[10px] text-slate-500 ml-1' }, `(${ccText.length} chars)`),
+        ]);
+        const ccArrow = html('span', { className: 'text-[10px] text-orange-400 ml-auto flex-shrink-0' }, '▶');
+        ccHeader.appendChild(ccArrow);
+        ccPanel.appendChild(ccHeader);
+
+        // Collapsible body
+        const ccBody = html('div', { className: 'hidden border-t border-orange-500/20 px-3 py-2' });
+
+        // If it came from the context log, show which turn it was injected into
+        if (continuityEntry) {
+          ccBody.appendChild(html('div', { className: 'text-[10px] text-slate-500 mb-2' }, [
+            `Injected at turn #${continuityEntry.turn_index}`,
+            continuityEntry.user_message_index != null ? ` (message index ${continuityEntry.user_message_index})` : '',
+            ` · ${continuityEntry.timestamp ? new Date(continuityEntry.timestamp).toLocaleString() : ''}`,
+          ].join('')));
+        } else if (pendingContinuity) {
+          ccBody.appendChild(html('div', { className: 'text-[10px] text-amber-400 mb-2' }, '⏳ Pending — not yet consumed (will be injected on next user message)'));
+        }
+
+        // The actual content
+        ccBody.appendChild(html('pre', {
+          className: 'text-xs text-orange-200/80 whitespace-pre-wrap break-words max-h-80 overflow-y-auto bg-bg-900/50 rounded p-3',
+        }, ccText));
+
+        // Show the full system message if available
+        if (continuityContent && continuityContent !== ccText) {
+          ccBody.appendChild(html('div', { className: 'text-[10px] text-slate-500 mt-2' }, 'Full system message (as sent to LLM):'));
+          ccBody.appendChild(html('pre', {
+            className: 'text-xs text-slate-400 whitespace-pre-wrap break-words max-h-60 overflow-y-auto bg-bg-900/50 rounded p-2 mt-1',
+          }, continuityContent));
+        }
+
+        ccPanel.appendChild(ccBody);
+        markerEl.appendChild(ccPanel);
+      }
+
+      timeline.appendChild(markerEl);
     }
 
     const role = msg.role || 'unknown';

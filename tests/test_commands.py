@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -497,7 +498,9 @@ def test_context_builder_caps_long_term_memory_in_prompt(tmp_path: Path):
     assert "START" in long_term
     assert "END" not in long_term
     assert "truncated" in long_term
-    assert len(long_term) <= len("## Long-term Memory (file)\n") + builder._MAX_LONG_TERM_MEMORY_CHARS
+    match = re.search(r"<memory_file_data>\n(.*?)\n</memory_file_data>", long_term, flags=re.DOTALL)
+    assert match is not None
+    assert len(match.group(1)) <= builder._MAX_LONG_TERM_MEMORY_CHARS
 
 
 def test_context_builder_caps_daily_history_in_hybrid_mode(tmp_path: Path):
@@ -523,7 +526,9 @@ def test_context_builder_caps_daily_history_in_hybrid_mode(tmp_path: Path):
     assert "TAIL" in daily
     assert "HEAD" not in daily
     assert "truncated" in daily
-    assert len(daily) <= len("## Daily History (today)\n") + builder._MAX_DAILY_HISTORY_CHARS
+    match = re.search(r"<daily_history_data>\n(.*?)\n</daily_history_data>", daily, flags=re.DOTALL)
+    assert match is not None
+    assert len(match.group(1)) <= builder._MAX_DAILY_HISTORY_CHARS
 
 
 def test_memory_store_consolidation_lines_sanitize_and_cap(tmp_path: Path):

@@ -306,6 +306,13 @@ class AgentLoop:
             return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
+    @staticmethod
+    def _error_signature(tool_name: str, args: dict, error: str) -> str:
+        """Create a hashable signature for a tool error to detect repetition."""
+        # Normalize: use tool name + sorted arg keys + first 100 chars of error
+        arg_keys = tuple(sorted(args.keys())) if args else ()
+        return f"{tool_name}:{arg_keys}:{error[:100]}"
+
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
@@ -319,6 +326,11 @@ class AgentLoop:
         final_content = None
         tools_used: list[str] = []
         checkpoint_cursor = len(messages)
+
+        # Circuit breaker: track consecutive identical errors
+        _last_error_sig: str | None = None
+        _consecutive_errors: int = 0
+        _MAX_CONSECUTIVE_ERRORS = 3
 
         if session is not None and checkpoint_start is not None:
             start_index = max(0, checkpoint_start)
@@ -336,6 +348,52 @@ class AgentLoop:
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
+
+            # --- Layer 1: Truncation guard ---
+            # When output hits max_tokens, tool call JSON may be truncated,
+            # producing malformed calls with missing required parameters.
+            # Detect this and tell the model to break its output into smaller pieces.
+            if response.finish_reason == "length" and response.has_tool_calls:
+                logger.warning(
+                    "Output truncated (max_tokens={}) with {} tool call(s) — "
+                    "discarding likely-malformed calls",
+                    self.max_tokens,
+                    len(response.tool_calls),
+                )
+                truncation_notice = (
+                    "Your response was truncated because it exceeded the output token limit "
+                    f"({self.max_tokens} tokens). Your tool call was NOT executed because "
+                    "its parameters were likely incomplete.\n\n"
+                    "Break your work into smaller pieces:\n"
+                    "- For write_file: write the file in sections using multiple calls, "
+                    "or use exec with heredoc (cat << 'EOF' > file)\n"
+                    "- For long outputs: summarize or split across multiple responses"
+                )
+                # Add the truncated assistant message (so context is preserved)
+                tool_call_dicts = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments, ensure_ascii=False)
+                        }
+                    }
+                    for tc in response.tool_calls
+                ]
+                messages = self.context.add_assistant_message(
+                    messages, response.content, tool_call_dicts,
+                    reasoning_content=response.reasoning_content,
+                )
+                # Add synthetic tool results with the truncation notice
+                for tc in response.tool_calls:
+                    messages = self.context.add_tool_result(
+                        messages, tc.id, tc.name, truncation_notice
+                    )
+                if session is not None and checkpoint_cursor < len(messages):
+                    session.checkpoint(messages[checkpoint_cursor:])
+                    checkpoint_cursor = len(messages)
+                continue
 
             if response.has_tool_calls:
                 if on_progress:
@@ -363,17 +421,49 @@ class AgentLoop:
                     session.checkpoint(messages[checkpoint_cursor:])
                     checkpoint_cursor = len(messages)
 
+                # --- Layer 2: Repetitive error circuit breaker ---
+                _turn_had_error = False
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
+
+                    # Track consecutive identical errors
+                    if isinstance(result, str) and "Error" in result:
+                        sig = self._error_signature(tool_call.name, tool_call.arguments, result)
+                        if sig == _last_error_sig:
+                            _consecutive_errors += 1
+                        else:
+                            _last_error_sig = sig
+                            _consecutive_errors = 1
+                        _turn_had_error = True
+                    else:
+                        # Successful tool call resets the counter
+                        _last_error_sig = None
+                        _consecutive_errors = 0
+
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
                     if session is not None and checkpoint_cursor < len(messages):
                         session.checkpoint(messages[checkpoint_cursor:])
                         checkpoint_cursor = len(messages)
+
+                # Check circuit breaker after processing all tool calls in this iteration
+                if _consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                    logger.warning(
+                        "Circuit breaker: {} consecutive identical errors for {}",
+                        _consecutive_errors,
+                        _last_error_sig,
+                    )
+                    final_content = (
+                        f"I'm stuck in a loop — the same tool call has failed "
+                        f"{_consecutive_errors} times with the same error. "
+                        "I'll stop here to avoid wasting resources. "
+                        "Try rephrasing your request or breaking it into smaller steps."
+                    )
+                    break
             else:
                 final_content = self._strip_think(response.content)
                 messages = self.context.add_assistant_message(

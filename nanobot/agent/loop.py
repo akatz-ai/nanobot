@@ -78,6 +78,7 @@ class AgentLoop:
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
         memory_graph_config: dict | None = None,
+        skill_names: list[str] | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
@@ -96,8 +97,13 @@ class AgentLoop:
         self._memory_graph_config = (
             _normalize_keys(memory_graph_config) if isinstance(memory_graph_config, dict) else None
         )
+        self.skill_names = skill_names
 
-        self.context = ContextBuilder(workspace, memory_graph_config=self._memory_graph_config)
+        self.context = ContextBuilder(
+            workspace,
+            memory_graph_config=self._memory_graph_config,
+            restrict_to_workspace=restrict_to_workspace,
+        )
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -177,14 +183,60 @@ class AgentLoop:
             if isinstance(self._memory_graph_config, dict):
                 retrieval_cfg = self._memory_graph_config.get("retrieval") or {}
             peer_key = retrieval_cfg["peer_key"] if "peer_key" in retrieval_cfg else session.key
+            recent_turns = session.get_history(max_messages=6)
+            prompt_headroom_words = self._estimate_retrieval_headroom_words(
+                recent_turns=recent_turns,
+                user_message=user_message,
+            )
             return await self._memory_module.retriever.retrieve_context(
                 current_message=user_message,
-                recent_turns=session.get_history(max_messages=4),
+                recent_turns=recent_turns,
                 peer_key=peer_key,
+                prompt_headroom_words=prompt_headroom_words,
             )
         except Exception as e:
             logger.warning(f"Memory retrieval failed: {e}")
             return None
+
+    @classmethod
+    def _word_count_from_content(cls, content: Any) -> int:
+        if isinstance(content, str):
+            return len(content.split())
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                    continue
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+            return len(" ".join(parts).split())
+        if isinstance(content, dict):
+            text = content.get("text")
+            if isinstance(text, str):
+                return len(text.split())
+        return len(str(content or "").split())
+
+    def _estimate_retrieval_headroom_words(
+        self,
+        *,
+        recent_turns: list[dict[str, Any]],
+        user_message: str,
+    ) -> int:
+        # Approximate prompt budget from runtime token cap and currently loaded turn history.
+        max_output_tokens = max(int(self.max_tokens), 1)
+        prompt_token_budget = max(256, int(max_output_tokens * 0.45))
+        prompt_word_budget = max(120, int(prompt_token_budget * 0.75))
+
+        history_words = sum(
+            self._word_count_from_content(turn.get("content"))
+            for turn in recent_turns
+        )
+        message_words = len((user_message or "").split())
+        remaining = prompt_word_budget - history_words - message_words
+        return max(80, remaining)
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
@@ -351,10 +403,12 @@ class AgentLoop:
         initial_messages = self.context.build_messages(
             history=history,
             current_message=None,
+            skill_names=self.skill_names,
             channel=channel,
             chat_id=chat_id,
             resume_notice=self._RESUME_SYSTEM_MESSAGE,
         )
+        self.subagents.set_skill_index(self.context.get_last_skills_summary())
         final_content, _, all_msgs = await self._run_agent_loop(
             initial_messages,
             session=session,
@@ -486,11 +540,13 @@ class AgentLoop:
             initial_messages = self.context.build_messages(
                 history=history,
                 current_message=msg.content,
+                skill_names=self.skill_names,
                 channel=channel,
                 chat_id=chat_id,
                 memory_context=memory_context,
                 resume_notice=resume_notice,
             )
+            self.subagents.set_skill_index(self.context.get_last_skills_summary())
             turn_start = max(len(initial_messages) - 1, 0)
             final_content, _, all_msgs = await self._run_agent_loop(
                 initial_messages,
@@ -578,11 +634,13 @@ class AgentLoop:
         initial_messages = self.context.build_messages(
             history=history,
             current_message=msg.content,
+            skill_names=self.skill_names,
             media=msg.media if msg.media else None,
             channel=msg.channel, chat_id=msg.chat_id,
             memory_context=memory_context,
             resume_notice=resume_notice,
         )
+        self.subagents.set_skill_index(self.context.get_last_skills_summary())
         turn_start = max(len(initial_messages) - 1, 0)
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:

@@ -298,9 +298,9 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             return None
 
         # Keep retrieval context bounded to avoid prompt bloat.
-        max_items = 12
-        max_chars = 1800
-        max_item_chars = 320
+        max_items = 18
+        max_chars = 3600
+        max_item_chars = 480
 
         def _clean(line: str) -> str:
             line = line.strip()

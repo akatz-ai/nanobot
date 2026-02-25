@@ -216,7 +216,7 @@ def test_retrieved_memory_guardrails_cap_and_truncate():
     rendered = ContextBuilder._build_retrieved_memory_message(memory_context)
 
     assert rendered is not None
-    assert rendered.count("\n- ") <= 13  # max 12 bullets + optional "(truncated)"
+    assert rendered.count("\n- ") <= 19  # max 18 bullets + optional "(truncated)"
     assert "(truncated)" in rendered
 
 
@@ -328,6 +328,7 @@ async def test_retrieve_memory_context_defaults_peer_key_to_session(tmp_path: Pa
     retriever.retrieve_context.assert_awaited_once()
     kwargs = retriever.retrieve_context.await_args.kwargs
     assert kwargs["peer_key"] == "cli:session-1"
+    assert kwargs["prompt_headroom_words"] >= 80
 
 
 @pytest.mark.asyncio

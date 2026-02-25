@@ -88,16 +88,27 @@ class TestMessageToolSuppressLogic:
 
 
 class TestMessageToolTurnTracking:
-
-    def test_sent_in_turn_tracks_same_target(self) -> None:
+    def test_turn_sends_tracking(self) -> None:
         tool = MessageTool()
-        tool.set_context("feishu", "chat1")
-        assert not tool._sent_in_turn
-        tool._sent_in_turn = True
-        assert tool._sent_in_turn
+        tool._turn_sends.append(("feishu", "chat1"))
+        tool._turn_sends.append(("email", "user@example.com"))
+
+        sends = tool.get_turn_sends()
+        assert len(sends) == 2
+        assert ("feishu", "chat1") in sends
+        assert ("email", "user@example.com") in sends
 
     def test_start_turn_resets(self) -> None:
         tool = MessageTool()
-        tool._sent_in_turn = True
+        tool._turn_sends.append(("feishu", "chat1"))
         tool.start_turn()
-        assert not tool._sent_in_turn
+        assert tool.get_turn_sends() == []
+
+    def test_get_turn_sends_returns_copy(self) -> None:
+        tool = MessageTool()
+        tool._turn_sends.append(("feishu", "chat1"))
+
+        sends = tool.get_turn_sends()
+        sends.append(("email", "user@example.com"))
+
+        assert len(tool.get_turn_sends()) == 1

@@ -212,6 +212,21 @@ class SessionManager:
 
         self._cache[session.key] = session
     
+    def save_all(self) -> int:
+        """Flush all cached sessions to disk.
+
+        Returns:
+            Number of sessions saved.
+        """
+        saved = 0
+        for key, session in list(self._cache.items()):
+            try:
+                self.save(session)
+                saved += 1
+            except Exception:
+                logger.exception("Failed to flush session {} on shutdown", key)
+        return saved
+
     def invalidate(self, key: str) -> None:
         """Remove a session from the in-memory cache."""
         self._cache.pop(key, None)

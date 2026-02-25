@@ -345,8 +345,11 @@ class AgentLoop:
             self._mcp_stack = None
 
     def stop(self) -> None:
-        """Stop the agent loop."""
+        """Stop the agent loop and flush all cached sessions to disk."""
         self._running = False
+        saved = self.sessions.save_all()
+        if saved:
+            logger.info("Flushed {} session(s) to disk", saved)
         logger.info("Agent loop stopping")
 
     def _get_consolidation_lock(self, session_key: str) -> asyncio.Lock:

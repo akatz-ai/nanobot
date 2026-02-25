@@ -310,6 +310,27 @@ async def test_agent_loop_stores_each_user_message_once(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_retrieve_memory_context_defaults_peer_key_to_session(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    retriever = SimpleNamespace(retrieve_context=AsyncMock(return_value="ctx"))
+    agent._memory_module = SimpleNamespace(initialized=True, retriever=retriever)
+    agent._memory_graph_config = {"retrieval": {}}
+
+    session = Session(key="cli:session-1")
+    result = await agent._retrieve_memory_context(session, "remember this")
+
+    assert result == "ctx"
+    retriever.retrieve_context.assert_awaited_once()
+    kwargs = retriever.retrieve_context.await_args.kwargs
+    assert kwargs["peer_key"] == "cli:session-1"
+
+
+@pytest.mark.asyncio
 async def test_consolidate_memory_uses_hybrid_engine_path(tmp_path: Path):
     agent = AgentLoop(
         bus=MessageBus(),

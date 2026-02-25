@@ -176,7 +176,7 @@ class AgentLoop:
             retrieval_cfg = {}
             if isinstance(self._memory_graph_config, dict):
                 retrieval_cfg = self._memory_graph_config.get("retrieval") or {}
-            peer_key = retrieval_cfg.get("peer_key")
+            peer_key = retrieval_cfg["peer_key"] if "peer_key" in retrieval_cfg else session.key
             return await self._memory_module.retriever.retrieve_context(
                 current_message=user_message,
                 recent_turns=session.get_history(max_messages=4),

@@ -335,12 +335,12 @@ def _make_provider(config: Config):
 # ============================================================================
 
 
-@app.command()
-def gateway(
+@app.command(name="gateway-worker", hidden=True)
+def gateway_worker(
     port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
-    """Start the nanobot gateway."""
+    """Internal gateway worker process."""
     from nanobot.config.loader import load_config, get_config_path, get_data_dir
     from nanobot.bus.queue import MessageBus
     from nanobot.agent.router import AgentRouter
@@ -502,6 +502,41 @@ def gateway(
             await channels.stop_all()
 
     asyncio.run(run())
+
+
+@app.command()
+def gateway(
+    port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    daemon: bool = typer.Option(False, "--daemon", "-d", help="Run in background"),
+):
+    """Start the nanobot gateway supervisor."""
+    from nanobot.daemon import GatewayDaemon
+
+    d = GatewayDaemon(port=port, verbose=verbose)
+    d.start(daemonize=daemon)
+
+
+@app.command()
+def restart():
+    """Gracefully restart the gateway worker."""
+    from nanobot.daemon import GatewayDaemon
+
+    if GatewayDaemon.send_signal(signal.SIGUSR1):
+        console.print("[green]Restart signal sent.[/green]")
+    else:
+        console.print("[red]Gateway not running.[/red]")
+
+
+@app.command()
+def stop():
+    """Stop the gateway."""
+    from nanobot.daemon import GatewayDaemon
+
+    if GatewayDaemon.send_signal(signal.SIGTERM):
+        console.print("[green]Stop signal sent.[/green]")
+    else:
+        console.print("[red]Gateway not running.[/red]")
 
 
 
@@ -1080,16 +1115,59 @@ def cron_run(
 # ============================================================================
 
 
+def _read_proc_uptime_seconds(pid: int) -> float | None:
+    """Return process uptime using /proc/<pid>/stat when available."""
+    proc_stat = Path(f"/proc/{pid}/stat")
+    proc_uptime = Path("/proc/uptime")
+    if not proc_stat.exists() or not proc_uptime.exists():
+        return None
+    try:
+        stat_fields = proc_stat.read_text(encoding="utf-8").split()
+        start_ticks = int(stat_fields[21])
+        uptime_total = float(proc_uptime.read_text(encoding="utf-8").split()[0])
+        hz = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+        return max(0.0, uptime_total - (start_ticks / hz))
+    except Exception:
+        return None
+
+
+def _format_uptime(seconds: float | None) -> str:
+    if seconds is None:
+        return "unknown"
+    s = int(seconds)
+    days, rem = divmod(s, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h {minutes}m"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 @app.command()
 def status():
-    """Show nanobot status."""
+    """Show nanobot and gateway status."""
     from nanobot.config.loader import load_config, get_config_path
+    from nanobot.daemon import GatewayDaemon
 
     config_path = get_config_path()
     config = load_config()
     workspace = config.workspace_path
 
     console.print(f"{__logo__} nanobot Status\n")
+    supervisor_pid = GatewayDaemon.read_pid()
+    worker_pid = GatewayDaemon.read_worker_pid()
+    if supervisor_pid:
+        supervisor_uptime = _format_uptime(_read_proc_uptime_seconds(supervisor_pid))
+        worker_part = f", worker PID: {worker_pid}" if worker_pid else ", worker PID: unknown"
+        console.print(
+            f"Gateway: [green]running[/green] (supervisor PID: {supervisor_pid}{worker_part}, uptime: {supervisor_uptime})"
+        )
+    else:
+        console.print("Gateway: [yellow]not running[/yellow]")
 
     console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
     console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")

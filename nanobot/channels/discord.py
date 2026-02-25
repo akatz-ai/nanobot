@@ -55,6 +55,8 @@ class DiscordChannel(BaseChannel):
         self._heartbeat_task: asyncio.Task | None = None
         self._typing_tasks: dict[str, asyncio.Task] = {}
         self._http: httpx.AsyncClient | None = None
+        # Webhook registry: channel_id -> {webhook_url, display_name, avatar_url}
+        self._webhooks: dict[str, dict[str, str | None]] = {}
 
     async def start(self) -> None:
         """Start the Discord gateway connection."""
@@ -96,9 +98,15 @@ class DiscordChannel(BaseChannel):
             self._http = None
 
     async def send(self, msg: OutboundMessage) -> None:
-        """Send a message through Discord REST API."""
+        """Send a message through Discord REST API or webhook."""
         if not self._http:
             logger.warning("Discord HTTP client not initialized")
+            return
+
+        # Check if this channel has a registered webhook
+        webhook_info = self._webhooks.get(msg.chat_id)
+        if webhook_info and webhook_info.get("webhook_url"):
+            await self._send_via_webhook(msg, webhook_info)
             return
 
         url = f"{DISCORD_API_BASE}/channels/{msg.chat_id}/messages"
@@ -119,6 +127,27 @@ class DiscordChannel(BaseChannel):
 
                 if not await self._send_payload(url, headers, payload):
                     break  # Abort remaining chunks on failure
+        finally:
+            await self._stop_typing(msg.chat_id)
+
+    async def _send_via_webhook(self, msg: OutboundMessage, webhook_info: dict[str, str | None]) -> None:
+        """Send a message via Discord webhook with custom name/avatar."""
+        webhook_url = webhook_info["webhook_url"]
+
+        try:
+            chunks = _split_message(msg.content or "")
+            if not chunks:
+                return
+
+            for chunk in chunks:
+                payload: dict[str, Any] = {"content": chunk}
+                if webhook_info.get("display_name"):
+                    payload["username"] = webhook_info["display_name"]
+                if webhook_info.get("avatar_url"):
+                    payload["avatar_url"] = webhook_info["avatar_url"]
+
+                if not await self._send_payload(webhook_url, {}, payload):
+                    break
         finally:
             await self._stop_typing(msg.chat_id)
 
@@ -334,6 +363,47 @@ class DiscordChannel(BaseChannel):
         except Exception as e:
             logger.error("Failed to create Discord channel '{}': {}", name, e)
             return None
+
+    async def create_channel_webhook(
+        self,
+        channel_id: str,
+        name: str = "Agent",
+        avatar_url: str | None = None,
+    ) -> str | None:
+        """Create a webhook for a channel. Returns the webhook URL or None on failure."""
+        if not self._http:
+            logger.warning("Discord HTTP client not initialized")
+            return None
+
+        url = f"{DISCORD_API_BASE}/channels/{channel_id}/webhooks"
+        headers = {"Authorization": f"Bot {self.config.token}"}
+        payload: dict[str, Any] = {"name": name}
+
+        try:
+            resp = await self._http.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            webhook_url = f"{DISCORD_API_BASE}/webhooks/{data['id']}/{data['token']}"
+            logger.info("Created webhook for channel {} (name={})", channel_id, name)
+            return webhook_url
+        except Exception as e:
+            logger.error("Failed to create webhook for channel {}: {}", channel_id, e)
+            return None
+
+    def register_webhook(
+        self,
+        channel_id: str,
+        webhook_url: str,
+        display_name: str | None = None,
+        avatar_url: str | None = None,
+    ) -> None:
+        """Register a webhook for a channel so outbound messages use it."""
+        self._webhooks[channel_id] = {
+            "webhook_url": webhook_url,
+            "display_name": display_name,
+            "avatar_url": avatar_url,
+        }
+        logger.info("Registered webhook for channel {} (name={})", channel_id, display_name)
 
     async def list_guild_channels(self, guild_id: str) -> list[dict[str, Any]]:
         """List all channels in a guild."""

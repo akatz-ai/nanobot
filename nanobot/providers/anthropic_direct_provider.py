@@ -66,6 +66,57 @@ class AnthropicDirectProvider(LLMProvider):
         return []
 
     @staticmethod
+    def _sanitize_tool_pairs(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop orphaned tool results/calls that would cause API errors.
+
+        This is a lightweight safety net at the provider level.  The primary
+        sanitization lives in ``SessionManager``, but messages built from
+        other paths (e.g. system messages, cron) also benefit from this.
+        """
+        # Collect all tool_call IDs offered by assistant messages.
+        offered: set[str] = set()
+        for m in messages:
+            if m.get("role") == "assistant":
+                for tc in m.get("tool_calls") or []:
+                    tc_id = tc.get("id") or (tc.get("function") or {}).get("id")
+                    if tc_id:
+                        offered.add(tc_id)
+
+        # Collect IDs that have both an offer and a result.
+        answered: set[str] = set()
+        for m in messages:
+            if m.get("role") == "tool":
+                tc_id = m.get("tool_call_id")
+                if tc_id and tc_id in offered:
+                    answered.add(tc_id)
+
+        cleaned: list[dict[str, Any]] = []
+        for m in messages:
+            if m.get("role") == "tool":
+                if m.get("tool_call_id") not in offered:
+                    logger.warning(
+                        "Provider: dropping orphaned tool result (id={})",
+                        m.get("tool_call_id"),
+                    )
+                    continue
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                kept = [
+                    tc for tc in m["tool_calls"]
+                    if (tc.get("id") or (tc.get("function") or {}).get("id"))
+                    in answered
+                ]
+                if kept != m["tool_calls"]:
+                    m = dict(m)
+                    if kept:
+                        m["tool_calls"] = kept
+                    else:
+                        m.pop("tool_calls", None)
+                    if not m.get("content") and not m.get("tool_calls"):
+                        continue
+            cleaned.append(m)
+        return cleaned
+
+    @staticmethod
     def _tool_result_content(content: Any) -> str:
         if content is None:
             return ""
@@ -237,6 +288,7 @@ class AnthropicDirectProvider(LLMProvider):
             resolved_model = resolved_model.split("/", 1)[1]
 
         clean_messages = self._sanitize_empty_content(messages)
+        clean_messages = self._sanitize_tool_pairs(clean_messages)
         body = self._build_body(clean_messages, tools, resolved_model, max_tokens, temperature)
 
         try:

@@ -51,6 +51,15 @@ class DingTalkConfig(Base):
     allow_from: list[str] = Field(default_factory=list)  # Allowed staff_ids
 
 
+class DiscordUsageDashboardConfig(Base):
+    """Discord usage dashboard configuration."""
+
+    enabled: bool = False
+    channel_id: str = ""  # Channel to post the dashboard message in
+    message_id: str = ""  # Existing message ID to edit (auto-created if empty)
+    poll_interval_s: int = 600  # How often to poll Anthropic (seconds)
+
+
 class DiscordConfig(Base):
     """Discord channel configuration."""
 
@@ -60,6 +69,7 @@ class DiscordConfig(Base):
     gateway_url: str = "wss://gateway.discord.gg/?v=10&encoding=json"
     intents: int = 37377  # GUILDS + GUILD_MESSAGES + DIRECT_MESSAGES + MESSAGE_CONTENT
     guild_id: str = ""  # Guild ID for dynamic channel creation
+    usage_dashboard: DiscordUsageDashboardConfig = Field(default_factory=DiscordUsageDashboardConfig)
 
 
 class EmailConfig(Base):
@@ -204,6 +214,9 @@ class AgentProfile(Base):
     skills: list[str] | None = None  # Skill whitelist (None = all available)
     system_identity: str | None = None  # Custom identity text for this agent
     discord_channels: list[str] = Field(default_factory=list)  # Discord channel IDs mapped to this agent
+    display_name: str | None = None  # Display name for webhook messages
+    avatar_url: str | None = None  # Avatar URL for webhook messages
+    discord_webhook_url: str | None = None  # Discord webhook URL for this agent's channel
 
     def resolve(self, defaults: AgentDefaults) -> "ResolvedAgentProfile":
         """Merge with defaults to produce a fully resolved profile."""
@@ -216,6 +229,9 @@ class AgentProfile(Base):
             skills=self.skills,
             system_identity=self.system_identity,
             discord_channels=self.discord_channels,
+            display_name=self.display_name,
+            avatar_url=self.avatar_url,
+            discord_webhook_url=self.discord_webhook_url,
         )
 
 
@@ -230,6 +246,9 @@ class ResolvedAgentProfile(Base):
     skills: list[str] | None = None
     system_identity: str | None = None
     discord_channels: list[str] = Field(default_factory=list)
+    display_name: str | None = None
+    avatar_url: str | None = None
+    discord_webhook_url: str | None = None
 
 
 class AgentsConfig(Base):

@@ -113,8 +113,10 @@ class CronTool(Tool):
         elif cron_expr:
             schedule = CronSchedule(kind="cron", expr=cron_expr, tz=tz)
         elif at:
-            from datetime import datetime
+            from datetime import datetime, timezone
             dt = datetime.fromisoformat(at)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
             at_ms = int(dt.timestamp() * 1000)
             schedule = CronSchedule(kind="at", at_ms=at_ms)
             delete_after = True

@@ -350,6 +350,7 @@ def gateway_worker(
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
+    from nanobot.discord.usage_dashboard import UsageDashboard
 
     if verbose:
         import logging
@@ -393,6 +394,20 @@ def gateway_worker(
             )
             default.loop.tools.register(tool)
             console.print(f"[green]✓[/green] Agent manager tool registered on '{router._default_agent_id}'")
+
+        # Register webhooks from saved agent profiles
+        discord = channels.get_discord_channel()
+        if discord:
+            for aid, prof in config.agents.profiles.items():
+                if prof.discord_webhook_url and prof.discord_channels:
+                    for ch_id in prof.discord_channels:
+                        discord.register_webhook(
+                            channel_id=ch_id,
+                            webhook_url=prof.discord_webhook_url,
+                            display_name=prof.display_name,
+                            avatar_url=prof.avatar_url,
+                        )
+                    console.print(f"[green]✓[/green] Webhook registered for agent '{aid}' (name={prof.display_name})")
 
         # Log agent info
         for aid, inst in router.agents.items():
@@ -473,6 +488,25 @@ def gateway_worker(
         enabled=True
     )
 
+    # Create usage dashboard if configured
+    usage_dashboard: UsageDashboard | None = None
+    dc = config.channels.discord
+    dash_cfg = dc.usage_dashboard
+    if dc.enabled and dash_cfg.enabled and dash_cfg.channel_id and dc.token:
+        from nanobot.providers.anthropic_auth import get_oauth_token
+        oauth_token = get_oauth_token()
+        if oauth_token:
+            usage_dashboard = UsageDashboard(
+                anthropic_token=oauth_token,
+                discord_token=dc.token,
+                channel_id=dash_cfg.channel_id,
+                poll_interval_s=dash_cfg.poll_interval_s,
+                message_id=dash_cfg.message_id or None,
+                config_path=str(get_config_path()),
+            )
+        else:
+            console.print("[yellow]⚠ Usage dashboard: no Anthropic OAuth token[/yellow]")
+
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
@@ -484,11 +518,16 @@ def gateway_worker(
 
     console.print(f"[green]✓[/green] Heartbeat: every 30m")
 
+    if usage_dashboard:
+        console.print(f"[green]✓[/green] Usage dashboard: channel={dash_cfg.channel_id}, interval={dash_cfg.poll_interval_s}s")
+
     async def run():
         try:
             await _init_router()
             await cron.start()
             await heartbeat.start()
+            if usage_dashboard:
+                await usage_dashboard.start()
             await asyncio.gather(
                 router.start(),
                 channels.start_all(),
@@ -496,6 +535,8 @@ def gateway_worker(
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         finally:
+            if usage_dashboard:
+                await usage_dashboard.close()
             heartbeat.stop()
             cron.stop()
             await router.stop()

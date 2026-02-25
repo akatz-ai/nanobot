@@ -38,6 +38,9 @@ class AgentProfileManager:
         skills: list[str] | None = None,
         system_identity: str | None = None,
         discord_channels: list[str] | None = None,
+        display_name: str | None = None,
+        avatar_url: str | None = None,
+        discord_webhook_url: str | None = None,
     ) -> AgentProfile:
         """Create a new agent profile and persist to config."""
         if agent_id in self.config.agents.profiles:
@@ -52,6 +55,9 @@ class AgentProfileManager:
             skills=skills,
             system_identity=system_identity,
             discord_channels=discord_channels or [],
+            display_name=display_name,
+            avatar_url=avatar_url,
+            discord_webhook_url=discord_webhook_url,
         )
         self.config.agents.profiles[agent_id] = profile
         self._save()

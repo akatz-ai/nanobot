@@ -74,6 +74,14 @@ class AgentManagerTool(Tool):
                     "items": {"type": "string"},
                     "description": "Skill whitelist for the agent (omit for all skills).",
                 },
+                "display_name": {
+                    "type": "string",
+                    "description": "Display name for the agent in Discord (shown via webhook).",
+                },
+                "avatar_url": {
+                    "type": "string",
+                    "description": "Avatar image URL for the agent in Discord.",
+                },
             },
         }
 
@@ -96,6 +104,8 @@ class AgentManagerTool(Tool):
                 system_identity=kwargs.get("system_identity"),
                 channel_name=kwargs.get("channel_name"),
                 skills=kwargs.get("skills"),
+                display_name=kwargs.get("display_name"),
+                avatar_url=kwargs.get("avatar_url"),
             )
         elif action == "remove":
             if not agent_id:
@@ -131,6 +141,9 @@ class AgentManagerTool(Tool):
             "skills": p.skills,
             "system_identity": p.system_identity[:200] if p.system_identity else None,
             "discord_channels": p.discord_channels,
+            "display_name": p.display_name,
+            "avatar_url": p.avatar_url,
+            "webhook_enabled": p.discord_webhook_url is not None,
             "workspace": str(instance.workspace),
         }
         return json.dumps(info, indent=2)
@@ -142,6 +155,8 @@ class AgentManagerTool(Tool):
         system_identity: str | None = None,
         channel_name: str | None = None,
         skills: list[str] | None = None,
+        display_name: str | None = None,
+        avatar_url: str | None = None,
     ) -> str:
         # Validate
         if self._router.get_agent(agent_id):
@@ -149,6 +164,7 @@ class AgentManagerTool(Tool):
 
         # Create Discord channel
         discord_channel_id = None
+        webhook_url = None
         discord = self._channel_manager.get_discord_channel()
         if discord and self._guild_id:
             ch_name = channel_name or agent_id
@@ -159,6 +175,23 @@ class AgentManagerTool(Tool):
             )
             if not discord_channel_id:
                 return f"Error: Failed to create Discord channel '{ch_name}'."
+
+            # Create webhook for custom name/avatar if display_name or avatar_url provided
+            if display_name or avatar_url:
+                webhook_url = await discord.create_channel_webhook(
+                    channel_id=discord_channel_id,
+                    name=display_name or agent_id,
+                    avatar_url=avatar_url,
+                )
+                if webhook_url:
+                    discord.register_webhook(
+                        channel_id=discord_channel_id,
+                        webhook_url=webhook_url,
+                        display_name=display_name,
+                        avatar_url=avatar_url,
+                    )
+                else:
+                    logger.warning("Failed to create webhook for agent '{}', falling back to bot messages", agent_id)
         elif not discord:
             return "Error: Discord channel is not enabled. Cannot create agent channel."
 
@@ -172,6 +205,9 @@ class AgentManagerTool(Tool):
                 system_identity=system_identity,
                 skills=skills,
                 discord_channels=discord_channels,
+                display_name=display_name,
+                avatar_url=avatar_url,
+                discord_webhook_url=webhook_url,
             )
         except ValueError as e:
             return f"Error: {e}"
@@ -189,6 +225,8 @@ class AgentManagerTool(Tool):
             "model": resolved.model,
             "discord_channel_id": discord_channel_id,
             "channel_name": channel_name or agent_id,
+            "display_name": display_name,
+            "webhook_enabled": webhook_url is not None,
         }
         logger.info("Agent '{}' created via manage_agents tool", agent_id)
         return json.dumps(result, indent=2)

@@ -174,6 +174,7 @@ class AgentRouter:
             channels_config=self.config.channels,
             memory_graph_config=self.config.memory_graph,
             skill_names=profile.skills,
+            agent_id=agent_id,
         )
 
         instance = AgentInstance(

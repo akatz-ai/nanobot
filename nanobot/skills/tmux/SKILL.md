@@ -34,10 +34,25 @@ To monitor:
 - Use `NANOBOT_TMUX_SOCKET_DIR` environment variable.
 - Default socket path: `"$NANOBOT_TMUX_SOCKET_DIR/nanobot.sock"`.
 
+## Session naming (multi-agent)
+
+**Important:** Multiple agents share the same tmux socket. To avoid collisions, always
+prefix session names with your agent ID:
+
+```
+SESSION={agent_id}-{purpose}
+# Examples: general-codex, nanobot-dev-audit, researcher-scrape
+```
+
+Before creating a session, check for existing sessions to avoid conflicts:
+```bash
+tmux -S "$SOCKET" list-sessions 2>/dev/null | grep "^{agent_id}-"
+```
+
 ## Targeting panes and naming
 
 - Target format: `session:window.pane` (defaults to `:0.0`).
-- Keep names short; avoid spaces.
+- Keep names short; avoid spaces. Always prefix with your agent ID.
 - Inspect: `tmux -S "$SOCKET" list-sessions`, `tmux -S "$SOCKET" list-panes -a`.
 
 ## Finding sessions

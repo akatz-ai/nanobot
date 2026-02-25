@@ -100,6 +100,7 @@ class CronService:
                             deliver=j["payload"].get("deliver", False),
                             channel=j["payload"].get("channel"),
                             to=j["payload"].get("to"),
+                            agent_id=j["payload"].get("agentId"),
                         ),
                         state=CronJobState(
                             next_run_at_ms=j.get("state", {}).get("nextRunAtMs"),
@@ -147,6 +148,7 @@ class CronService:
                         "deliver": j.payload.deliver,
                         "channel": j.payload.channel,
                         "to": j.payload.to,
+                        "agentId": j.payload.agent_id,
                     },
                     "state": {
                         "nextRunAtMs": j.state.next_run_at_ms,
@@ -268,10 +270,12 @@ class CronService:
     
     # ========== Public API ==========
     
-    def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
-        """List all jobs."""
+    def list_jobs(self, include_disabled: bool = False, agent_id: str | None = None) -> list[CronJob]:
+        """List jobs, optionally filtered by agent_id."""
         store = self._load_store()
         jobs = store.jobs if include_disabled else [j for j in store.jobs if j.enabled]
+        if agent_id:
+            jobs = [j for j in jobs if j.payload.agent_id == agent_id]
         return sorted(jobs, key=lambda j: j.state.next_run_at_ms or float('inf'))
     
     def add_job(
@@ -283,6 +287,7 @@ class CronService:
         channel: str | None = None,
         to: str | None = None,
         delete_after_run: bool = False,
+        agent_id: str | None = None,
     ) -> CronJob:
         """Add a new job."""
         store = self._load_store()
@@ -300,6 +305,7 @@ class CronService:
                 deliver=deliver,
                 channel=channel,
                 to=to,
+                agent_id=agent_id,
             ),
             state=CronJobState(next_run_at_ms=_compute_next_run(schedule, now)),
             created_at_ms=now,
@@ -314,11 +320,17 @@ class CronService:
         logger.info("Cron: added job '{}' ({})", name, job.id)
         return job
     
-    def remove_job(self, job_id: str) -> bool:
-        """Remove a job by ID."""
+    def remove_job(self, job_id: str, agent_id: str | None = None) -> bool:
+        """Remove a job by ID. If agent_id is provided, only remove if it matches."""
         store = self._load_store()
         before = len(store.jobs)
-        store.jobs = [j for j in store.jobs if j.id != job_id]
+        if agent_id:
+            store.jobs = [
+                j for j in store.jobs
+                if not (j.id == job_id and j.payload.agent_id == agent_id)
+            ]
+        else:
+            store.jobs = [j for j in store.jobs if j.id != job_id]
         removed = len(store.jobs) < before
         
         if removed:

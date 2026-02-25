@@ -10,8 +10,9 @@ from nanobot.cron.types import CronSchedule
 class CronTool(Tool):
     """Tool to schedule reminders and recurring tasks."""
     
-    def __init__(self, cron_service: CronService):
+    def __init__(self, cron_service: CronService, agent_id: str = "default"):
         self._cron = cron_service
+        self._agent_id = agent_id
         self._channel = ""
         self._chat_id = ""
     
@@ -131,11 +132,12 @@ class CronTool(Tool):
             channel=self._channel,
             to=self._chat_id,
             delete_after_run=delete_after,
+            agent_id=self._agent_id,
         )
         return f"Created job '{job.name}' (id: {job.id})"
     
     def _list_jobs(self) -> str:
-        jobs = self._cron.list_jobs()
+        jobs = self._cron.list_jobs(agent_id=self._agent_id)
         if not jobs:
             return "No scheduled jobs."
         lines = [f"- {j.name} (id: {j.id}, {j.schedule.kind})" for j in jobs]
@@ -144,6 +146,6 @@ class CronTool(Tool):
     def _remove_job(self, job_id: str | None) -> str:
         if not job_id:
             return "Error: job_id is required for remove"
-        if self._cron.remove_job(job_id):
+        if self._cron.remove_job(job_id, agent_id=self._agent_id):
             return f"Removed job {job_id}"
         return f"Job {job_id} not found"

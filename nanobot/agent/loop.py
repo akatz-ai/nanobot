@@ -79,9 +79,11 @@ class AgentLoop:
         channels_config: ChannelsConfig | None = None,
         memory_graph_config: dict | None = None,
         skill_names: list[str] | None = None,
+        agent_id: str = "default",
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
+        self.agent_id = agent_id
         self.channels_config = channels_config
         self.provider = provider
         self.workspace = workspace
@@ -146,7 +148,7 @@ class AgentLoop:
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
-            self.tools.register(CronTool(self.cron_service))
+            self.tools.register(CronTool(self.cron_service, agent_id=self.agent_id))
 
     def _register_memory_graph_tools(self) -> None:
         """Register optional memory graph tools from adapter package."""

@@ -415,13 +415,17 @@ def gateway_worker(
             ch_info = f", channels={inst.profile.discord_channels}" if inst.profile.discord_channels else ""
             console.print(f"[green]✓[/green] Agent '{aid}'{tag}: model={inst.profile.model}{ch_info}")
 
-    # Set cron callback (routes through default agent)
+    # Set cron callback (routes to the agent that owns the job)
     async def on_cron_job(job: CronJob) -> str | None:
-        """Execute a cron job through the default agent."""
-        default = router.default_agent
-        if not default:
+        """Execute a cron job through the owning agent (falls back to default)."""
+        target = None
+        if job.payload.agent_id:
+            target = router.get_agent(job.payload.agent_id)
+        if not target:
+            target = router.default_agent
+        if not target:
             return None
-        response = await default.loop.process_direct(
+        response = await target.loop.process_direct(
             job.payload.message,
             session_key=f"cron:{job.id}",
             channel=job.payload.channel or "cli",

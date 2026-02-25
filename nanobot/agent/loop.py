@@ -24,6 +24,7 @@ from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
+from nanobot.session.context_log import TurnContextLogger
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
@@ -129,6 +130,7 @@ class AgentLoop:
         self._consolidation_tasks: set[asyncio.Task] = set()  # Strong refs to in-flight tasks
         self._consolidation_locks: dict[str, asyncio.Lock] = {}
         self._memory_file_lock = asyncio.Lock()  # Serialize global memory file writes across sessions.
+        self._context_loggers: dict[str, TurnContextLogger] = {}
         self._memory_module = None
         self._register_default_tools()
         self._register_memory_graph_tools()
@@ -169,6 +171,14 @@ class AgentLoop:
             logger.warning("agent-memory-nanobot not installed, memory graph disabled")
         except Exception as e:
             logger.warning(f"Failed to initialize memory graph: {e}")
+
+    def _get_context_logger(self, session: Session) -> TurnContextLogger:
+        """Get or create a TurnContextLogger for a session."""
+        key = session.key
+        if key not in self._context_loggers:
+            session_path = self.sessions._get_session_path(key)
+            self._context_loggers[key] = TurnContextLogger(session_path)
+        return self._context_loggers[key]
 
     async def _retrieve_memory_context(
         self,
@@ -410,6 +420,12 @@ class AgentLoop:
             chat_id=chat_id,
             resume_notice=self._RESUME_SYSTEM_MESSAGE,
         )
+        self._get_context_logger(session).log_turn(
+            built_messages=initial_messages,
+            memory_context=None,
+            resume_notice=self._RESUME_SYSTEM_MESSAGE,
+            user_message_index=len(session.messages),
+        )
         self.subagents.set_skill_index(self.context.get_last_skills_summary())
         final_content, _, all_msgs = await self._run_agent_loop(
             initial_messages,
@@ -548,6 +564,12 @@ class AgentLoop:
                 memory_context=memory_context,
                 resume_notice=resume_notice,
             )
+            self._get_context_logger(session).log_turn(
+                built_messages=initial_messages,
+                memory_context=memory_context,
+                resume_notice=resume_notice,
+                user_message_index=len(session.messages),
+            )
             self.subagents.set_skill_index(self.context.get_last_skills_summary())
             turn_start = max(len(initial_messages) - 1, 0)
             final_content, _, all_msgs = await self._run_agent_loop(
@@ -641,6 +663,12 @@ class AgentLoop:
             channel=msg.channel, chat_id=msg.chat_id,
             memory_context=memory_context,
             resume_notice=resume_notice,
+        )
+        self._get_context_logger(session).log_turn(
+            built_messages=initial_messages,
+            memory_context=memory_context,
+            resume_notice=resume_notice,
+            user_message_index=len(session.messages),
         )
         self.subagents.set_skill_index(self.context.get_last_skills_summary())
         turn_start = max(len(initial_messages) - 1, 0)

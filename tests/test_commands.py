@@ -386,6 +386,42 @@ async def test_consolidate_memory_keeps_legacy_path(tmp_path: Path):
     consolidator.consolidate_session.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_consolidate_memory_legacy_graph_uses_pre_mutation_window(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="stub-model",
+        memory_window=10,
+    )
+    agent._memory_graph_config = {"consolidation": {"engine": "legacy"}}
+    consolidator = SimpleNamespace(consolidate_session=AsyncMock(return_value={"added": 1}))
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=None, consolidator=consolidator)
+
+    session = Session(key="cli:test")
+    for i in range(12):
+        session.add_message("user", f"msg-{i}")
+    session.last_consolidated = 2
+
+    async def _legacy_consolidate(*args, **kwargs):
+        session.last_consolidated = 7
+        return True
+
+    with patch(
+        "nanobot.agent.loop.MemoryStore.consolidate",
+        new_callable=AsyncMock,
+        side_effect=_legacy_consolidate,
+    ) as legacy_consolidate:
+        ok = await agent._consolidate_memory(session, archive_all=False)
+
+    assert ok is True
+    legacy_consolidate.assert_awaited_once()
+    consolidator.consolidate_session.assert_awaited_once()
+    passed_messages = consolidator.consolidate_session.await_args.kwargs["messages"]
+    assert [msg.get("content") for msg in passed_messages] == [f"msg-{i}" for i in range(2, 7)]
+
+
 def test_context_builder_includes_daily_history_in_hybrid_mode(tmp_path: Path):
     memory_dir = tmp_path / "memory"
     history_dir = memory_dir / "history"

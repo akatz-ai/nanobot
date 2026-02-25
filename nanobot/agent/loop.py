@@ -670,16 +670,28 @@ class AgentLoop:
                     logger.warning(f"Hybrid memory consolidation failed: {e}")
                     return False
 
+            graph_window_messages: list[dict[str, Any]] = []
+            if self._memory_module and self._memory_module.consolidator:
+                if archive_all:
+                    graph_window_messages = list(session.messages)
+                else:
+                    keep_count = self.memory_window // 2
+                    if len(session.messages) > keep_count and len(session.messages) > session.last_consolidated:
+                        start_index = session.last_consolidated
+                        end_index = len(session.messages) - keep_count
+                        if end_index > start_index:
+                            graph_window_messages = list(session.messages[start_index:end_index])
+
             success = await MemoryStore(self.workspace).consolidate(
                 session, self.provider, self.model,
                 archive_all=archive_all, memory_window=self.memory_window,
             )
-            if self._memory_module and self._memory_module.consolidator:
+            if self._memory_module and self._memory_module.consolidator and graph_window_messages:
                 try:
                     if not self._memory_module.initialized:
                         await self._memory_module.initialize()
                     await self._memory_module.consolidator.consolidate_session(
-                        messages=session.get_history(max_messages=max(len(session.messages), 1)),
+                        messages=graph_window_messages,
                         peer_key=session.key,
                         source_session=session.key,
                     )

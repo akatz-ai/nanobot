@@ -29,13 +29,13 @@ class GatewayDaemon:
 
     def start(self, daemonize: bool = False) -> None:
         """Write PID file, install signal handlers, and supervise worker."""
-        if daemonize and os.environ.get("NANOBOT_SUPERVISOR") != "1":
-            self._start_detached_supervisor()
-            return
-
         existing = self.read_pid()
         if existing:
             logger.error("Gateway supervisor already running (pid={})", existing)
+            return
+
+        if daemonize and os.environ.get("NANOBOT_SUPERVISOR") != "1":
+            self._start_detached_supervisor()
             return
 
         self.PID_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -52,6 +52,7 @@ class GatewayDaemon:
         backoff_s = 1
         while not self._shutdown_requested:
             started_at = time.monotonic()
+            forced_restart = False
             self.worker_process = self._spawn_worker()
             if self.worker_process is None:
                 backoff_s = self._sleep_with_backoff(backoff_s)
@@ -60,8 +61,9 @@ class GatewayDaemon:
             while self.worker_process and self.worker_process.poll() is None:
                 if self._restart_requested:
                     logger.info("Restart requested; stopping worker")
-                    self._stop_worker(signal_to_send=signal.SIGTERM)
+                    forced_restart = True
                     self._restart_requested = False
+                    self._stop_worker(signal_to_send=signal.SIGTERM)
                     break
                 if self._shutdown_requested:
                     self._stop_worker(signal_to_send=self._shutdown_signal)
@@ -71,6 +73,12 @@ class GatewayDaemon:
             if self._shutdown_requested:
                 break
 
+            if forced_restart:
+                self._cleanup_worker_pid_file()
+                self.worker_process = None
+                backoff_s = 1
+                continue
+
             runtime_s = time.monotonic() - started_at
             return_code = None if self.worker_process is None else self.worker_process.poll()
             self._cleanup_worker_pid_file()
@@ -79,13 +87,14 @@ class GatewayDaemon:
             if return_code is not None:
                 if return_code == 0:
                     logger.info("Gateway worker exited cleanly")
-                    backoff_s = 1
-                else:
-                    logger.warning("Gateway worker exited with code {}", return_code)
                     if runtime_s > 30:
                         backoff_s = 1
-                    else:
+                else:
+                    logger.warning("Gateway worker exited with code {}", return_code)
+                    if runtime_s <= 30:
                         backoff_s = self._sleep_with_backoff(backoff_s)
+                    else:
+                        backoff_s = 1
 
         self._stop_worker(signal_to_send=self._shutdown_signal)
         self.cleanup_pid_file()
@@ -144,6 +153,7 @@ class GatewayDaemon:
 
         proc = self.worker_process
         if proc.poll() is not None:
+            self._cleanup_worker_pid_file()
             return
 
         try:

@@ -530,6 +530,35 @@ def gateway_worker(
         console.print(f"[green]✓[/green] Usage dashboard: channel={dash_cfg.channel_id}, interval={dash_cfg.poll_interval_s}s")
 
 
+    async def _send_restart_notifications() -> None:
+        """Send a system message to all active agent Discord channels after startup."""
+        from nanobot.bus.events import OutboundMessage
+
+        # Give Discord a moment to connect
+        await asyncio.sleep(3)
+
+        notified: set[str] = set()
+        for aid, inst in router.agents.items():
+            # Find Discord session keys for this agent
+            for item in inst.loop.sessions.list_sessions():
+                key = item.get("key") or ""
+                if ":" not in key:
+                    continue
+                channel, chat_id = key.split(":", 1)
+                if channel != "discord" or chat_id in notified:
+                    continue
+                # Skip cron/system sessions
+                if chat_id.startswith("cron:") or chat_id == "direct":
+                    continue
+                notified.add(chat_id)
+                await bus.publish_outbound(OutboundMessage(
+                    channel="discord",
+                    chat_id=chat_id,
+                    content="🔄 *Agent process restarted.*",
+                ))
+        if notified:
+            console.print(f"[green]✓[/green] Restart notifications sent to {len(notified)} channel(s)")
+
     async def run():
         try:
             await _init_router()
@@ -537,6 +566,8 @@ def gateway_worker(
             await heartbeat.start()
             if usage_dashboard:
                 await usage_dashboard.start()
+            # Fire restart notifications in the background
+            asyncio.create_task(_send_restart_notifications())
             await asyncio.gather(
                 router.start(),
                 channels.start_all(),
@@ -1222,10 +1253,10 @@ def status():
     supervisor_pid = GatewayDaemon.read_pid()
     worker_pid = GatewayDaemon.read_worker_pid()
     if supervisor_pid:
-        supervisor_uptime = _format_uptime(_read_proc_uptime_seconds(supervisor_pid))
+        worker_uptime = _format_uptime(_read_proc_uptime_seconds(worker_pid)) if worker_pid else "unknown"
         worker_part = f", worker PID: {worker_pid}" if worker_pid else ", worker PID: unknown"
         console.print(
-            f"Gateway: [green]running[/green] (supervisor PID: {supervisor_pid}{worker_part}, uptime: {supervisor_uptime})"
+            f"Gateway: [green]running[/green] (supervisor PID: {supervisor_pid}{worker_part}, uptime: {worker_uptime})"
         )
     else:
         console.print("Gateway: [yellow]not running[/yellow]")

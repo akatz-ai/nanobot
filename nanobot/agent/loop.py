@@ -54,6 +54,11 @@ class AgentLoop:
     4. Executes tool calls
     5. Sends responses back
     """
+    _RESUME_SYSTEM_MESSAGE = (
+        "Note: You were interrupted mid-turn by a system restart. "
+        "Your previous tool calls and results are preserved above. "
+        "Continue where you left off — do not re-execute tools that already have results."
+    )
 
     def __init__(
         self,
@@ -238,12 +243,21 @@ class AgentLoop:
         self,
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
+        session: Session | None = None,
+        checkpoint_start: int | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
         messages = initial_messages
         iteration = 0
         final_content = None
         tools_used: list[str] = []
+        checkpoint_cursor = len(messages)
+
+        if session is not None and checkpoint_start is not None:
+            start_index = max(0, checkpoint_start)
+            if start_index < len(messages):
+                session.checkpoint(messages[start_index:])
+            checkpoint_cursor = len(messages)
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -278,6 +292,9 @@ class AgentLoop:
                     messages, response.content, tool_call_dicts,
                     reasoning_content=response.reasoning_content,
                 )
+                if session is not None and checkpoint_cursor < len(messages):
+                    session.checkpoint(messages[checkpoint_cursor:])
+                    checkpoint_cursor = len(messages)
 
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
@@ -287,6 +304,9 @@ class AgentLoop:
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
+                    if session is not None and checkpoint_cursor < len(messages):
+                        session.checkpoint(messages[checkpoint_cursor:])
+                        checkpoint_cursor = len(messages)
             else:
                 final_content = self._strip_think(response.content)
                 messages = self.context.add_assistant_message(
@@ -294,6 +314,9 @@ class AgentLoop:
                     final_content,
                     reasoning_content=response.reasoning_content,
                 )
+                if session is not None and checkpoint_cursor < len(messages):
+                    session.checkpoint(messages[checkpoint_cursor:])
+                    checkpoint_cursor = len(messages)
                 break
 
         if final_content is None and iteration >= self.max_iterations:
@@ -305,10 +328,87 @@ class AgentLoop:
 
         return final_content, tools_used, messages
 
+    @classmethod
+    def _resume_notice_for_state(cls, state: str) -> str | None:
+        if state in {"mid_tool", "mid_loop"}:
+            return cls._RESUME_SYSTEM_MESSAGE
+        return None
+
+    @staticmethod
+    def _split_session_key(key: str) -> tuple[str, str]:
+        if ":" in key:
+            return key.split(":", 1)
+        return "cli", key
+
+    async def _resume_session(self, session: Session, channel: str, chat_id: str) -> OutboundMessage | None:
+        """Resume an interrupted turn without a new inbound user message."""
+        self._set_tool_context(channel, chat_id)
+        if message_tool := self.tools.get("message"):
+            if isinstance(message_tool, MessageTool):
+                message_tool.start_turn()
+
+        history = session.get_history(max_messages=self.memory_window)
+        initial_messages = self.context.build_messages(
+            history=history,
+            current_message=None,
+            channel=channel,
+            chat_id=chat_id,
+            resume_notice=self._RESUME_SYSTEM_MESSAGE,
+        )
+        final_content, _, all_msgs = await self._run_agent_loop(
+            initial_messages,
+            session=session,
+            checkpoint_start=None,
+        )
+
+        self._save_turn(session, all_msgs, len(initial_messages))
+        self.sessions.save(session)
+
+        if message_tool := self.tools.get("message"):
+            if isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
+                return None
+
+        return OutboundMessage(
+            channel=channel,
+            chat_id=chat_id,
+            content=final_content or "Background task completed.",
+            metadata={},
+        )
+
+    async def resume_inflight_sessions(self) -> int:
+        """Auto-resume interrupted sessions when no inbound message is waiting."""
+        if self.bus.inbound_size > 0:
+            logger.info("Skipping auto-resume: inbound queue already has pending messages")
+            return 0
+
+        resumed = 0
+        for item in self.sessions.list_sessions():
+            key = item.get("key")
+            if not key:
+                continue
+            if self.bus.inbound_size > 0:
+                break
+
+            session = self.sessions.get_or_create(key)
+            if session.detect_resume_state() not in {"mid_tool", "mid_loop"}:
+                continue
+
+            channel, chat_id = self._split_session_key(key)
+            logger.info("Auto-resuming interrupted session {}", key)
+            response = await self._resume_session(session, channel, chat_id)
+            if response is not None:
+                await self.bus.publish_outbound(response)
+            resumed += 1
+
+        return resumed
+
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
         self._running = True
         await self._connect_mcp()
+        resumed = await self.resume_inflight_sessions()
+        if resumed:
+            logger.info("Auto-resumed {} interrupted session(s)", resumed)
         logger.info("Agent loop started")
 
         while self._running:
@@ -378,7 +478,9 @@ class AgentLoop:
             logger.info("Processing system message from {}", msg.sender_id)
             key = f"{channel}:{chat_id}"
             session = self.sessions.get_or_create(key)
-            self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
+            metadata = msg.metadata or {}
+            resume_notice = self._resume_notice_for_state(session.detect_resume_state())
+            self._set_tool_context(channel, chat_id, metadata.get("message_id"))
             memory_context = await self._retrieve_memory_context(session, msg.content)
             history = session.get_history(max_messages=self.memory_window)
             initial_messages = self.context.build_messages(
@@ -387,9 +489,14 @@ class AgentLoop:
                 channel=channel,
                 chat_id=chat_id,
                 memory_context=memory_context,
+                resume_notice=resume_notice,
             )
             turn_start = max(len(initial_messages) - 1, 0)
-            final_content, _, all_msgs = await self._run_agent_loop(initial_messages)
+            final_content, _, all_msgs = await self._run_agent_loop(
+                initial_messages,
+                session=session,
+                checkpoint_start=turn_start,
+            )
             self._save_turn(session, all_msgs, turn_start)
             self.sessions.save(session)
             return OutboundMessage(channel=channel, chat_id=chat_id,
@@ -400,6 +507,7 @@ class AgentLoop:
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
+        metadata = msg.metadata or {}
 
         # Slash commands
         cmd = msg.content.strip().lower()
@@ -459,7 +567,8 @@ class AgentLoop:
             _task = asyncio.create_task(_consolidate_and_unlock())
             self._consolidation_tasks.add(_task)
 
-        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
+        resume_notice = self._resume_notice_for_state(session.detect_resume_state())
+        self._set_tool_context(msg.channel, msg.chat_id, metadata.get("message_id"))
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
@@ -472,6 +581,7 @@ class AgentLoop:
             media=msg.media if msg.media else None,
             channel=msg.channel, chat_id=msg.chat_id,
             memory_context=memory_context,
+            resume_notice=resume_notice,
         )
         turn_start = max(len(initial_messages) - 1, 0)
 
@@ -484,7 +594,10 @@ class AgentLoop:
             ))
 
         final_content, _, all_msgs = await self._run_agent_loop(
-            initial_messages, on_progress=on_progress or _bus_progress,
+            initial_messages,
+            on_progress=on_progress or _bus_progress,
+            session=session,
+            checkpoint_start=turn_start,
         )
 
         if final_content is None:
@@ -502,25 +615,12 @@ class AgentLoop:
 
         return OutboundMessage(
             channel=msg.channel, chat_id=msg.chat_id, content=final_content,
-            metadata=msg.metadata or {},
+            metadata=metadata,
         )
 
-    _TOOL_RESULT_MAX_CHARS = 500
-
     def _save_turn(self, session: Session, messages: list[dict], start_index: int) -> None:
-        """Save current-turn messages into session, truncating large tool results."""
-        from datetime import datetime
-        for m in messages[max(start_index, 0):]:
-            entry = {k: v for k, v in m.items() if k != "reasoning_content"}
-            if entry.get("role") not in {"user", "assistant", "tool"}:
-                continue
-            if entry.get("role") == "tool" and isinstance(entry.get("content"), str):
-                content = entry["content"]
-                if len(content) > self._TOOL_RESULT_MAX_CHARS:
-                    entry["content"] = content[:self._TOOL_RESULT_MAX_CHARS] + "\n... (truncated)"
-            entry.setdefault("timestamp", datetime.now().isoformat())
-            session.messages.append(entry)
-        session.updated_at = datetime.now()
+        """End-of-turn hook; messages are checkpointed during loop execution."""
+        _ = (session, messages, start_index)
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
         """Consolidate file memory and optionally graph memory. Returns file-memory success."""

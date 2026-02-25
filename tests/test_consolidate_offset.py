@@ -242,6 +242,46 @@ class TestSessionPersistence:
 
         assert replace_calls == 1
 
+    def test_append_writes_incremental_jsonl_without_atomic_replace(
+        self, temp_manager, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Session.append should append in place and avoid full-file rewrite."""
+        session = temp_manager.get_or_create("test:append")
+        replace_calls = 0
+        original_replace = Path.replace
+
+        def _record_replace(self: Path, target: Path):
+            nonlocal replace_calls
+            replace_calls += 1
+            return original_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", _record_replace)
+        session.append({"role": "user", "content": "hello"})
+
+        path = temp_manager._get_session_path("test:append")
+        lines = path.read_text(encoding="utf-8").splitlines()
+
+        assert replace_calls == 0
+        assert len(lines) == 2  # metadata + one message
+        assert json.loads(lines[1])["content"] == "hello"
+        assert session.messages[-1]["content"] == "hello"
+
+    def test_checkpoint_appends_multiple_messages(self, temp_manager) -> None:
+        """Session.checkpoint should append all provided messages in order."""
+        session = temp_manager.get_or_create("test:checkpoint")
+        session.checkpoint([
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "tool", "tool_call_id": "tc_1", "name": "read_file", "content": "ok"},
+        ])
+
+        path = temp_manager._get_session_path("test:checkpoint")
+        lines = path.read_text(encoding="utf-8").splitlines()
+        persisted = [json.loads(line) for line in lines[1:]]
+
+        assert [m["role"] for m in persisted] == ["user", "assistant", "tool"]
+        assert [m["role"] for m in session.messages] == ["user", "assistant", "tool"]
+
     def test_load_coerces_invalid_last_consolidated(self, temp_manager):
         """Invalid metadata last_consolidated values should be sanitized."""
         path = temp_manager._get_session_path("test:bad_last_consolidated")

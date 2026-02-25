@@ -125,24 +125,26 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
     def build_messages(
         self,
         history: list[dict[str, Any]],
-        current_message: str,
+        current_message: str | None,
         skill_names: list[str] | None = None,
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
         memory_context: str | None = None,
+        resume_notice: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
 
         Args:
             history: Previous conversation messages.
-            current_message: The new user message.
+            current_message: The new user message (or None for resume turns).
             skill_names: Optional skills to include.
             media: Optional list of local file paths for images/media.
             channel: Current channel (telegram, feishu, etc.).
             chat_id: Current chat/user ID.
             memory_context: Optional retrieved snippets for this turn only.
+            resume_notice: Optional restart note injected as a separate system message.
 
         Returns:
             List of messages including system prompt.
@@ -186,13 +188,17 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         # History
         messages.extend(history)
 
+        if resume_notice:
+            messages.append({"role": "system", "content": resume_notice})
+
         memory_message = self._build_retrieved_memory_message(memory_context)
         if memory_message:
             messages.append({"role": "system", "content": memory_message})
 
         # Current message (with optional image attachments)
-        user_content = self._build_user_content(current_message, media)
-        messages.append({"role": "user", "content": user_content})
+        if current_message is not None:
+            user_content = self._build_user_content(current_message, media)
+            messages.append({"role": "user", "content": user_content})
 
         return messages
 

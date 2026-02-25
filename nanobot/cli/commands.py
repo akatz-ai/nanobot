@@ -501,7 +501,18 @@ def gateway_worker(
             await router.stop()
             await channels.stop_all()
 
-    asyncio.run(run())
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def _sigterm_as_keyboard_interrupt(_signum, _frame) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _sigterm_as_keyboard_interrupt)
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 @app.command()

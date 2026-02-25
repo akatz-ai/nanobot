@@ -176,6 +176,8 @@ class TurnContextLogger:
             return "retrieved_memory"
         if "interrupted mid-turn" in content or "system restart" in content:
             return "resume_notice"
+        if "Session Continuity" in content and "compacted" in content:
+            return "continuity_context"
         return "other"
 
 

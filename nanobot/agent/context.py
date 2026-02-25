@@ -214,6 +214,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         chat_id: str | None = None,
         memory_context: str | None = None,
         resume_notice: str | None = None,
+        continuity_context: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -227,6 +228,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             chat_id: Current chat/user ID.
             memory_context: Optional retrieved snippets for this turn only.
             resume_notice: Optional restart note injected as a separate system message.
+            continuity_context: Optional recent conversation snapshot from before compaction.
 
         Returns:
             List of messages including system prompt.
@@ -275,6 +277,19 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
                         block_tag="daily_history_data",
                     ),
                 })
+
+        # Post-compaction continuity context
+        if continuity_context:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "## Session Continuity\n"
+                    "The conversation was just compacted to manage context length. "
+                    "Older messages have been summarized into memory above. "
+                    "Here is what you were just discussing — continue naturally from this point:\n\n"
+                    f"{continuity_context}"
+                ),
+            })
 
         # History
         messages.extend(history)

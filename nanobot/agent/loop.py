@@ -748,15 +748,44 @@ class AgentLoop:
         if (unconsolidated >= self.memory_window and session.key not in self._consolidating):
             self._consolidating.add(session.key)
             lock = self._get_consolidation_lock(session.key)
+            # Capture channel/chat_id for the notification closure
+            _notify_channel = msg.channel
+            _notify_chat_id = msg.chat_id
 
             async def _consolidate_and_unlock():
                 try:
                     async with lock:
+                        # Snapshot recent conversation for post-compaction continuity
+                        continuity = self._snapshot_continuity_context(session)
+                        if continuity:
+                            session.metadata["continuity_context"] = continuity
+                            logger.info(
+                                "Saved continuity context ({} chars) for post-compaction injection",
+                                len(continuity),
+                            )
+
                         if await self._consolidate_memory(session):
                             # Persist consolidation checkpoint immediately to survive restarts.
                             self.sessions.save(session)
+                            # Notify the user that compaction occurred
+                            try:
+                                await self.bus.publish_outbound(OutboundMessage(
+                                    channel=_notify_channel,
+                                    chat_id=_notify_chat_id,
+                                    content=(
+                                        "⚙️ *Session compacted* — older context has been "
+                                        "summarized to free up space. Recent conversation preserved."
+                                    ),
+                                    metadata={"_system_notice": True},
+                                ))
+                            except Exception:
+                                logger.warning("Failed to send compaction notice")
+                        else:
+                            # Compaction failed — remove the continuity context we just saved
+                            session.metadata.pop("continuity_context", None)
                 except Exception:
                     logger.exception("Background consolidation failed for {}", session.key)
+                    session.metadata.pop("continuity_context", None)
                 finally:
                     self._consolidating.discard(session.key)
                     self._prune_consolidation_lock(session.key, lock)
@@ -775,6 +804,14 @@ class AgentLoop:
 
         memory_context = await self._retrieve_memory_context(session, msg.content)
         history = session.get_history(max_messages=self.memory_window)
+
+        # Consume post-compaction continuity context (one-shot)
+        continuity_context = session.metadata.pop("continuity_context", None)
+        if continuity_context:
+            logger.info("Injecting continuity context ({} chars) into post-compaction turn", len(continuity_context))
+            # Persist the metadata change (continuity_context removed)
+            self.sessions.save(session)
+
         initial_messages = self.context.build_messages(
             history=history,
             current_message=msg.content,
@@ -783,6 +820,7 @@ class AgentLoop:
             channel=msg.channel, chat_id=msg.chat_id,
             memory_context=memory_context,
             resume_notice=resume_notice,
+            continuity_context=continuity_context,
         )
         self._get_context_logger(session).log_turn(
             built_messages=initial_messages,
@@ -829,6 +867,67 @@ class AgentLoop:
     def _save_turn(self, session: Session, messages: list[dict], start_index: int) -> None:
         """End-of-turn hook; messages are checkpointed during loop execution."""
         _ = (session, messages, start_index)
+
+    @staticmethod
+    def _snapshot_continuity_context(
+        session: Session,
+        *,
+        max_exchanges: int = 4,
+        max_chars: int = 3000,
+    ) -> str | None:
+        """Extract the last N user/assistant text exchanges for post-compaction continuity.
+
+        Returns a formatted string of recent conversation, or None if nothing useful.
+        Only includes text content — tool calls, tool results, and system messages are stripped.
+        """
+        exchanges: list[tuple[str, str]] = []  # (role, text)
+
+        for msg in reversed(session.messages):
+            role = msg.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            # Skip assistant messages that are tool-call-only (no text content)
+            if role == "assistant":
+                content = msg.get("content")
+                if not content or not str(content).strip():
+                    continue
+            text = str(msg.get("content", "")).strip()
+            if not text:
+                continue
+            exchanges.append((role, text))
+            # Count user messages to cap exchanges
+            user_count = sum(1 for r, _ in exchanges if r == "user")
+            if user_count >= max_exchanges:
+                break
+
+        if not exchanges:
+            return None
+
+        exchanges.reverse()
+
+        # Ensure we start with a user message
+        while exchanges and exchanges[0][0] != "user":
+            exchanges.pop(0)
+
+        if not exchanges:
+            return None
+
+        # Build the formatted output, truncating from the front if over budget
+        lines: list[str] = []
+        total_chars = 0
+        for role, text in reversed(exchanges):
+            label = "User" if role == "user" else "Assistant"
+            # Truncate individual messages that are very long
+            if len(text) > 600:
+                text = text[:597] + "..."
+            line = f"**{label}:** {text}"
+            total_chars += len(line) + 1
+            if total_chars > max_chars and lines:
+                break
+            lines.append(line)
+
+        lines.reverse()
+        return "\n\n".join(lines) if lines else None
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
         """Consolidate file memory and optionally graph memory. Returns file-memory success."""

@@ -91,6 +91,7 @@ class AgentLoop:
         provider: LLMProvider,
         workspace: Path,
         model: str | None = None,
+        background_model: str | None = None,
         max_iterations: int = 40,
         temperature: float = 0.1,
         max_tokens: int = 4096,
@@ -112,6 +113,7 @@ class AgentLoop:
         self.provider = provider
         self.workspace = workspace
         self.model = model or provider.get_default_model()
+        self.background_model = background_model or self.model
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -187,10 +189,12 @@ class AgentLoop:
         try:
             from agent_memory_nanobot import NanobotMemoryModule
 
+            module_config = dict(self._memory_graph_config)
+            module_config.setdefault("background_model", self.background_model)
             self._memory_module = NanobotMemoryModule(
                 provider=self.provider,
                 workspace=self.workspace,
-                config=self._memory_graph_config,
+                config=module_config,
             )
             for tool in self._memory_module.get_tools():
                 self.tools.register(tool)
@@ -1214,7 +1218,7 @@ class AgentLoop:
                             graph_window_messages = list(session.messages[start_index:end_index])
 
             success = await MemoryStore(self.workspace).consolidate(
-                session, self.provider, self.model,
+                session, self.provider, self.background_model,
                 archive_all=archive_all, keep_count=self._CONSOLIDATION_KEEP_COUNT,
             )
             if self._memory_module and self._memory_module.consolidator and graph_window_messages:

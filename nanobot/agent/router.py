@@ -138,6 +138,7 @@ class AgentRouter:
         d = self.config.agents.defaults
         return ResolvedAgentProfile(
             model=d.model,
+            background_model=d.background_model,
             max_tokens=d.max_tokens,
             temperature=d.temperature,
             max_tool_iterations=d.max_tool_iterations,
@@ -160,6 +161,7 @@ class AgentRouter:
             provider=self.provider,
             workspace=workspace,
             model=profile.model,
+            background_model=profile.background_model,
             temperature=profile.temperature,
             max_tokens=profile.max_tokens,
             max_iterations=profile.max_tool_iterations,

@@ -436,6 +436,7 @@ async def test_consolidate_memory_keeps_legacy_path(tmp_path: Path):
         provider=_StubProvider(),
         workspace=tmp_path,
         model="stub-model",
+        background_model="cheap-bg-model",
     )
     agent._CONSOLIDATION_KEEP_COUNT = 5
     agent._memory_graph_config = {"consolidation": {"engine": "legacy"}}
@@ -455,6 +456,8 @@ async def test_consolidate_memory_keeps_legacy_path(tmp_path: Path):
 
     assert ok is True
     legacy_consolidate.assert_awaited_once()
+    args = legacy_consolidate.await_args.args
+    assert args[2] == "cheap-bg-model"
     consolidator.consolidate_session.assert_awaited_once()
 
 

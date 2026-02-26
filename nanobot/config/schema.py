@@ -207,6 +207,7 @@ class AgentDefaults(Base):
 
     workspace: str = "~/.nanobot/workspace"
     model: str = "anthropic/claude-opus-4-5"
+    background_model: str | None = None  # Optional cheaper model for compaction/consolidation tasks.
     max_tokens: int = 100_000
     temperature: float = 0.1
     max_tool_iterations: int = 40
@@ -217,6 +218,7 @@ class AgentProfile(Base):
     """Per-agent profile configuration. None values fall back to AgentDefaults."""
 
     model: str | None = None
+    background_model: str | None = None
     max_tokens: int | None = None
     temperature: float | None = None
     max_tool_iterations: int | None = None
@@ -231,6 +233,11 @@ class AgentProfile(Base):
         """Merge with defaults to produce a fully resolved profile."""
         return ResolvedAgentProfile(
             model=self.model or defaults.model,
+            background_model=(
+                self.background_model
+                if self.background_model is not None
+                else defaults.background_model
+            ),
             max_tokens=self.max_tokens if self.max_tokens is not None else defaults.max_tokens,
             temperature=self.temperature if self.temperature is not None else defaults.temperature,
             max_tool_iterations=self.max_tool_iterations if self.max_tool_iterations is not None else defaults.max_tool_iterations,
@@ -247,6 +254,7 @@ class ResolvedAgentProfile(Base):
     """Fully resolved agent profile (no None values for core settings)."""
 
     model: str
+    background_model: str | None = None
     max_tokens: int
     temperature: float
     max_tool_iterations: int

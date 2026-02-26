@@ -535,8 +535,8 @@ def gateway_worker(
     provider = _make_provider(config)
 
     # Create cron service first (callback set after router creation)
-    cron_store_path = get_data_dir() / "cron" / "jobs.json"
-    cron = CronService(cron_store_path)
+    cron_jobs_path = get_data_dir() / "cron" / "jobs"
+    cron = CronService(cron_jobs_path)
 
     # Create channel manager (shares the front-door bus)
     channels = ChannelManager(config, bus)
@@ -848,8 +848,8 @@ def agent(
     provider = _make_provider(config)
 
     # Create cron service for tool usage (no callback needed for CLI unless running)
-    cron_store_path = get_data_dir() / "cron" / "jobs.json"
-    cron = CronService(cron_store_path)
+    cron_jobs_path = get_data_dir() / "cron" / "jobs"
+    cron = CronService(cron_jobs_path)
 
     if logs:
         logger.enable("nanobot")
@@ -1195,8 +1195,8 @@ def cron_list(
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
     
-    store_path = get_data_dir() / "cron" / "jobs.json"
-    service = CronService(store_path)
+    jobs_path = get_data_dir() / "cron" / "jobs"
+    service = CronService(jobs_path)
     
     jobs = service.list_jobs(include_disabled=all)
     
@@ -1248,6 +1248,8 @@ def cron_add(
     cron_expr: str = typer.Option(None, "--cron", "-c", help="Cron expression (e.g. '0 9 * * *')"),
     tz: str | None = typer.Option(None, "--tz", help="IANA timezone for cron (e.g. 'America/Vancouver')"),
     at: str = typer.Option(None, "--at", help="Run once at time (ISO format)"),
+    timeout: str | None = typer.Option(None, "--timeout", help="Auto-delete timeout (e.g. '20m')"),
+    max_runs: int | None = typer.Option(None, "--max-runs", help="Auto-delete after N runs"),
     deliver: bool = typer.Option(False, "--deliver", "-d", help="Deliver response to channel"),
     to: str = typer.Option(None, "--to", help="Recipient for delivery"),
     channel: str = typer.Option(None, "--channel", help="Channel for delivery (e.g. 'telegram', 'whatsapp')"),
@@ -1274,8 +1276,8 @@ def cron_add(
         console.print("[red]Error: Must specify --every, --cron, or --at[/red]")
         raise typer.Exit(1)
     
-    store_path = get_data_dir() / "cron" / "jobs.json"
-    service = CronService(store_path)
+    jobs_path = get_data_dir() / "cron" / "jobs"
+    service = CronService(jobs_path)
     
     try:
         job = service.add_job(
@@ -1285,6 +1287,8 @@ def cron_add(
             deliver=deliver,
             to=to,
             channel=channel,
+            timeout=timeout,
+            max_runs=max_runs,
         )
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -1301,8 +1305,8 @@ def cron_remove(
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
     
-    store_path = get_data_dir() / "cron" / "jobs.json"
-    service = CronService(store_path)
+    jobs_path = get_data_dir() / "cron" / "jobs"
+    service = CronService(jobs_path)
     
     if service.remove_job(job_id):
         console.print(f"[green]✓[/green] Removed job {job_id}")
@@ -1319,8 +1323,8 @@ def cron_enable(
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
     
-    store_path = get_data_dir() / "cron" / "jobs.json"
-    service = CronService(store_path)
+    jobs_path = get_data_dir() / "cron" / "jobs"
+    service = CronService(jobs_path)
     
     job = service.enable_job(job_id, enabled=not disable)
     if job:
@@ -1362,8 +1366,8 @@ def cron_run(
         channels_config=config.channels,
     )
 
-    store_path = get_data_dir() / "cron" / "jobs.json"
-    service = CronService(store_path)
+    jobs_path = get_data_dir() / "cron" / "jobs"
+    service = CronService(jobs_path)
 
     result_holder = []
 

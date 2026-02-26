@@ -888,13 +888,13 @@ class AgentLoop:
 
                         prev_consolidated = session.last_consolidated
                         if await self._consolidate_memory(session):
-                            # Reset token tracking after successful compaction
-                            self._last_input_tokens.pop(session.key, None)
-                            # Persist consolidation checkpoint immediately to survive restarts.
-                            self.sessions.save(session)
-                            # Only notify if consolidation actually moved the checkpoint forward
+                            # Only act if consolidation actually moved the checkpoint forward
                             # (_consolidate_memory returns True for no-ops too).
                             if session.last_consolidated > prev_consolidated:
+                                # Reset token tracking so the next call gets a fresh reading
+                                self._last_input_tokens.pop(session.key, None)
+                                # Persist consolidation checkpoint to survive restarts.
+                                self.sessions.save(session)
                                 try:
                                     await self.bus.publish_outbound(OutboundMessage(
                                         channel=_notify_channel,

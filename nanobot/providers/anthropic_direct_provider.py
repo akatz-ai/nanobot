@@ -365,12 +365,17 @@ class AnthropicDirectProvider(LLMProvider):
         usage_data = data.get("usage", {})
         input_tokens = usage_data.get("input_tokens", 0)
         output_tokens = usage_data.get("output_tokens", 0)
+        cache_read = usage_data.get("cache_read_input_tokens", 0)
+        cache_creation = usage_data.get("cache_creation_input_tokens", 0)
+        # Anthropic's input_tokens only reports non-cached tokens.
+        # Total input = input_tokens + cache_read + cache_creation (per Anthropic docs).
+        total_input = input_tokens + cache_read + cache_creation
         usage = {
             "prompt_tokens": input_tokens,
             "completion_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-            "cache_read_input_tokens": usage_data.get("cache_read_input_tokens", 0),
-            "cache_creation_input_tokens": usage_data.get("cache_creation_input_tokens", 0),
+            "total_tokens": total_input + output_tokens,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_creation,
         }
 
         return LLMResponse(

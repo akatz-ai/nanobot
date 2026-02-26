@@ -84,6 +84,7 @@ class AgentLoop:
     _HISTORY_MAX_MESSAGES = 1000
     _CONSOLIDATION_KEEP_COUNT = 25
     _CONTINUITY_TTL_MESSAGES = 5
+    _HYBRID_CONSOLIDATION_BATCH_MESSAGES = 30
 
     def __init__(
         self,
@@ -1152,10 +1153,17 @@ class AgentLoop:
                         await self._memory_module.initialize()
 
                     keep_count = 0 if archive_all else self._CONSOLIDATION_KEEP_COUNT
+                    batch_size = max(
+                        1,
+                        int(
+                            consolidation_cfg.get("batch_messages")
+                            or self._HYBRID_CONSOLIDATION_BATCH_MESSAGES
+                        ),
+                    )
                     logger.info(
-                        "Hybrid consolidation for {}: archive_all={}, keep_count={}, "
+                        "Hybrid consolidation for {}: archive_all={}, keep_count={}, batch_size={}, "
                         "total_messages={}, last_consolidated={}",
-                        session.key, archive_all, keep_count,
+                        session.key, archive_all, keep_count, batch_size,
                         len(session.messages), session.last_consolidated,
                     )
                     if not archive_all:
@@ -1178,7 +1186,37 @@ class AgentLoop:
                                 end_index, start_index,
                             )
                             return True
-                        target_last_consolidated = end_index
+                        completed_batches = 0
+                        batch_start = start_index
+                        while batch_start < end_index:
+                            batch_end = min(batch_start + batch_size, end_index)
+                            logger.info(
+                                "Hybrid consolidation batch {} for {}: messages[{}:{}]",
+                                completed_batches + 1,
+                                session.key,
+                                batch_start,
+                                batch_end,
+                            )
+                            await self._memory_module.hybrid.compact(
+                                session_key=session.key,
+                                messages=session.messages,
+                                start_index=batch_start,
+                                end_index=batch_end,
+                            )
+                            session.last_consolidated = batch_end
+                            # Persist per-batch checkpoint so failures are resumable.
+                            self.sessions.save(session)
+                            completed_batches += 1
+                            batch_start = batch_end
+
+                        logger.info(
+                            "Hybrid memory consolidation done: {} messages, batches={}, "
+                            "last_consolidated={}",
+                            len(session.messages),
+                            completed_batches,
+                            session.last_consolidated,
+                        )
+                        return True
                     else:
                         start_index = 0
                         end_index = len(session.messages)

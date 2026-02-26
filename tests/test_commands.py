@@ -430,6 +430,85 @@ async def test_consolidate_memory_uses_hybrid_engine_path(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_consolidate_memory_hybrid_chunks_large_windows(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    agent._CONSOLIDATION_KEEP_COUNT = 10
+    agent._memory_graph_config = {
+        "consolidation": {"engine": "hybrid", "batch_messages": 30}
+    }
+
+    hybrid = SimpleNamespace(compact=AsyncMock(return_value=SimpleNamespace()))
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+
+    session = agent.sessions.get_or_create("cli:test")
+    for i in range(95):
+        session.add_message("user", f"msg-{i}")
+    agent.sessions.save(session)
+
+    ok = await agent._consolidate_memory(session, archive_all=False)
+
+    assert ok is True
+    assert session.last_consolidated == 85
+    assert hybrid.compact.await_count == 3
+    call_windows = [
+        (call.kwargs["start_index"], call.kwargs["end_index"])
+        for call in hybrid.compact.await_args_list
+    ]
+    assert call_windows == [(0, 30), (30, 60), (60, 85)]
+
+
+@pytest.mark.asyncio
+async def test_consolidate_memory_hybrid_preserves_partial_batch_progress_on_failure(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    agent._CONSOLIDATION_KEEP_COUNT = 10
+    agent._memory_graph_config = {
+        "consolidation": {"engine": "hybrid", "batch_messages": 30}
+    }
+
+    call_counter = {"count": 0}
+
+    async def _failing_compact(*, start_index: int, end_index: int, **kwargs):
+        call_counter["count"] += 1
+        if call_counter["count"] == 2:
+            raise RuntimeError("batch failure")
+        return SimpleNamespace(start_index=start_index, end_index=end_index)
+
+    hybrid = SimpleNamespace(compact=AsyncMock(side_effect=_failing_compact))
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+
+    session = agent.sessions.get_or_create("cli:test")
+    for i in range(95):
+        session.add_message("user", f"msg-{i}")
+    agent.sessions.save(session)
+
+    ok = await agent._consolidate_memory(session, archive_all=False)
+
+    assert ok is False
+    assert session.last_consolidated == 30
+
+    hybrid.compact = AsyncMock(return_value=SimpleNamespace())
+    ok_retry = await agent._consolidate_memory(session, archive_all=False)
+
+    assert ok_retry is True
+    assert session.last_consolidated == 85
+    retry_windows = [
+        (call.kwargs["start_index"], call.kwargs["end_index"])
+        for call in hybrid.compact.await_args_list
+    ]
+    assert retry_windows == [(30, 60), (60, 85)]
+
+
+@pytest.mark.asyncio
 async def test_consolidate_memory_keeps_legacy_path(tmp_path: Path):
     agent = AgentLoop(
         bus=MessageBus(),

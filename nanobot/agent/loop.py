@@ -82,7 +82,7 @@ class AgentLoop:
     _DEFAULT_CONTEXT_WINDOW = 200_000
     _COMPACTION_THRESHOLD_RATIO = 0.70  # Compact at 70% of context window
     _HISTORY_MAX_MESSAGES = 1000
-    _CONSOLIDATION_KEEP_COUNT = 500
+    _CONSOLIDATION_KEEP_COUNT = 25
 
     def __init__(
         self,

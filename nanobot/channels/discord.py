@@ -339,22 +339,22 @@ class DiscordChannel(BaseChannel):
         name: str,
         topic: str | None = None,
         category_id: str | None = None,
+        channel_type: int = 0,
     ) -> str | None:
-        """Create a text channel in a guild. Returns the new channel ID or None on failure."""
-        if not self._http:
-            logger.warning("Discord HTTP client not initialized")
-            return None
+        """Create a guild channel. Defaults to type=0 (text). Returns channel ID or None."""
+        owns_client = self._http is None
+        client = self._http or httpx.AsyncClient(timeout=30.0)
 
         url = f"{DISCORD_API_BASE}/guilds/{guild_id}/channels"
         headers = {"Authorization": f"Bot {self.config.token}"}
-        payload: dict[str, Any] = {"name": name, "type": 0}  # 0 = GUILD_TEXT
-        if topic:
+        payload: dict[str, Any] = {"name": name, "type": channel_type}
+        if topic and channel_type == 0:
             payload["topic"] = topic
-        if category_id:
+        if category_id and channel_type == 0:
             payload["parent_id"] = category_id
 
         try:
-            resp = await self._http.post(url, headers=headers, json=payload)
+            resp = await client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
             channel_id = str(data["id"])
@@ -363,6 +363,9 @@ class DiscordChannel(BaseChannel):
         except Exception as e:
             logger.error("Failed to create Discord channel '{}': {}", name, e)
             return None
+        finally:
+            if owns_client:
+                await client.aclose()
 
     async def create_channel_webhook(
         self,
@@ -371,16 +374,17 @@ class DiscordChannel(BaseChannel):
         avatar_url: str | None = None,
     ) -> str | None:
         """Create a webhook for a channel. Returns the webhook URL or None on failure."""
-        if not self._http:
-            logger.warning("Discord HTTP client not initialized")
-            return None
+        owns_client = self._http is None
+        client = self._http or httpx.AsyncClient(timeout=30.0)
 
         url = f"{DISCORD_API_BASE}/channels/{channel_id}/webhooks"
         headers = {"Authorization": f"Bot {self.config.token}"}
         payload: dict[str, Any] = {"name": name}
+        if avatar_url:
+            logger.debug("Discord webhook avatar_url ignored (URL-to-avatar upload not implemented)")
 
         try:
-            resp = await self._http.post(url, headers=headers, json=payload)
+            resp = await client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
             webhook_url = f"{DISCORD_API_BASE}/webhooks/{data['id']}/{data['token']}"
@@ -389,6 +393,9 @@ class DiscordChannel(BaseChannel):
         except Exception as e:
             logger.error("Failed to create webhook for channel {}: {}", channel_id, e)
             return None
+        finally:
+            if owns_client:
+                await client.aclose()
 
     def register_webhook(
         self,
@@ -407,16 +414,19 @@ class DiscordChannel(BaseChannel):
 
     async def list_guild_channels(self, guild_id: str) -> list[dict[str, Any]]:
         """List all channels in a guild."""
-        if not self._http:
-            return []
+        owns_client = self._http is None
+        client = self._http or httpx.AsyncClient(timeout=30.0)
 
         url = f"{DISCORD_API_BASE}/guilds/{guild_id}/channels"
         headers = {"Authorization": f"Bot {self.config.token}"}
 
         try:
-            resp = await self._http.get(url, headers=headers)
+            resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
             logger.error("Failed to list Discord guild channels: {}", e)
             return []
+        finally:
+            if owns_client:
+                await client.aclose()

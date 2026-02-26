@@ -245,6 +245,173 @@ def _setup_secondary_env_vars(config: Config) -> None:
             os.environ.setdefault(env_key, p.api_key)
 
 
+# ============================================================================
+# Phase 1 Provisioning
+# ============================================================================
+
+
+@app.command()
+def provision(
+    check: bool = typer.Option(
+        False,
+        "--check",
+        help="Validate existing Phase 1 provisioning setup.",
+    ),
+    bot_token: str | None = typer.Option(
+        None,
+        "--bot-token",
+        help="Discord bot token (required for provision/check).",
+    ),
+    guild_id: str | None = typer.Option(
+        None,
+        "--guild-id",
+        help="Discord guild/server ID (required for provision/check).",
+    ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="Anthropic model name (e.g. claude-sonnet-4-20250514).",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Overwrite existing config without prompt.",
+    ),
+):
+    """Provision a Phase 1 nanobot instance (basic Discord layout only)."""
+    from nanobot.config.loader import get_config_path, save_config
+    from nanobot.discord.server_setup import setup_basic_server
+    from nanobot.provisioning.phase1 import (
+        DEFAULT_ANTHROPIC_MODEL,
+        build_basic_config,
+        run_phase1_checks,
+        summarize_expected_layout,
+        validate_config_file,
+    )
+
+    config_path = get_config_path()
+
+    if check:
+        try:
+            config, _ = validate_config_file(config_path)
+        except RuntimeError as e:
+            console.print(f"[red]✗[/red] {e}")
+            raise typer.Exit(1)
+
+        check_bot_token = bot_token or config.channels.discord.token
+        check_guild_id = guild_id or config.channels.discord.guild_id
+        if not check_bot_token or not check_guild_id:
+            console.print(
+                "[red]✗[/red] Missing Discord token/guild. "
+                "Provide --bot-token/--guild-id or ensure config has channels.discord configured."
+            )
+            raise typer.Exit(1)
+
+        checks = asyncio.run(
+            run_phase1_checks(
+                bot_token=check_bot_token,
+                guild_id=check_guild_id,
+                config_path=config_path,
+            )
+        )
+        table = Table(title="Provision Check")
+        table.add_column("Check", style="cyan")
+        table.add_column("Status")
+        table.add_column("Details", style="dim")
+        has_failure = False
+        for item in checks:
+            ok = bool(item.ok)
+            status = "[green]PASS[/green]" if ok else "[red]FAIL[/red]"
+            table.add_row(item.name, status, item.detail)
+            has_failure = has_failure or (not ok)
+        console.print(table)
+        if has_failure:
+            raise typer.Exit(1)
+        return
+
+    # Interactive provisioning flow
+    provision_bot_token = bot_token or typer.prompt("Discord bot token", hide_input=True).strip()
+    provision_guild_id = guild_id or typer.prompt("Discord guild ID").strip()
+    provision_model = model or typer.prompt(
+        "Anthropic model preference",
+        default=DEFAULT_ANTHROPIC_MODEL,
+    ).strip()
+
+    if not provision_bot_token:
+        console.print("[red]✗[/red] Discord bot token is required.")
+        raise typer.Exit(1)
+    if not provision_guild_id:
+        console.print("[red]✗[/red] Discord guild ID is required.")
+        raise typer.Exit(1)
+
+    if config_path.exists() and not yes:
+        console.print(f"[yellow]Config already exists at {config_path}[/yellow]")
+        if not typer.confirm("Overwrite existing config with Phase 1 provisioned config?"):
+            console.print("[yellow]Provisioning cancelled.[/yellow]")
+            raise typer.Exit(1)
+
+    setup_result = asyncio.run(
+        setup_basic_server(
+            guild_id=provision_guild_id,
+            bot_token=provision_bot_token,
+        )
+    )
+
+    config = build_basic_config(
+        bot_token=provision_bot_token,
+        guild_id=provision_guild_id,
+        model=provision_model,
+        channel_ids=setup_result.channel_ids,
+        webhook_urls=setup_result.webhook_urls,
+    )
+    save_config(config, config_path)
+
+    # Post-write validation focused on provision success criteria.
+    checks = asyncio.run(
+        run_phase1_checks(
+            bot_token=provision_bot_token,
+            guild_id=provision_guild_id,
+            config_path=config_path,
+        )
+    )
+    required_checks = {"config", "discord-access", "discord-layout", "general-profile", "usage-dashboard"}
+    has_required_failure = any((not c.ok) for c in checks if c.name in required_checks)
+
+    summary = Table(title="Provisioning Summary")
+    summary.add_column("Item", style="cyan")
+    summary.add_column("Value", style="green")
+    summary.add_row("Guild", provision_guild_id)
+    summary.add_row("Model", config.agents.defaults.model)
+    summary.add_row("Config", str(config_path))
+    summary.add_row("Layout", summarize_expected_layout())
+    summary.add_row("Channel #general", setup_result.channel_ids["general"])
+    summary.add_row("Channel #system-status", setup_result.channel_ids["system-status"])
+    summary.add_row("Channel #claude-usage", setup_result.channel_ids["claude-usage"])
+    summary.add_row(
+        "General webhook",
+        "created" if setup_result.webhook_urls.get("general") else "missing",
+    )
+    console.print(summary)
+
+    checks_table = Table(title="Provision Validation")
+    checks_table.add_column("Check", style="cyan")
+    checks_table.add_column("Status")
+    checks_table.add_column("Details", style="dim")
+    for item in checks:
+        status = "[green]PASS[/green]" if item.ok else "[yellow]WARN[/yellow]"
+        if item.name in required_checks and not item.ok:
+            status = "[red]FAIL[/red]"
+        checks_table.add_row(item.name, status, item.detail)
+    console.print(checks_table)
+
+    if has_required_failure:
+        raise typer.Exit(1)
+
+    console.print("\n[green]✓ Provisioning complete.[/green]")
+    console.print("[dim]If Claude auth is missing, run `claude auth login` on this instance, then re-run `nanobot provision --check`.[/dim]")
+
+
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
     from nanobot.providers.litellm_provider import LiteLLMProvider

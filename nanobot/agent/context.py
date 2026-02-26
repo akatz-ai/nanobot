@@ -327,15 +327,22 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
         # Keep retrieval context bounded to avoid prompt bloat.
         max_items = 18
-        max_chars = 3600
-        max_item_chars = 480
+        max_chars = 6000
+        max_item_chars = 600
 
         def _clean(line: str) -> str:
             line = line.strip()
             line = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line)
             return " ".join(line.split())
 
-        candidates = [_clean(line) for line in raw.splitlines()]
+        # The retriever now outputs newline-separated items.  Legacy
+        # pipe-delimited format is also handled as a fallback.
+        if "\n" in raw:
+            candidates = [_clean(line) for line in raw.splitlines()]
+        else:
+            # Legacy pipe-delimited format — split on " | "
+            candidates = [_clean(seg) for seg in raw.split(" | ")]
+
         candidates = [line for line in candidates if line]
         if not candidates:
             compact = " ".join(raw.split())

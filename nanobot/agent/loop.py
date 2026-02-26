@@ -192,6 +192,7 @@ class AgentLoop:
 
             module_config = dict(self._memory_graph_config)
             module_config.setdefault("background_model", self.background_model)
+            module_config.setdefault("agent_id", self.agent_id)
             self._memory_module = NanobotMemoryModule(
                 provider=self.provider,
                 workspace=self.workspace,
@@ -291,6 +292,7 @@ class AgentLoop:
                 current_message=user_message,
                 recent_turns=recent_turns,
                 peer_key=peer_key,
+                agent_id=self.agent_id,
                 prompt_headroom_words=prompt_headroom_words,
             )
         except Exception as e:
@@ -1202,6 +1204,7 @@ class AgentLoop:
                                 messages=session.messages,
                                 start_index=batch_start,
                                 end_index=batch_end,
+                                agent_id=self.agent_id,
                             )
                             session.last_consolidated = batch_end
                             # Persist per-batch checkpoint so failures are resumable.
@@ -1231,6 +1234,7 @@ class AgentLoop:
                         messages=session.messages,
                         start_index=start_index,
                         end_index=end_index,
+                        agent_id=self.agent_id,
                     )
                     session.last_consolidated = target_last_consolidated
                     logger.info(
@@ -1267,6 +1271,7 @@ class AgentLoop:
                         messages=graph_window_messages,
                         peer_key=session.key,
                         source_session=session.key,
+                        agent_id=self.agent_id,
                     )
                     logger.info("Memory graph consolidation complete")
                 except Exception as e:

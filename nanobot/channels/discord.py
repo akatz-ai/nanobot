@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import mimetypes
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,8 @@ from nanobot.config.schema import DiscordConfig
 
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
-MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20MB
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024  # 25MB (Discord limit)
+MAX_ATTACHMENTS_PER_MSG = 10  # Discord limit
 MAX_MESSAGE_LEN = 2000  # Discord message character limit
 
 
@@ -113,10 +115,12 @@ class DiscordChannel(BaseChannel):
         headers = {"Authorization": f"Bot {self.config.token}"}
 
         try:
-            chunks = _split_message(msg.content or "")
-            if not chunks:
-                return
+            # Send media files first (batched up to 10 per message)
+            media_files = self._resolve_media(msg.media)
+            await self._send_media_batches(url, headers, media_files)
 
+            # Send text content
+            chunks = _split_message(msg.content or "")
             for i, chunk in enumerate(chunks):
                 payload: dict[str, Any] = {"content": chunk}
 
@@ -134,22 +138,108 @@ class DiscordChannel(BaseChannel):
         """Send a message via Discord webhook with custom name/avatar."""
         webhook_url = webhook_info["webhook_url"]
 
-        try:
-            chunks = _split_message(msg.content or "")
-            if not chunks:
-                return
+        # Base payload fields for webhook
+        base_payload: dict[str, Any] = {}
+        if webhook_info.get("display_name"):
+            base_payload["username"] = webhook_info["display_name"]
+        if webhook_info.get("avatar_url"):
+            base_payload["avatar_url"] = webhook_info["avatar_url"]
 
+        try:
+            # Send media files first
+            media_files = self._resolve_media(msg.media)
+            await self._send_media_batches(webhook_url, {}, media_files, extra_payload=base_payload)
+
+            # Send text content
+            chunks = _split_message(msg.content or "")
             for chunk in chunks:
-                payload: dict[str, Any] = {"content": chunk}
-                if webhook_info.get("display_name"):
-                    payload["username"] = webhook_info["display_name"]
-                if webhook_info.get("avatar_url"):
-                    payload["avatar_url"] = webhook_info["avatar_url"]
+                payload = {**base_payload, "content": chunk}
 
                 if not await self._send_payload(webhook_url, {}, payload):
                     break
         finally:
             await self._stop_typing(msg.chat_id)
+
+    @staticmethod
+    def _resolve_media(media: list[str] | None) -> list[Path]:
+        """Resolve media paths to Path objects, filtering out missing/oversized files."""
+        if not media:
+            return []
+        resolved: list[Path] = []
+        for item in media:
+            p = Path(item)
+            if not p.is_file():
+                logger.warning("Media file not found, skipping: {}", item)
+                continue
+            if p.stat().st_size > MAX_ATTACHMENT_BYTES:
+                logger.warning("Media file too large (>25MB), skipping: {}", item)
+                continue
+            resolved.append(p)
+        return resolved
+
+    async def _send_media_batches(
+        self,
+        url: str,
+        headers: dict[str, str],
+        files: list[Path],
+        extra_payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Upload media files in batches of up to 10 per Discord message."""
+        if not files:
+            return
+        for i in range(0, len(files), MAX_ATTACHMENTS_PER_MSG):
+            batch = files[i : i + MAX_ATTACHMENTS_PER_MSG]
+            await self._send_multipart(url, headers, batch, extra_payload)
+
+    async def _send_multipart(
+        self,
+        url: str,
+        headers: dict[str, str],
+        files: list[Path],
+        extra_payload: dict[str, Any] | None = None,
+    ) -> bool:
+        """Send files as multipart/form-data to Discord. Returns True on success."""
+        if not self._http or not files:
+            return False
+
+        for attempt in range(3):
+            try:
+                # Build multipart fields
+                form_files: dict[str, Any] = {}
+                attachments_json: list[dict[str, Any]] = []
+
+                for idx, fp in enumerate(files):
+                    mime = mimetypes.guess_type(fp.name)[0] or "application/octet-stream"
+                    form_files[f"files[{idx}]"] = (fp.name, fp.read_bytes(), mime)
+                    attachments_json.append({"id": idx, "filename": fp.name})
+
+                payload: dict[str, Any] = {"attachments": attachments_json}
+                if extra_payload:
+                    payload.update(extra_payload)
+
+                form_files["payload_json"] = (
+                    None,
+                    json.dumps(payload),
+                    "application/json",
+                )
+
+                response = await self._http.post(url, headers=headers, files=form_files)
+                if response.status_code == 429:
+                    data = response.json()
+                    retry_after = float(data.get("retry_after", 1.0))
+                    logger.warning("Discord rate limited, retrying in {}s", retry_after)
+                    await asyncio.sleep(retry_after)
+                    continue
+                response.raise_for_status()
+                names = [fp.name for fp in files]
+                logger.info("Sent {} media file(s) to Discord: {}", len(files), names)
+                return True
+            except Exception as e:
+                if attempt == 2:
+                    logger.error("Error sending Discord media: {}", e)
+                else:
+                    await asyncio.sleep(1)
+        return False
 
     async def _send_payload(
         self, url: str, headers: dict[str, str], payload: dict[str, Any]

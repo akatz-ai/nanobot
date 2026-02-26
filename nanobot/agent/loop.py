@@ -61,6 +61,25 @@ class AgentLoop:
         "Continue where you left off — do not re-execute tools that already have results."
     )
 
+    # Known context window sizes for common models (in tokens).
+    # Used to determine when to trigger compaction (at 70% of window).
+    MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+        "claude-opus-4-6": 200_000,
+        "claude-sonnet-4-6": 200_000,
+        "claude-haiku-3-5": 200_000,
+        "claude-3-5-sonnet": 200_000,
+        "claude-3-5-haiku": 200_000,
+        "claude-3-opus": 200_000,
+        "claude-3-sonnet": 200_000,
+        "claude-3-haiku": 200_000,
+        "gpt-4o": 128_000,
+        "gpt-4-turbo": 128_000,
+        "gpt-4": 8_192,
+        "gpt-3.5-turbo": 16_385,
+    }
+    _DEFAULT_CONTEXT_WINDOW = 200_000
+    _COMPACTION_THRESHOLD_RATIO = 0.70  # Compact at 70% of context window
+
     def __init__(
         self,
         bus: MessageBus,
@@ -134,6 +153,9 @@ class AgentLoop:
         self._memory_module = None
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._processing_lock = asyncio.Lock()
+        # Token-based compaction: track last known input_tokens per session
+        self._last_input_tokens: dict[str, int] = {}
+        self._compaction_token_threshold = self._resolve_compaction_threshold()
         self._register_default_tools()
         self._register_memory_graph_tools()
 
@@ -174,6 +196,39 @@ class AgentLoop:
             logger.warning("agent-memory-nanobot not installed, memory graph disabled")
         except Exception as e:
             logger.warning(f"Failed to initialize memory graph: {e}")
+
+    def _resolve_compaction_threshold(self) -> int:
+        """Determine the token threshold at which compaction should trigger."""
+        context_window = self._get_context_window_size()
+        threshold = int(context_window * self._COMPACTION_THRESHOLD_RATIO)
+        logger.info(
+            "Compaction threshold: {} tokens ({}% of {} context window for model '{}')",
+            threshold,
+            int(self._COMPACTION_THRESHOLD_RATIO * 100),
+            context_window,
+            self.model,
+        )
+        return threshold
+
+    def _get_context_window_size(self) -> int:
+        """Look up the context window size for the current model."""
+        model_lower = (self.model or "").lower()
+        # Try exact match first, then substring match
+        for key, size in self.MODEL_CONTEXT_WINDOWS.items():
+            if key in model_lower:
+                return size
+        return self._DEFAULT_CONTEXT_WINDOW
+
+    def _should_compact_by_tokens(self, session_key: str) -> bool:
+        """Check if the last known input token count exceeds the compaction threshold."""
+        tokens = self._last_input_tokens.get(session_key, 0)
+        if tokens >= self._compaction_token_threshold:
+            logger.info(
+                "Token-based compaction triggered for {}: {} tokens >= {} threshold",
+                session_key, tokens, self._compaction_token_threshold,
+            )
+            return True
+        return False
 
     def _get_context_logger(self, session: Session) -> TurnContextLogger:
         """Get or create a TurnContextLogger for a session."""
@@ -308,10 +363,14 @@ class AgentLoop:
 
     @staticmethod
     def _error_signature(tool_name: str, args: dict, error: str) -> str:
-        """Create a hashable signature for a tool error to detect repetition."""
-        # Normalize: use tool name + sorted arg keys + first 100 chars of error
-        arg_keys = tuple(sorted(args.keys())) if args else ()
-        return f"{tool_name}:{arg_keys}:{error[:100]}"
+        """Create a hashable signature for a tool error to detect repetition.
+
+        Uses full argument values (not just keys) so that different arguments
+        with the same tool name don't falsely trigger the circuit breaker.
+        """
+        # Include full args JSON so only truly identical calls match
+        args_json = json.dumps(args, sort_keys=True, ensure_ascii=False) if args else ""
+        return f"{tool_name}:{args_json}:{error[:200]}"
 
     async def _run_agent_loop(
         self,
@@ -327,10 +386,11 @@ class AgentLoop:
         tools_used: list[str] = []
         checkpoint_cursor = len(messages)
 
-        # Circuit breaker: track consecutive identical errors
+        # Circuit breaker: track consecutive identical tool calls that produce errors.
+        # Only triggers when the model retries the EXACT same tool+args+error combo.
         _last_error_sig: str | None = None
         _consecutive_errors: int = 0
-        _MAX_CONSECUTIVE_ERRORS = 3
+        _MAX_CONSECUTIVE_ERRORS = 5  # Raised from 3 — less aggressive
 
         if session is not None and checkpoint_start is not None:
             start_index = max(0, checkpoint_start)
@@ -348,6 +408,19 @@ class AgentLoop:
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
+
+            # Track token usage for compaction decisions
+            if response.usage and session is not None:
+                input_tokens = response.usage.get("prompt_tokens", 0)
+                if input_tokens:
+                    self._last_input_tokens[session.key] = input_tokens
+                    logger.debug(
+                        "Turn {} token usage: input={}, output={}, total={}",
+                        iteration,
+                        input_tokens,
+                        response.usage.get("completion_tokens", 0),
+                        response.usage.get("total_tokens", 0),
+                    )
 
             # --- Layer 1: Truncation guard ---
             # When output hits max_tokens, tool call JSON may be truncated,
@@ -744,8 +817,25 @@ class AgentLoop:
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
 
-        unconsolidated = len(session.messages) - session.last_consolidated
-        if (unconsolidated >= self.memory_window and session.key not in self._consolidating):
+        # Token-based compaction: check if the session's last known input token count
+        # exceeds 70% of the model's context window. Falls back to message count
+        # if no token data is available yet (first turn of a long-running session).
+        _needs_compaction = False
+        if session.key not in self._consolidating:
+            if self._should_compact_by_tokens(session.key):
+                _needs_compaction = True
+            else:
+                # Fallback: message-count heuristic for sessions that haven't
+                # had a provider call yet (e.g. restored from disk after restart).
+                unconsolidated = len(session.messages) - session.last_consolidated
+                if unconsolidated >= self.memory_window:
+                    _needs_compaction = True
+                    logger.info(
+                        "Message-count fallback compaction for {}: {} unconsolidated >= {}",
+                        session.key, unconsolidated, self.memory_window,
+                    )
+
+        if _needs_compaction:
             self._consolidating.add(session.key)
             lock = self._get_consolidation_lock(session.key)
             # Capture channel/chat_id for the notification closure
@@ -765,6 +855,8 @@ class AgentLoop:
                             )
 
                         if await self._consolidate_memory(session):
+                            # Reset token tracking after successful compaction
+                            self._last_input_tokens.pop(session.key, None)
                             # Persist consolidation checkpoint immediately to survive restarts.
                             self.sessions.save(session)
                             # Notify the user that compaction occurred

@@ -109,11 +109,14 @@ class TokenUsageLogger:
         output_tokens = usage.get("completion_tokens", 0)
         cache_read = usage.get("cache_read_input_tokens", 0)
         cache_creation = usage.get("cache_creation_input_tokens", 0)
+        # Anthropic's input_tokens only reports non-cached tokens.
+        # Total context = input_tokens + cache_read + cache_creation.
+        total_input = input_tokens + cache_read + cache_creation
 
-        self._cumulative_input += input_tokens
+        self._cumulative_input += total_input
         self._cumulative_output += output_tokens
 
-        utilization = (input_tokens / context_window * 100) if context_window > 0 else 0
+        utilization = (total_input / context_window * 100) if context_window > 0 else 0
 
         entry: dict[str, Any] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -122,14 +125,15 @@ class TokenUsageLogger:
             "iteration": iteration,
             "model": model,
             "finish_reason": finish_reason,
-            # Per-call token counts
+            # Per-call token counts (total = all input including cached)
             "input_tokens": input_tokens,
+            "total_input_tokens": total_input,
             "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
+            "total_tokens": total_input + output_tokens,
             # Cache breakdown
             "cache_read_tokens": cache_read,
             "cache_creation_tokens": cache_creation,
-            "cache_hit_pct": round(cache_read / input_tokens * 100, 1) if input_tokens > 0 else 0,
+            "cache_hit_pct": round(cache_read / total_input * 100, 1) if total_input > 0 else 0,
             # Context window
             "context_window": context_window,
             "utilization_pct": round(utilization, 1),

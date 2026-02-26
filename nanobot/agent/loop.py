@@ -90,7 +90,7 @@ class AgentLoop:
         max_iterations: int = 40,
         temperature: float = 0.1,
         max_tokens: int = 4096,
-        memory_window: int = 100,
+        memory_window: int = 1000,
         brave_api_key: str | None = None,
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
@@ -425,16 +425,20 @@ class AgentLoop:
                 output_tokens = response.usage.get("completion_tokens", 0)
                 cache_read = response.usage.get("cache_read_input_tokens", 0)
                 cache_creation = response.usage.get("cache_creation_input_tokens", 0)
-                if input_tokens:
-                    self._last_input_tokens[session.key] = input_tokens
+                # Anthropic's input_tokens only reports non-cached tokens.
+                # Total context = input_tokens + cache_read + cache_creation.
+                total_input = input_tokens + cache_read + cache_creation
+                if total_input:
+                    self._last_input_tokens[session.key] = total_input
                     context_window = self._get_context_window_size()
-                    utilization = round(input_tokens / context_window * 100, 1) if context_window else 0
+                    utilization = round(total_input / context_window * 100, 1) if context_window else 0
                     logger.info(
-                        "Token usage: in={} out={} cache_read={} cache_create={} | {:.1f}% of {}k window",
+                        "Token usage: total_in={} (raw={} cache_read={} cache_create={}) out={} | {:.1f}% of {}k window",
+                        total_input,
                         input_tokens,
-                        output_tokens,
                         cache_read,
                         cache_creation,
+                        output_tokens,
                         utilization,
                         context_window // 1000,
                     )

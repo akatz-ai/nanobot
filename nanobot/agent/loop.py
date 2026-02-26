@@ -83,6 +83,7 @@ class AgentLoop:
     _COMPACTION_THRESHOLD_RATIO = 0.70  # Compact at 70% of context window
     _HISTORY_MAX_MESSAGES = 1000
     _CONSOLIDATION_KEEP_COUNT = 25
+    _CONTINUITY_TTL_MESSAGES = 5
 
     def __init__(
         self,
@@ -331,6 +332,20 @@ class AgentLoop:
         message_words = len((user_message or "").split())
         remaining = prompt_word_budget - history_words - message_words
         return max(80, remaining)
+
+    def _clear_expired_continuity_context(self, session: Session) -> None:
+        expiry_raw = session.metadata.get("continuity_expires_at_message_count")
+        if expiry_raw is None:
+            return
+        try:
+            expiry = int(expiry_raw)
+        except (TypeError, ValueError):
+            session.metadata.pop("continuity_context", None)
+            session.metadata.pop("continuity_expires_at_message_count", None)
+            return
+        if len(session.messages) > expiry:
+            session.metadata.pop("continuity_context", None)
+            session.metadata.pop("continuity_expires_at_message_count", None)
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
@@ -833,6 +848,7 @@ class AgentLoop:
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
         metadata = msg.metadata or {}
+        self._clear_expired_continuity_context(session)
 
         # Slash commands
         cmd = msg.content.strip().lower()
@@ -862,6 +878,7 @@ class AgentLoop:
 
             session.clear()
             session.metadata.pop("continuity_context", None)
+            session.metadata.pop("continuity_expires_at_message_count", None)
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
@@ -938,9 +955,12 @@ class AgentLoop:
                             # reading either way to avoid immediate retrigger loops.
                             self._last_input_tokens.pop(session.key, None)
                             if session.last_consolidated > prev_consolidated:
-                                # Persist continuity in metadata so it's injected every turn
+                                # Persist continuity for bounded follow-up turns.
                                 if continuity:
                                     session.metadata["continuity_context"] = continuity
+                                    session.metadata["continuity_expires_at_message_count"] = (
+                                        len(session.messages) + self._CONTINUITY_TTL_MESSAGES
+                                    )
                                 continuity_context = continuity
                                 self.sessions.save(session)
                                 try:

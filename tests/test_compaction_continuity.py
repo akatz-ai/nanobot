@@ -233,6 +233,7 @@ class TestCompactionContinuityIntegration:
             session.add_message("user", f"Question {i}")
             session.add_message("assistant", f"Answer {i}")
         loop.sessions.save(session)
+        pre_compaction_count = len(session.messages)
         loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
         async def _fake_consolidate(sess, archive_all=False):
@@ -265,6 +266,7 @@ class TestCompactionContinuityIntegration:
             session.add_message("user", f"Question {i}")
             session.add_message("assistant", f"Answer {i}")
         loop.sessions.save(session)
+        pre_compaction_count = len(session.messages)
         loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
         captured: dict[str, str | None] = {"continuity_context": None}
@@ -287,9 +289,12 @@ class TestCompactionContinuityIntegration:
 
         assert captured["continuity_context"] is not None
         assert "Question" in captured["continuity_context"]
-        # Continuity is now persisted in metadata for subsequent turns
+        # Continuity is persisted with an expiry message-count threshold.
         assert "continuity_context" in session.metadata
         assert session.metadata["continuity_context"] == captured["continuity_context"]
+        assert session.metadata["continuity_expires_at_message_count"] == (
+            pre_compaction_count + loop._CONTINUITY_TTL_MESSAGES
+        )
 
     @pytest.mark.asyncio
     async def test_no_continuity_for_archive_all(self, tmp_path):
@@ -313,6 +318,7 @@ class TestCompactionContinuityIntegration:
             if archive_all:
                 # Should NOT have continuity context for archive_all
                 assert "continuity_context" not in sess.metadata
+                assert "continuity_expires_at_message_count" not in sess.metadata
             return True
 
         loop._consolidate_memory = _fake_consolidate
@@ -320,6 +326,62 @@ class TestCompactionContinuityIntegration:
         # Simulate /new which uses archive_all=True
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/new")
         await loop._process_message(msg)
+
+    @pytest.mark.asyncio
+    async def test_continuity_context_expires_after_ttl_messages(self, tmp_path):
+        bus = MessageBus()
+        provider = MagicMock()
+        provider.get_default_model.return_value = "test-model"
+        loop = AgentLoop(
+            bus=bus, provider=provider, workspace=tmp_path,
+            model="test-model",
+        )
+        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        loop.tools.get_definitions = MagicMock(return_value=[])
+
+        session = loop.sessions.get_or_create("cli:test")
+        for i in range(15):
+            session.add_message("user", f"Question {i}")
+            session.add_message("assistant", f"Answer {i}")
+        loop.sessions.save(session)
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
+
+        injected: list[str | None] = []
+        original_build_messages = loop.context.build_messages
+
+        def _capture_build_messages(*args, **kwargs):
+            injected.append(kwargs.get("continuity_context"))
+            return original_build_messages(*args, **kwargs)
+
+        loop.context.build_messages = _capture_build_messages  # type: ignore[method-assign]
+
+        async def _fake_consolidate(sess, archive_all=False):
+            sess.last_consolidated = len(sess.messages) - 5
+            return True
+
+        loop._consolidate_memory = _fake_consolidate
+
+        await loop._process_message(
+            InboundMessage(channel="cli", sender_id="user", chat_id="test", content="turn-0")
+        )
+        await loop._process_message(
+            InboundMessage(channel="cli", sender_id="user", chat_id="test", content="turn-1")
+        )
+        await loop._process_message(
+            InboundMessage(channel="cli", sender_id="user", chat_id="test", content="turn-2")
+        )
+        await loop._process_message(
+            InboundMessage(channel="cli", sender_id="user", chat_id="test", content="turn-3")
+        )
+
+        # Continuity should be available immediately after compaction and for a bounded window,
+        # then be cleared once the message-count TTL is exceeded.
+        assert injected[0] is not None
+        assert injected[1] is not None
+        assert injected[2] is not None
+        assert injected[3] is None
+        assert "continuity_context" not in session.metadata
+        assert "continuity_expires_at_message_count" not in session.metadata
 
     @pytest.mark.asyncio
     async def test_user_notifications_sent_for_successful_compaction(self, tmp_path):

@@ -414,3 +414,88 @@ class TestCompactionContinuityIntegration:
         ]
         assert len(notices) == 1
         assert "compacting session" in notices[0].content.lower()
+
+    @pytest.mark.asyncio
+    async def test_noop_preflight_sends_no_notice_and_skips_consolidation(self, tmp_path):
+        """When preflight is a no-op, compaction notice should not be sent."""
+        bus = MessageBus()
+        provider = MagicMock()
+        provider.get_default_model.return_value = "test-model"
+        loop = AgentLoop(
+            bus=bus, provider=provider, workspace=tmp_path,
+            model="test-model",
+        )
+        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        loop.tools.get_definitions = MagicMock(return_value=[])
+
+        session = loop.sessions.get_or_create("cli:test")
+        # Keep below compaction window so preflight deems it a no-op.
+        for i in range(2):
+            session.add_message("user", f"msg{i}")
+            session.add_message("assistant", f"resp{i}")
+        loop.sessions.save(session)
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
+
+        consolidate_calls = 0
+
+        async def _fake_consolidate(sess, archive_all=False):
+            nonlocal consolidate_calls
+            consolidate_calls += 1
+            return True
+
+        loop._consolidate_memory = _fake_consolidate
+
+        outbound_messages = []
+        original_publish = bus.publish_outbound
+
+        async def _capture_publish(msg):
+            outbound_messages.append(msg)
+            await original_publish(msg)
+
+        bus.publish_outbound = _capture_publish
+
+        msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
+        await loop._process_message(msg)
+
+        notices = [
+            m for m in outbound_messages
+            if isinstance(m, OutboundMessage)
+            and m.metadata
+            and m.metadata.get("_system_notice")
+        ]
+        assert consolidate_calls == 0
+        assert len(notices) == 0
+        assert session.key not in loop._last_input_tokens
+
+    @pytest.mark.asyncio
+    async def test_noop_checkpoint_advance_clears_token_counter(self, tmp_path):
+        """No-op consolidation result should clear stale token count."""
+        bus = MessageBus()
+        provider = MagicMock()
+        provider.get_default_model.return_value = "test-model"
+        loop = AgentLoop(
+            bus=bus, provider=provider, workspace=tmp_path,
+            model="test-model",
+        )
+        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        loop.tools.get_definitions = MagicMock(return_value=[])
+
+        session = loop.sessions.get_or_create("cli:test")
+        for i in range(15):
+            session.add_message("user", f"msg{i}")
+            session.add_message("assistant", f"resp{i}")
+        loop.sessions.save(session)
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
+        prev_checkpoint = session.last_consolidated
+
+        async def _noop_consolidate(sess, archive_all=False):
+            # Simulate "success" but unchanged checkpoint.
+            assert sess.last_consolidated == prev_checkpoint
+            return True
+
+        loop._consolidate_memory = _noop_consolidate
+
+        msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
+        await loop._process_message(msg)
+
+        assert session.key not in loop._last_input_tokens

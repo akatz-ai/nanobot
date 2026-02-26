@@ -830,53 +830,22 @@ class TestConsolidationDeduplicationGuard:
             f"Expected serialized consolidation, observed concurrency={max_active}"
         )
 
-    @pytest.mark.asyncio
-    async def test_consolidation_tasks_are_referenced(self, tmp_path: Path) -> None:
-        """create_task results are tracked in _consolidation_tasks while in flight."""
+    def test_background_task_tracking_removed(self, tmp_path: Path) -> None:
+        """Synchronous compaction should not keep background consolidation task refs."""
         from nanobot.agent.loop import AgentLoop
-        from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
-        from nanobot.providers.base import LLMResponse
 
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
         loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
-
-        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
-        loop.tools.get_definitions = MagicMock(return_value=[])
-
-        session = loop.sessions.get_or_create("cli:test")
-        for i in range(15):
-            session.add_message("user", f"msg{i}")
-            session.add_message("assistant", f"resp{i}")
-        loop.sessions.save(session)
-        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
-
-        started = asyncio.Event()
-
-        async def _slow_consolidate(_session, archive_all: bool = False) -> None:
-            started.set()
-            await asyncio.sleep(0.1)
-
-        loop._consolidate_memory = _slow_consolidate  # type: ignore[method-assign]
-
-        msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
-        await loop._process_message(msg)
-
-        await started.wait()
-        assert len(loop._consolidation_tasks) == 1, "Task must be referenced while in-flight"
-
-        await asyncio.sleep(0.15)
-        assert len(loop._consolidation_tasks) == 0, (
-            "Task reference must be removed after completion"
-        )
+        assert not hasattr(loop, "_consolidation_tasks")
 
     @pytest.mark.asyncio
-    async def test_new_waits_for_inflight_consolidation_and_preserves_messages(
+    async def test_new_archives_only_unconsolidated_messages_after_inline_compaction(
         self, tmp_path: Path
     ) -> None:
-        """/new waits for in-flight consolidation and archives before clear."""
+        """/new should archive only unconsolidated tail after prior inline compaction."""
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
@@ -897,36 +866,28 @@ class TestConsolidationDeduplicationGuard:
         loop.sessions.save(session)
         loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
-        started = asyncio.Event()
-        release = asyncio.Event()
-        archived_count = 0
+        archived_count = -1
 
         async def _fake_consolidate(sess, archive_all: bool = False) -> bool:
             nonlocal archived_count
             if archive_all:
                 archived_count = len(sess.messages)
                 return True
-            started.set()
-            await release.wait()
+            sess.last_consolidated = len(sess.messages) - 3
             return True
 
         loop._consolidate_memory = _fake_consolidate  # type: ignore[method-assign]
 
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
         await loop._process_message(msg)
-        await started.wait()
 
         new_msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/new")
-        pending_new = asyncio.create_task(loop._process_message(new_msg))
-
-        await asyncio.sleep(0.02)
-        assert not pending_new.done(), "/new should wait while consolidation is in-flight"
-
-        release.set()
-        response = await pending_new
+        response = await loop._process_message(new_msg)
         assert response is not None
         assert "new session started" in response.content.lower()
-        assert archived_count > 0, "Expected /new archival to process a non-empty snapshot"
+        assert archived_count == 5, (
+            f"Expected unconsolidated tail (3 prior + 2 current-turn messages), got {archived_count}"
+        )
 
         session_after = loop.sessions.get_or_create("cli:test")
         assert session_after.messages == [], "Session should be cleared after successful archival"
@@ -969,66 +930,6 @@ class TestConsolidationDeduplicationGuard:
         session_after = loop.sessions.get_or_create("cli:test")
         assert len(session_after.messages) == before_count, (
             "Session must remain intact when /new archival fails"
-        )
-
-    @pytest.mark.asyncio
-    async def test_new_archives_only_unconsolidated_messages_after_inflight_task(
-        self, tmp_path: Path
-    ) -> None:
-        """/new should archive only messages not yet consolidated by prior task."""
-        from nanobot.agent.loop import AgentLoop
-        from nanobot.bus.events import InboundMessage
-        from nanobot.bus.queue import MessageBus
-        from nanobot.providers.base import LLMResponse
-
-        bus = MessageBus()
-        provider = MagicMock()
-        provider.get_default_model.return_value = "test-model"
-        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
-
-        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
-        loop.tools.get_definitions = MagicMock(return_value=[])
-
-        session = loop.sessions.get_or_create("cli:test")
-        for i in range(15):
-            session.add_message("user", f"msg{i}")
-            session.add_message("assistant", f"resp{i}")
-        loop.sessions.save(session)
-        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
-
-        started = asyncio.Event()
-        release = asyncio.Event()
-        archived_count = -1
-
-        async def _fake_consolidate(sess, archive_all: bool = False) -> bool:
-            nonlocal archived_count
-            if archive_all:
-                archived_count = len(sess.messages)
-                return True
-
-            started.set()
-            await release.wait()
-            sess.last_consolidated = len(sess.messages) - 3
-            return True
-
-        loop._consolidate_memory = _fake_consolidate  # type: ignore[method-assign]
-
-        msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
-        await loop._process_message(msg)
-        await started.wait()
-
-        new_msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/new")
-        pending_new = asyncio.create_task(loop._process_message(new_msg))
-        await asyncio.sleep(0.02)
-        assert not pending_new.done()
-
-        release.set()
-        response = await pending_new
-
-        assert response is not None
-        assert "new session started" in response.content.lower()
-        assert archived_count == 3, (
-            f"Expected only unconsolidated tail to archive, got {archived_count}"
         )
 
     @pytest.mark.asyncio

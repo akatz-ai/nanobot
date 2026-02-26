@@ -232,6 +232,19 @@ class AgentLoop:
             return True
         return False
 
+    def _compaction_would_execute(self, session: Session, *, archive_all: bool = False) -> bool:
+        """Mirror no-op checks to tell whether consolidation work would execute."""
+        if archive_all:
+            return bool(session.messages)
+        keep_count = max(0, self._CONSOLIDATION_KEEP_COUNT)
+        total_messages = len(session.messages)
+        if total_messages <= keep_count:
+            return False
+        if total_messages - session.last_consolidated <= 0:
+            return False
+        end_index = total_messages - keep_count
+        return end_index > session.last_consolidated
+
     def _get_context_logger(self, session: Session) -> TurnContextLogger:
         """Get or create a TurnContextLogger for a session."""
         key = session.key
@@ -891,55 +904,65 @@ class AgentLoop:
                 "Compaction TRIGGERED for {} — reason: {}",
                 session.key, _compaction_reason,
             )
-            try:
-                await self.bus.publish_outbound(OutboundMessage(
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    content="⏳ *Compacting session* — summarizing older context to free up space...",
-                    metadata={"_system_notice": True},
-                ))
-            except Exception:
-                logger.warning("Failed to send compaction-start notice")
-
             lock = self._get_consolidation_lock(session.key)
             self._consolidating.add(session.key)
             try:
                 async with lock:
-                    # Snapshot continuity so this same turn can keep recent conversation detail.
-                    continuity = self._snapshot_continuity_context(session)
-                    if continuity:
+                    # Avoid repeated no-op compaction loops from stale token readings.
+                    if not self._compaction_would_execute(session):
                         logger.info(
-                            "Saved continuity context ({} chars) for post-compaction injection",
-                            len(continuity),
+                            "Compaction preflight no-op for {} (last_consolidated={}, total={})",
+                            session.key,
+                            session.last_consolidated,
+                            len(session.messages),
                         )
-
-                    prev_consolidated = session.last_consolidated
-                    if await self._consolidate_memory(session):
-                        # _consolidate_memory returns True on no-ops too; only announce/apply
-                        # continuity when compaction advanced the checkpoint.
-                        if session.last_consolidated > prev_consolidated:
-                            self._last_input_tokens.pop(session.key, None)
-                            self.sessions.save(session)
-                            continuity_context = continuity
-                            try:
-                                await self.bus.publish_outbound(OutboundMessage(
-                                    channel=msg.channel,
-                                    chat_id=msg.chat_id,
-                                    content=(
-                                        "⚙️ *Session compacted* — older context has been "
-                                        "summarized. Continuing with your message..."
-                                    ),
-                                    metadata={"_system_notice": True},
-                                ))
-                            except Exception:
-                                logger.warning("Failed to send compaction-complete notice")
-                        else:
-                            logger.debug(
-                                "Compaction was a no-op for {} (checkpoint unchanged at {})",
-                                session.key, prev_consolidated,
-                            )
+                        self._last_input_tokens.pop(session.key, None)
                     else:
-                        logger.warning("Compaction failed for {}", session.key)
+                        try:
+                            await self.bus.publish_outbound(OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content="⏳ *Compacting session* — summarizing older context to free up space...",
+                                metadata={"_system_notice": True},
+                            ))
+                        except Exception:
+                            logger.warning("Failed to send compaction-start notice")
+
+                        # Snapshot continuity so this same turn can keep recent conversation detail.
+                        continuity = self._snapshot_continuity_context(session)
+                        if continuity:
+                            logger.info(
+                                "Saved continuity context ({} chars) for post-compaction injection",
+                                len(continuity),
+                            )
+
+                        prev_consolidated = session.last_consolidated
+                        if await self._consolidate_memory(session):
+                            # _consolidate_memory returns True on no-ops too; clear stale token
+                            # reading either way to avoid immediate retrigger loops.
+                            self._last_input_tokens.pop(session.key, None)
+                            if session.last_consolidated > prev_consolidated:
+                                self.sessions.save(session)
+                                continuity_context = continuity
+                                try:
+                                    await self.bus.publish_outbound(OutboundMessage(
+                                        channel=msg.channel,
+                                        chat_id=msg.chat_id,
+                                        content=(
+                                            "⚙️ *Session compacted* — older context has been "
+                                            "summarized. Continuing with your message..."
+                                        ),
+                                        metadata={"_system_notice": True},
+                                    ))
+                                except Exception:
+                                    logger.warning("Failed to send compaction-complete notice")
+                            else:
+                                logger.debug(
+                                    "Compaction was a no-op for {} (checkpoint unchanged at {})",
+                                    session.key, prev_consolidated,
+                                )
+                        else:
+                            logger.warning("Compaction failed for {}", session.key)
             except Exception:
                 logger.exception("Inline compaction failed for {}", session.key)
             finally:

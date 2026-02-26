@@ -318,9 +318,10 @@ class AgentLoop:
         recent_turns: list[dict[str, Any]],
         user_message: str,
     ) -> int:
-        # Approximate prompt budget from runtime token cap and currently loaded turn history.
-        max_output_tokens = max(int(self.max_tokens), 1)
-        prompt_token_budget = max(256, int(max_output_tokens * 0.45))
+        # Prompt budget should be derived from context window minus completion headroom.
+        context_window = max(int(self._get_context_window_size()), 1)
+        completion_headroom = max(int(self.max_tokens), 1)
+        prompt_token_budget = max(256, context_window - completion_headroom)
         prompt_word_budget = max(120, int(prompt_token_budget * 0.75))
 
         history_words = sum(

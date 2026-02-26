@@ -26,6 +26,7 @@ from nanobot.providers.openai_codex_provider import (
 )
 from nanobot.providers.registry import find_by_model
 from nanobot.session.manager import Session
+from nanobot.agent.tools.web import WebSearchTool
 
 runner = CliRunner()
 
@@ -330,6 +331,75 @@ async def test_retrieve_memory_context_defaults_peer_key_to_session(tmp_path: Pa
     kwargs = retriever.retrieve_context.await_args.kwargs
     assert kwargs["peer_key"] == "cli:session-1"
     assert kwargs["prompt_headroom_words"] >= 80
+
+
+def test_retrieval_headroom_uses_context_window_not_completion_cap(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="gpt-4",  # 8192 context window in MODEL_CONTEXT_WINDOWS
+        max_tokens=512,
+    )
+
+    words = agent._estimate_retrieval_headroom_words(
+        recent_turns=[],
+        user_message="short prompt",
+    )
+
+    # Headroom should be derived from context_window - completion_headroom,
+    # not a fraction of max_tokens.
+    assert words > 1000
+
+
+@pytest.mark.asyncio
+async def test_web_search_execute_uses_instance_api_key_header() -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "web": {
+                    "results": [
+                        {
+                            "title": "Example",
+                            "url": "https://example.com",
+                            "description": "A sample result.",
+                        }
+                    ]
+                }
+            }
+
+    class _FakeClient:
+        async def __aenter__(self) -> "_FakeClient":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def get(self, url: str, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers")
+            captured["params"] = kwargs.get("params")
+            return _FakeResponse()
+
+    tool = WebSearchTool(api_key="test-brave-key")
+    with patch(
+        "nanobot.agent.tools.web.httpx.AsyncClient",
+        return_value=_FakeClient(),
+    ):
+        result = await tool.execute(query="nanobot", count=1)
+
+    assert "Results for: nanobot" in result
+    assert captured["url"] == "https://api.search.brave.com/res/v1/web/search"
+    assert captured["headers"] == {
+        "Accept": "application/json",
+        "X-Subscription-Token": "test-brave-key",
+    }
+    assert captured["params"] == {"q": "nanobot", "count": 1}
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,35 @@ from pathlib import Path
 
 from loguru import logger
 
+LOG_DIR = Path.home() / ".nanobot" / "logs"
+LOG_FILE = LOG_DIR / "gateway.log"
+
+
+_daemon_logging_configured = False
+
+
+def setup_daemon_logging() -> None:
+    """Configure loguru to write to a rotating log file for the daemon.
+
+    Safe to call multiple times — only adds the sink once per process.
+    """
+    global _daemon_logging_configured
+    if _daemon_logging_configured:
+        return
+    _daemon_logging_configured = True
+
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    logger.add(
+        str(LOG_FILE),
+        rotation="10 MB",
+        retention="7 days",
+        compression="gz",
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message}",
+        level="DEBUG",
+        backtrace=True,
+        diagnose=True,
+    )
+
 
 class GatewayDaemon:
     """Supervisor process that manages the gateway worker."""
@@ -37,6 +66,9 @@ class GatewayDaemon:
         if daemonize and os.environ.get("NANOBOT_SUPERVISOR") != "1":
             self._start_detached_supervisor()
             return
+
+        # Enable file logging for the supervisor (and inherited by workers)
+        setup_daemon_logging()
 
         self.PID_FILE.parent.mkdir(parents=True, exist_ok=True)
         self._write_pid_file()
@@ -107,15 +139,19 @@ class GatewayDaemon:
             cmd.append("--verbose")
         env = os.environ.copy()
         env["NANOBOT_SUPERVISOR"] = "1"
+        # Redirect stdout/stderr to log file instead of /dev/null
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_fd = open(LOG_FILE, "a")  # noqa: SIM115
         proc = subprocess.Popen(
             cmd,
             env=env,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_fd,
+            stderr=log_fd,
             start_new_session=True,
         )
-        logger.info("Gateway daemonized (supervisor pid={})", proc.pid)
+        log_fd.close()
+        logger.info("Gateway daemonized (supervisor pid={}, log={})", proc.pid, LOG_FILE)
 
     def _write_pid_file(self) -> None:
         self.PID_FILE.write_text(f"{os.getpid()}\n", encoding="utf-8")

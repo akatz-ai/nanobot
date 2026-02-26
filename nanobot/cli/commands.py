@@ -351,6 +351,11 @@ def gateway_worker(
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
     from nanobot.discord.usage_dashboard import UsageDashboard
+    from nanobot.discord.system_status import SystemStatusDashboard
+
+    # Enable file logging for the worker process
+    from nanobot.daemon import setup_daemon_logging
+    setup_daemon_logging()
 
     if verbose:
         import logging
@@ -529,6 +534,20 @@ def gateway_worker(
     if usage_dashboard:
         console.print(f"[green]✓[/green] Usage dashboard: channel={dash_cfg.channel_id}, interval={dash_cfg.poll_interval_s}s")
 
+    # Create system status dashboard if configured
+    system_status_dashboard: SystemStatusDashboard | None = None
+    status_cfg = dc.system_status
+    if dc.enabled and status_cfg.enabled and status_cfg.channel_id and dc.token:
+        system_status_dashboard = SystemStatusDashboard(
+            router=router,
+            discord_token=dc.token,
+            channel_id=status_cfg.channel_id,
+            poll_interval_s=status_cfg.poll_interval_s,
+            message_id=status_cfg.message_id or None,
+            config_path=str(get_config_path()),
+        )
+        console.print(f"[green]✓[/green] System status: channel={status_cfg.channel_id}, interval={status_cfg.poll_interval_s}s")
+
 
     async def _send_restart_notifications() -> None:
         """Send a system message to all active agent Discord channels after startup."""
@@ -566,6 +585,8 @@ def gateway_worker(
             await heartbeat.start()
             if usage_dashboard:
                 await usage_dashboard.start()
+            if system_status_dashboard:
+                await system_status_dashboard.start()
             # Fire restart notifications in the background
             asyncio.create_task(_send_restart_notifications())
             await asyncio.gather(
@@ -575,6 +596,8 @@ def gateway_worker(
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         finally:
+            if system_status_dashboard:
+                await system_status_dashboard.close()
             if usage_dashboard:
                 await usage_dashboard.close()
             heartbeat.stop()

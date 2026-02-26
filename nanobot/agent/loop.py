@@ -853,21 +853,47 @@ class AgentLoop:
         # exceeds 70% of the model's context window. Falls back to message count
         # if no token data is available yet (first turn of a long-running session).
         _needs_compaction = False
+        _compaction_reason = "none"
         if session.key not in self._consolidating:
+            _token_count = self._last_input_tokens.get(session.key, 0)
+            _unconsolidated = len(session.messages) - session.last_consolidated
+            logger.info(
+                "Compaction check for {}: tokens={}/{} ({}%), messages={} unconsolidated "
+                "(last_consolidated={}, total={}), window={}",
+                session.key,
+                _token_count,
+                self._compaction_token_threshold,
+                round(_token_count / self._compaction_token_threshold * 100, 1) if self._compaction_token_threshold else 0,
+                _unconsolidated,
+                session.last_consolidated,
+                len(session.messages),
+                self.memory_window,
+            )
             if self._should_compact_by_tokens(session.key):
                 _needs_compaction = True
+                _compaction_reason = f"tokens ({_token_count} >= {self._compaction_token_threshold})"
             else:
                 # Fallback: message-count heuristic for sessions that haven't
                 # had a provider call yet (e.g. restored from disk after restart).
                 unconsolidated = len(session.messages) - session.last_consolidated
                 if unconsolidated >= self.memory_window:
                     _needs_compaction = True
+                    _compaction_reason = f"message-count ({unconsolidated} >= {self.memory_window})"
                     logger.info(
                         "Message-count fallback compaction for {}: {} unconsolidated >= {}",
                         session.key, unconsolidated, self.memory_window,
                     )
+        else:
+            logger.debug(
+                "Skipping compaction check for {}: consolidation already in progress",
+                session.key,
+            )
 
         if _needs_compaction:
+            logger.info(
+                "Compaction TRIGGERED for {} — reason: {}",
+                session.key, _compaction_reason,
+            )
             self._consolidating.add(session.key)
             lock = self._get_consolidation_lock(session.key)
             # Capture channel/chat_id for the notification closure
@@ -1080,14 +1106,31 @@ class AgentLoop:
                         await self._memory_module.initialize()
 
                     keep_count = 0 if archive_all else self.memory_window // 2
+                    logger.info(
+                        "Hybrid consolidation for {}: archive_all={}, keep_count={}, "
+                        "total_messages={}, last_consolidated={}",
+                        session.key, archive_all, keep_count,
+                        len(session.messages), session.last_consolidated,
+                    )
                     if not archive_all:
                         if len(session.messages) <= keep_count:
+                            logger.info(
+                                "Hybrid consolidation no-op: total_messages ({}) <= keep_count ({})",
+                                len(session.messages), keep_count,
+                            )
                             return True
                         if len(session.messages) - session.last_consolidated <= 0:
+                            logger.info(
+                                "Hybrid consolidation no-op: nothing unconsolidated",
+                            )
                             return True
                         start_index = session.last_consolidated
                         end_index = len(session.messages) - keep_count
                         if end_index <= start_index:
+                            logger.info(
+                                "Hybrid consolidation no-op: end_index ({}) <= start_index ({})",
+                                end_index, start_index,
+                            )
                             return True
                         target_last_consolidated = end_index
                     else:
@@ -1095,6 +1138,10 @@ class AgentLoop:
                         end_index = len(session.messages)
                         target_last_consolidated = 0
 
+                    logger.info(
+                        "Hybrid consolidation executing: messages[{}:{}] -> last_consolidated={}",
+                        start_index, end_index, target_last_consolidated,
+                    )
                     await self._memory_module.hybrid.compact(
                         session_key=session.key,
                         messages=session.messages,

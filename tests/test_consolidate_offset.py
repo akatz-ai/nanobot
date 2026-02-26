@@ -640,11 +640,11 @@ class TestEmptyAndBoundarySessions:
 
 
 class TestConsolidationDeduplicationGuard:
-    """Test that consolidation tasks are deduplicated and serialized."""
+    """Test that consolidation remains deduplicated and serialized."""
 
     @pytest.mark.asyncio
     async def test_consolidation_guard_prevents_duplicate_tasks(self, tmp_path: Path) -> None:
-        """Concurrent turns over the token threshold spawn only one consolidation task."""
+        """Consecutive turns should compact once after a successful checkpoint advance."""
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
@@ -667,27 +667,28 @@ class TestConsolidationDeduplicationGuard:
 
         consolidation_calls = 0
 
-        async def _fake_consolidate(_session, archive_all: bool = False) -> None:
+        async def _fake_consolidate(_session, archive_all: bool = False) -> bool:
             nonlocal consolidation_calls
             consolidation_calls += 1
-            await asyncio.sleep(0.05)
+            if not archive_all:
+                _session.last_consolidated = len(_session.messages) - 5
+            return True
 
         loop._consolidate_memory = _fake_consolidate  # type: ignore[method-assign]
 
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
         await loop._process_message(msg)
         await loop._process_message(msg)
-        await asyncio.sleep(0.1)
 
         assert consolidation_calls == 1, (
             f"Expected exactly 1 consolidation, got {consolidation_calls}"
         )
 
     @pytest.mark.asyncio
-    async def test_background_consolidation_persists_checkpoint(
+    async def test_inline_consolidation_persists_checkpoint(
         self, tmp_path: Path
     ) -> None:
-        """Successful background consolidation should persist last_consolidated immediately."""
+        """Successful inline consolidation should persist last_consolidated immediately."""
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
@@ -719,7 +720,6 @@ class TestConsolidationDeduplicationGuard:
 
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
         await loop._process_message(msg)
-        await asyncio.sleep(0.15)
 
         in_memory = loop.sessions.get_or_create("cli:test").last_consolidated
         path = loop.sessions._get_session_path("cli:test")
@@ -804,13 +804,16 @@ class TestConsolidationDeduplicationGuard:
         active = 0
         max_active = 0
 
-        async def _fake_consolidate(_session, archive_all: bool = False) -> None:
+        async def _fake_consolidate(_session, archive_all: bool = False) -> bool:
             nonlocal consolidation_calls, active, max_active
             consolidation_calls += 1
             active += 1
             max_active = max(max_active, active)
             await asyncio.sleep(0.05)
+            if not archive_all:
+                _session.last_consolidated = len(_session.messages) - 5
             active -= 1
+            return True
 
         loop._consolidate_memory = _fake_consolidate  # type: ignore[method-assign]
 
@@ -819,7 +822,6 @@ class TestConsolidationDeduplicationGuard:
 
         new_msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/new")
         await loop._process_message(new_msg)
-        await asyncio.sleep(0.1)
 
         assert consolidation_calls == 2, (
             f"Expected normal + /new consolidations, got {consolidation_calls}"

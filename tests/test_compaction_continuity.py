@@ -1,19 +1,8 @@
-"""Tests for post-compaction continuity context feature.
+"""Tests for post-compaction continuity context behavior."""
 
-Verifies that:
-1. Recent user/assistant exchanges are snapshotted before compaction
-2. The snapshot is injected as a system message on the next turn
-3. The snapshot is consumed (one-shot) after injection
-4. A user notification is sent after compaction
-5. Edge cases are handled (empty sessions, tool-only messages, etc.)
-"""
-
-import asyncio
-import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pathlib import Path
 
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.events import InboundMessage, OutboundMessage
@@ -221,8 +210,46 @@ class TestCompactionContinuityIntegration:
     """Integration tests for the full compaction → continuity → injection flow."""
 
     @pytest.mark.asyncio
-    async def test_continuity_saved_before_compaction(self, tmp_path):
-        """Compaction should save continuity context to session metadata."""
+    async def test_compaction_runs_before_llm_call(self, tmp_path):
+        """When threshold is exceeded, compaction should run inline before the LLM call."""
+        bus = MessageBus()
+        provider = MagicMock()
+        provider.get_default_model.return_value = "test-model"
+        loop = AgentLoop(
+            bus=bus, provider=provider, workspace=tmp_path,
+            model="test-model",
+        )
+        call_order: list[str] = []
+
+        async def _fake_chat(*args, **kwargs):
+            call_order.append("chat")
+            return LLMResponse(content="ok", tool_calls=[])
+
+        loop.provider.chat = AsyncMock(side_effect=_fake_chat)
+        loop.tools.get_definitions = MagicMock(return_value=[])
+
+        session = loop.sessions.get_or_create("cli:test")
+        for i in range(15):
+            session.add_message("user", f"Question {i}")
+            session.add_message("assistant", f"Answer {i}")
+        loop.sessions.save(session)
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
+
+        async def _fake_consolidate(sess, archive_all=False):
+            call_order.append("consolidate")
+            sess.last_consolidated = len(sess.messages) - 5
+            return True
+
+        loop._consolidate_memory = _fake_consolidate
+
+        msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
+        await loop._process_message(msg)
+
+        assert call_order[:2] == ["consolidate", "chat"]
+
+    @pytest.mark.asyncio
+    async def test_continuity_passed_inline_not_metadata(self, tmp_path):
+        """Compaction should pass continuity directly to build_messages in the same turn."""
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
@@ -240,49 +267,26 @@ class TestCompactionContinuityIntegration:
         loop.sessions.save(session)
         loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
-        consolidation_done = asyncio.Event()
-        continuity_at_consolidation_time = None
+        captured: dict[str, str | None] = {"continuity_context": None}
+        original_build_messages = loop.context.build_messages
+
+        def _capture_build_messages(*args, **kwargs):
+            captured["continuity_context"] = kwargs.get("continuity_context")
+            return original_build_messages(*args, **kwargs)
+
+        loop.context.build_messages = _capture_build_messages  # type: ignore[method-assign]
 
         async def _fake_consolidate(sess, archive_all=False):
-            nonlocal continuity_at_consolidation_time
-            # The background task saves continuity BEFORE calling _consolidate_memory
-            continuity_at_consolidation_time = sess.metadata.get("continuity_context")
             sess.last_consolidated = len(sess.messages) - 5
-            consolidation_done.set()
             return True
 
         loop._consolidate_memory = _fake_consolidate
 
-        msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
-        await loop._process_message(msg)
-        await asyncio.wait_for(consolidation_done.wait(), timeout=2.0)
-
-        assert continuity_at_consolidation_time is not None
-        assert "Question" in continuity_at_consolidation_time
-
-    @pytest.mark.asyncio
-    async def test_continuity_consumed_on_next_turn(self, tmp_path):
-        """Continuity context should be consumed (popped) on the next turn."""
-        bus = MessageBus()
-        provider = MagicMock()
-        provider.get_default_model.return_value = "test-model"
-        loop = AgentLoop(
-            bus=bus, provider=provider, workspace=tmp_path,
-            model="test-model",
-        )
-        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
-        loop.tools.get_definitions = MagicMock(return_value=[])
-
-        session = loop.sessions.get_or_create("cli:test")
-        session.add_message("user", "hello")
-        # Pre-populate continuity context as if compaction just happened
-        session.metadata["continuity_context"] = "**User:** What were we doing?\n\n**Assistant:** Tests."
-        loop.sessions.save(session)
-
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="continue")
         await loop._process_message(msg)
 
-        # Continuity should be consumed
+        assert captured["continuity_context"] is not None
+        assert "Question" in captured["continuity_context"]
         assert "continuity_context" not in session.metadata
 
     @pytest.mark.asyncio
@@ -316,8 +320,8 @@ class TestCompactionContinuityIntegration:
         await loop._process_message(msg)
 
     @pytest.mark.asyncio
-    async def test_user_notification_sent_after_compaction(self, tmp_path):
-        """A system notice should be sent to the user after successful compaction."""
+    async def test_user_notifications_sent_for_successful_compaction(self, tmp_path):
+        """A start + complete system notice should be sent on successful compaction."""
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
@@ -353,8 +357,6 @@ class TestCompactionContinuityIntegration:
 
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
         await loop._process_message(msg)
-        # Wait for background compaction task
-        await asyncio.sleep(0.2)
 
         # Find the compaction notice
         notices = [
@@ -363,12 +365,13 @@ class TestCompactionContinuityIntegration:
             and m.metadata
             and m.metadata.get("_system_notice")
         ]
-        assert len(notices) == 1
-        assert "compacted" in notices[0].content.lower()
+        assert len(notices) == 2
+        assert "compacting session" in notices[0].content.lower()
+        assert "compacted" in notices[1].content.lower()
 
     @pytest.mark.asyncio
-    async def test_no_notification_on_failed_compaction(self, tmp_path):
-        """No notification should be sent if compaction fails."""
+    async def test_only_start_notice_sent_on_failed_compaction(self, tmp_path):
+        """Failed compaction should send only the start notice."""
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
@@ -402,7 +405,6 @@ class TestCompactionContinuityIntegration:
 
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
         await loop._process_message(msg)
-        await asyncio.sleep(0.2)
 
         notices = [
             m for m in outbound_messages
@@ -410,4 +412,5 @@ class TestCompactionContinuityIntegration:
             and m.metadata
             and m.metadata.get("_system_notice")
         ]
-        assert len(notices) == 0
+        assert len(notices) == 1
+        assert "compacting session" in notices[0].content.lower()

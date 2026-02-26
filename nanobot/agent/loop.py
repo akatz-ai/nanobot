@@ -886,24 +886,34 @@ class AgentLoop:
                                 len(continuity),
                             )
 
+                        prev_consolidated = session.last_consolidated
                         if await self._consolidate_memory(session):
                             # Reset token tracking after successful compaction
                             self._last_input_tokens.pop(session.key, None)
                             # Persist consolidation checkpoint immediately to survive restarts.
                             self.sessions.save(session)
-                            # Notify the user that compaction occurred
-                            try:
-                                await self.bus.publish_outbound(OutboundMessage(
-                                    channel=_notify_channel,
-                                    chat_id=_notify_chat_id,
-                                    content=(
-                                        "⚙️ *Session compacted* — older context has been "
-                                        "summarized to free up space. Recent conversation preserved."
-                                    ),
-                                    metadata={"_system_notice": True},
-                                ))
-                            except Exception:
-                                logger.warning("Failed to send compaction notice")
+                            # Only notify if consolidation actually moved the checkpoint forward
+                            # (_consolidate_memory returns True for no-ops too).
+                            if session.last_consolidated > prev_consolidated:
+                                try:
+                                    await self.bus.publish_outbound(OutboundMessage(
+                                        channel=_notify_channel,
+                                        chat_id=_notify_chat_id,
+                                        content=(
+                                            "⚙️ *Session compacted* — older context has been "
+                                            "summarized to free up space. Recent conversation preserved."
+                                        ),
+                                        metadata={"_system_notice": True},
+                                    ))
+                                except Exception:
+                                    logger.warning("Failed to send compaction notice")
+                            else:
+                                logger.debug(
+                                    "Compaction was a no-op for {} (checkpoint unchanged at {})",
+                                    session.key, prev_consolidated,
+                                )
+                                # No-op: discard the continuity context we speculatively saved
+                                session.metadata.pop("continuity_context", None)
                         else:
                             # Compaction failed — remove the continuity context we just saved
                             session.metadata.pop("continuity_context", None)

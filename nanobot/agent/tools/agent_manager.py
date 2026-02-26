@@ -137,7 +137,6 @@ class AgentManagerTool(Tool):
             "max_tokens": p.max_tokens,
             "temperature": p.temperature,
             "max_tool_iterations": p.max_tool_iterations,
-            "memory_window": p.memory_window,
             "skills": p.skills,
             "system_identity": p.system_identity[:200] if p.system_identity else None,
             "discord_channels": p.discord_channels,

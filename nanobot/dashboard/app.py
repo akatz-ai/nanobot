@@ -354,14 +354,74 @@ def _resolve_session_path(name: str, key: str) -> Path:
     raise HTTPException(404, f"Session '{key}' not found")
 
 
+def _parse_session_paginated(
+    path: Path,
+    *,
+    offset: int | None = None,
+    limit: int | None = None,
+) -> tuple[dict, list[dict], int]:
+    """Parse a session JSONL file with optional tail-based pagination.
+
+    When *offset* and *limit* are provided, only messages in the range
+    ``[offset, offset+limit)`` are returned (0-indexed from the start of the
+    file).  The caller typically computes *offset* from the end so that the
+    most recent messages are fetched first.
+
+    Returns ``(metadata, messages_slice, total_message_count)``.
+    """
+    metadata: dict = {}
+    total = 0
+    messages: list[dict] = []
+    want_all = offset is None and limit is None
+
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if data.get("_type") == "metadata":
+                metadata = data
+                continue
+            if want_all:
+                messages.append(data)
+            else:
+                if offset <= total < offset + limit:  # type: ignore[operator]
+                    messages.append(data)
+            total += 1
+
+    return metadata, messages, total
+
+
 @app.get("/api/agents/{name}/sessions/{key:path}")
-async def agent_session_detail(name: str, key: str):
+async def agent_session_detail(
+    name: str,
+    key: str,
+    offset: int | None = Query(None, ge=0),
+    limit: int | None = Query(None, ge=1, le=1000),
+):
     # Intercept context log requests (key ends with /context)
     if key.endswith("/context"):
         actual_key = key[:-len("/context")]
         return await agent_session_context(name, actual_key)
 
     path = _resolve_session_path(name, key)
+
+    if offset is not None and limit is not None:
+        meta, msgs, total = _parse_session_paginated(path, offset=offset, limit=limit)
+        return {
+            "metadata": meta,
+            "messages": msgs,
+            "messageCount": total,
+            "offset": offset,
+            "limit": limit,
+            "hasMore": offset > 0,
+        }
+
+    # Legacy: return everything (used by other callers)
     meta, msgs = _parse_session(path)
     return {
         "metadata": meta,

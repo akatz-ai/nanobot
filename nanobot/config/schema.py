@@ -60,6 +60,15 @@ class DiscordUsageDashboardConfig(Base):
     poll_interval_s: int = 600  # How often to poll Anthropic (seconds)
 
 
+class DiscordSystemStatusConfig(Base):
+    """Discord system status dashboard configuration."""
+
+    enabled: bool = False
+    channel_id: str = ""  # Channel to post the status message in
+    message_id: str = ""  # Existing message ID to edit (auto-created if empty)
+    poll_interval_s: int = 60  # How often to update (seconds)
+
+
 class DiscordConfig(Base):
     """Discord channel configuration."""
 
@@ -70,6 +79,7 @@ class DiscordConfig(Base):
     intents: int = 37377  # GUILDS + GUILD_MESSAGES + DIRECT_MESSAGES + MESSAGE_CONTENT
     guild_id: str = ""  # Guild ID for dynamic channel creation
     usage_dashboard: DiscordUsageDashboardConfig = Field(default_factory=DiscordUsageDashboardConfig)
+    system_status: DiscordSystemStatusConfig = Field(default_factory=DiscordSystemStatusConfig)
 
 
 class EmailConfig(Base):
@@ -200,7 +210,6 @@ class AgentDefaults(Base):
     max_tokens: int = 100_000
     temperature: float = 0.1
     max_tool_iterations: int = 40
-    memory_window: int = 1000
 
 
 class AgentProfile(Base):
@@ -210,7 +219,6 @@ class AgentProfile(Base):
     max_tokens: int | None = None
     temperature: float | None = None
     max_tool_iterations: int | None = None
-    memory_window: int | None = None
     skills: list[str] | None = None  # Skill whitelist (None = all available)
     system_identity: str | None = None  # Custom identity text for this agent
     discord_channels: list[str] = Field(default_factory=list)  # Discord channel IDs mapped to this agent
@@ -225,7 +233,6 @@ class AgentProfile(Base):
             max_tokens=self.max_tokens if self.max_tokens is not None else defaults.max_tokens,
             temperature=self.temperature if self.temperature is not None else defaults.temperature,
             max_tool_iterations=self.max_tool_iterations if self.max_tool_iterations is not None else defaults.max_tool_iterations,
-            memory_window=self.memory_window if self.memory_window is not None else defaults.memory_window,
             skills=self.skills,
             system_identity=self.system_identity,
             discord_channels=self.discord_channels,
@@ -242,7 +249,6 @@ class ResolvedAgentProfile(Base):
     max_tokens: int
     temperature: float
     max_tool_iterations: int
-    memory_window: int
     skills: list[str] | None = None
     system_identity: str | None = None
     discord_channels: list[str] = Field(default_factory=list)

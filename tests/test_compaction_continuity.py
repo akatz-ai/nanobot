@@ -228,7 +228,7 @@ class TestCompactionContinuityIntegration:
         provider.get_default_model.return_value = "test-model"
         loop = AgentLoop(
             bus=bus, provider=provider, workspace=tmp_path,
-            model="test-model", memory_window=10,
+            model="test-model",
         )
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -238,6 +238,7 @@ class TestCompactionContinuityIntegration:
             session.add_message("user", f"Question {i}")
             session.add_message("assistant", f"Answer {i}")
         loop.sessions.save(session)
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
         consolidation_done = asyncio.Event()
         continuity_at_consolidation_time = None
@@ -267,7 +268,7 @@ class TestCompactionContinuityIntegration:
         provider.get_default_model.return_value = "test-model"
         loop = AgentLoop(
             bus=bus, provider=provider, workspace=tmp_path,
-            model="test-model", memory_window=100,  # High so compaction doesn't re-trigger
+            model="test-model",
         )
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -292,7 +293,7 @@ class TestCompactionContinuityIntegration:
         provider.get_default_model.return_value = "test-model"
         loop = AgentLoop(
             bus=bus, provider=provider, workspace=tmp_path,
-            model="test-model", memory_window=10,
+            model="test-model",
         )
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -322,7 +323,7 @@ class TestCompactionContinuityIntegration:
         provider.get_default_model.return_value = "test-model"
         loop = AgentLoop(
             bus=bus, provider=provider, workspace=tmp_path,
-            model="test-model", memory_window=10,
+            model="test-model",
         )
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -332,6 +333,7 @@ class TestCompactionContinuityIntegration:
             session.add_message("user", f"msg{i}")
             session.add_message("assistant", f"resp{i}")
         loop.sessions.save(session)
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
         async def _fake_consolidate(sess, archive_all=False):
             sess.last_consolidated = len(sess.messages) - 5
@@ -372,7 +374,7 @@ class TestCompactionContinuityIntegration:
         provider.get_default_model.return_value = "test-model"
         loop = AgentLoop(
             bus=bus, provider=provider, workspace=tmp_path,
-            model="test-model", memory_window=10,
+            model="test-model",
         )
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -382,6 +384,7 @@ class TestCompactionContinuityIntegration:
             session.add_message("user", f"msg{i}")
             session.add_message("assistant", f"resp{i}")
         loop.sessions.save(session)
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
         async def _failing_consolidate(sess, archive_all=False):
             return False

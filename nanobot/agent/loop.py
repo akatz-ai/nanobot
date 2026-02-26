@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -80,6 +81,8 @@ class AgentLoop:
     }
     _DEFAULT_CONTEXT_WINDOW = 200_000
     _COMPACTION_THRESHOLD_RATIO = 0.70  # Compact at 70% of context window
+    _HISTORY_MAX_MESSAGES = 1000
+    _CONSOLIDATION_KEEP_COUNT = 500
 
     def __init__(
         self,
@@ -90,7 +93,6 @@ class AgentLoop:
         max_iterations: int = 40,
         temperature: float = 0.1,
         max_tokens: int = 4096,
-        memory_window: int = 1000,
         brave_api_key: str | None = None,
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
@@ -112,7 +114,6 @@ class AgentLoop:
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.memory_window = memory_window
         self.brave_api_key = brave_api_key
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
@@ -411,6 +412,8 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
 
+            _api_start = time.monotonic()
+            logger.debug("Calling provider.chat() — iteration {}/{}, {} messages", iteration, self.max_iterations, len(messages))
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),
@@ -418,6 +421,8 @@ class AgentLoop:
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
+            _api_elapsed = time.monotonic() - _api_start
+            logger.debug("provider.chat() returned in {:.1f}s — finish_reason={}, tool_calls={}", _api_elapsed, response.finish_reason, len(response.tool_calls) if response.tool_calls else 0)
 
             # Track token usage for compaction decisions + sidecar log
             if response.usage and session is not None:
@@ -553,6 +558,8 @@ class AgentLoop:
                         session.checkpoint(messages[checkpoint_cursor:])
                         checkpoint_cursor = len(messages)
 
+                logger.debug("All {} tool call(s) processed, continuing loop", len(response.tool_calls))
+
                 # Check circuit breaker after processing all tool calls in this iteration
                 if _consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
                     logger.warning(
@@ -607,7 +614,7 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
-        history = session.get_history(max_messages=self.memory_window)
+        history = session.get_history(max_messages=self._HISTORY_MAX_MESSAGES)
         initial_messages = self.context.build_messages(
             history=history,
             current_message=None,
@@ -778,7 +785,7 @@ class AgentLoop:
             resume_notice = self._resume_notice_for_state(session.detect_resume_state())
             self._set_tool_context(channel, chat_id, metadata.get("message_id"))
             memory_context = await self._retrieve_memory_context(session, msg.content)
-            history = session.get_history(max_messages=self.memory_window)
+            history = session.get_history(max_messages=self._HISTORY_MAX_MESSAGES)
             initial_messages = self.context.build_messages(
                 history=history,
                 current_message=msg.content,
@@ -850,39 +857,23 @@ class AgentLoop:
                                   content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
 
         # Token-based compaction: check if the session's last known input token count
-        # exceeds 70% of the model's context window. Falls back to message count
-        # if no token data is available yet (first turn of a long-running session).
+        # exceeds 70% of the model's context window.
         _needs_compaction = False
         _compaction_reason = "none"
         if session.key not in self._consolidating:
             _token_count = self._last_input_tokens.get(session.key, 0)
-            _unconsolidated = len(session.messages) - session.last_consolidated
             logger.info(
-                "Compaction check for {}: tokens={}/{} ({}%), messages={} unconsolidated "
-                "(last_consolidated={}, total={}), window={}",
+                "Compaction check for {}: tokens={}/{} ({}%), last_consolidated={}, total={}",
                 session.key,
                 _token_count,
                 self._compaction_token_threshold,
                 round(_token_count / self._compaction_token_threshold * 100, 1) if self._compaction_token_threshold else 0,
-                _unconsolidated,
                 session.last_consolidated,
                 len(session.messages),
-                self.memory_window,
             )
             if self._should_compact_by_tokens(session.key):
                 _needs_compaction = True
                 _compaction_reason = f"tokens ({_token_count} >= {self._compaction_token_threshold})"
-            else:
-                # Fallback: message-count heuristic for sessions that haven't
-                # had a provider call yet (e.g. restored from disk after restart).
-                unconsolidated = len(session.messages) - session.last_consolidated
-                if unconsolidated >= self.memory_window:
-                    _needs_compaction = True
-                    _compaction_reason = f"message-count ({unconsolidated} >= {self.memory_window})"
-                    logger.info(
-                        "Message-count fallback compaction for {}: {} unconsolidated >= {}",
-                        session.key, unconsolidated, self.memory_window,
-                    )
         else:
             logger.debug(
                 "Skipping compaction check for {}: consolidation already in progress",
@@ -963,7 +954,7 @@ class AgentLoop:
                 message_tool.start_turn()
 
         memory_context = await self._retrieve_memory_context(session, msg.content)
-        history = session.get_history(max_messages=self.memory_window)
+        history = session.get_history(max_messages=self._HISTORY_MAX_MESSAGES)
 
         # Consume post-compaction continuity context (one-shot)
         continuity_context = session.metadata.pop("continuity_context", None)
@@ -1036,58 +1027,69 @@ class AgentLoop:
         max_exchanges: int = 4,
         max_chars: int = 3000,
     ) -> str | None:
-        """Extract the last N user/assistant text exchanges for post-compaction continuity.
+        """Extract the last N user/assistant conversational turns for post-compaction continuity.
 
         Returns a formatted string of recent conversation, or None if nothing useful.
-        Only includes text content — tool calls, tool results, and system messages are stripped.
+
+        Only captures actual conversational turns — each "exchange" is a user message
+        paired with the final assistant response that follows it. Intermediate assistant
+        messages during tool loops (e.g. "Let me check that...") are skipped so the
+        continuity context reflects the real conversation, not tool-call narration.
         """
-        exchanges: list[tuple[str, str]] = []  # (role, text)
+        # Phase 1: Walk backwards to find user messages and their final assistant replies.
+        # An "exchange" = (user_text, assistant_text | None).
+        # The "final assistant reply" for a user message is the last assistant message
+        # with text content that appears before the *next* user message (or end of list).
+        exchanges: list[tuple[str, str | None]] = []  # (user_text, assistant_text)
+        last_assistant_text: str | None = None
 
         for msg in reversed(session.messages):
             role = msg.get("role")
-            if role not in ("user", "assistant"):
-                continue
-            # Skip assistant messages that are tool-call-only (no text content)
             if role == "assistant":
                 content = msg.get("content")
-                if not content or not str(content).strip():
-                    continue
-            text = str(msg.get("content", "")).strip()
-            if not text:
-                continue
-            exchanges.append((role, text))
-            # Count user messages to cap exchanges
-            user_count = sum(1 for r, _ in exchanges if r == "user")
-            if user_count >= max_exchanges:
-                break
+                text = str(content).strip() if content else ""
+                # Keep the first (i.e. latest) non-empty assistant text we find
+                # as we walk backwards — that's the final reply for the preceding user msg.
+                if text and last_assistant_text is None:
+                    last_assistant_text = text
+            elif role == "user":
+                text = str(msg.get("content", "")).strip()
+                if text:
+                    exchanges.append((text, last_assistant_text))
+                    last_assistant_text = None  # reset for the next (earlier) exchange
+                    if len(exchanges) >= max_exchanges:
+                        break
+            # tool results, system messages, etc. — skip silently
 
         if not exchanges:
             return None
 
         exchanges.reverse()
 
-        # Ensure we start with a user message
-        while exchanges and exchanges[0][0] != "user":
-            exchanges.pop(0)
-
-        if not exchanges:
-            return None
-
-        # Build the formatted output, truncating from the front if over budget
+        # Phase 2: Build formatted output, respecting the char budget.
         lines: list[str] = []
         total_chars = 0
-        for role, text in reversed(exchanges):
-            label = "User" if role == "user" else "Assistant"
+        for user_text, assistant_text in exchanges:
             # Truncate individual messages that are very long
-            if len(text) > 600:
-                text = text[:597] + "..."
-            line = f"**{label}:** {text}"
-            total_chars += len(line) + 1
-            if total_chars > max_chars and lines:
-                break
-            lines.append(line)
+            if len(user_text) > 600:
+                user_text = user_text[:597] + "..."
+            user_line = f"**User:** {user_text}"
 
-        lines.reverse()
+            entry_chars = len(user_line) + 1
+            assistant_line = None
+            if assistant_text:
+                if len(assistant_text) > 600:
+                    assistant_text = assistant_text[:597] + "..."
+                assistant_line = f"**Assistant:** {assistant_text}"
+                entry_chars += len(assistant_line) + 1
+
+            if total_chars + entry_chars > max_chars and lines:
+                break
+            lines.append(user_line)
+            if assistant_line:
+                lines.append(assistant_line)
+            total_chars += entry_chars
+
         return "\n\n".join(lines) if lines else None
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
@@ -1105,7 +1107,7 @@ class AgentLoop:
                     if not self._memory_module.initialized:
                         await self._memory_module.initialize()
 
-                    keep_count = 0 if archive_all else self.memory_window // 2
+                    keep_count = 0 if archive_all else self._CONSOLIDATION_KEEP_COUNT
                     logger.info(
                         "Hybrid consolidation for {}: archive_all={}, keep_count={}, "
                         "total_messages={}, last_consolidated={}",
@@ -1164,7 +1166,7 @@ class AgentLoop:
                 if archive_all:
                     graph_window_messages = list(session.messages)
                 else:
-                    keep_count = self.memory_window // 2
+                    keep_count = self._CONSOLIDATION_KEEP_COUNT
                     if len(session.messages) > keep_count and len(session.messages) > session.last_consolidated:
                         start_index = session.last_consolidated
                         end_index = len(session.messages) - keep_count
@@ -1173,7 +1175,7 @@ class AgentLoop:
 
             success = await MemoryStore(self.workspace).consolidate(
                 session, self.provider, self.model,
-                archive_all=archive_all, memory_window=self.memory_window,
+                archive_all=archive_all, keep_count=self._CONSOLIDATION_KEEP_COUNT,
             )
             if self._memory_module and self._memory_module.consolidator and graph_window_messages:
                 try:

@@ -339,8 +339,8 @@ async def test_consolidate_memory_uses_hybrid_engine_path(tmp_path: Path):
         provider=_StubProvider(),
         workspace=tmp_path,
         model="stub-model",
-        memory_window=10,
     )
+    agent._CONSOLIDATION_KEEP_COUNT = 5
     agent._memory_graph_config = {"consolidation": {"engine": "hybrid"}}
 
     hybrid = SimpleNamespace(compact=AsyncMock(return_value=SimpleNamespace()))
@@ -366,8 +366,8 @@ async def test_consolidate_memory_keeps_legacy_path(tmp_path: Path):
         provider=_StubProvider(),
         workspace=tmp_path,
         model="stub-model",
-        memory_window=10,
     )
+    agent._CONSOLIDATION_KEEP_COUNT = 5
     agent._memory_graph_config = {"consolidation": {"engine": "legacy"}}
     consolidator = SimpleNamespace(consolidate_session=AsyncMock(return_value={"added": 1}))
     agent._memory_module = SimpleNamespace(initialized=True, hybrid=None, consolidator=consolidator)
@@ -389,14 +389,14 @@ async def test_consolidate_memory_keeps_legacy_path(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_consolidate_memory_legacy_graph_uses_pre_mutation_window(tmp_path: Path):
+async def test_consolidate_memory_legacy_graph_uses_pre_mutation_keep_count(tmp_path: Path):
     agent = AgentLoop(
         bus=MessageBus(),
         provider=_StubProvider(),
         workspace=tmp_path,
         model="stub-model",
-        memory_window=10,
     )
+    agent._CONSOLIDATION_KEEP_COUNT = 5
     agent._memory_graph_config = {"consolidation": {"engine": "legacy"}}
     consolidator = SimpleNamespace(consolidate_session=AsyncMock(return_value={"added": 1}))
     agent._memory_module = SimpleNamespace(initialized=True, hybrid=None, consolidator=consolidator)
@@ -600,7 +600,7 @@ async def test_memory_store_consolidate_uses_sanitized_prompt(tmp_path: Path):
         }
     ]
 
-    ok = await store.consolidate(session, provider, model="stub-model", archive_all=True, memory_window=50)
+    ok = await store.consolidate(session, provider, model="stub-model", archive_all=True, keep_count=25)
 
     assert ok is True
     assert provider.last_messages is not None
@@ -643,7 +643,7 @@ async def test_memory_store_consolidate_uses_snapshot_boundary_for_last_consolid
         session.add_message("user", f"msg-{i}")
 
     task = asyncio.create_task(
-        store.consolidate(session, provider, model="stub-model", archive_all=False, memory_window=10)
+        store.consolidate(session, provider, model="stub-model", archive_all=False, keep_count=5)
     )
     await asyncio.sleep(0)
     session.add_message("user", "late-msg")
@@ -684,7 +684,7 @@ async def test_memory_store_consolidate_rejects_malformed_memory_update(tmp_path
     session = Session(key="cli:test")
     session.add_message("user", "note")
 
-    ok = await store.consolidate(session, provider, model="stub-model", archive_all=True, memory_window=50)
+    ok = await store.consolidate(session, provider, model="stub-model", archive_all=True, keep_count=25)
 
     assert ok is True
     memory_file = tmp_path / "memory" / "MEMORY.md"
@@ -740,7 +740,7 @@ async def test_memory_store_consolidate_archives_overflow_sections(tmp_path: Pat
     session = Session(key="cli:test")
     session.add_message("user", "note")
 
-    ok = await store.consolidate(session, provider, model="stub-model", archive_all=True, memory_window=50)
+    ok = await store.consolidate(session, provider, model="stub-model", archive_all=True, keep_count=25)
 
     assert ok is True
     memory_text = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")

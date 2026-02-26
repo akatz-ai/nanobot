@@ -341,7 +341,7 @@ class TestConsolidationTriggerConditions:
     """Test consolidation trigger conditions and logic."""
 
     def test_consolidation_needed_when_messages_exceed_window(self):
-        """Test consolidation logic: should trigger when messages > memory_window."""
+        """Test consolidation logic: should trigger when messages exceed the threshold."""
         session = create_session_with_messages("test:trigger", 60)
 
         total_messages = len(session.messages)
@@ -644,7 +644,7 @@ class TestConsolidationDeduplicationGuard:
 
     @pytest.mark.asyncio
     async def test_consolidation_guard_prevents_duplicate_tasks(self, tmp_path: Path) -> None:
-        """Concurrent messages above memory_window spawn only one consolidation task."""
+        """Concurrent turns over the token threshold spawn only one consolidation task."""
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
@@ -653,9 +653,7 @@ class TestConsolidationDeduplicationGuard:
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
-        loop = AgentLoop(
-            bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
-        )
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
 
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -665,6 +663,7 @@ class TestConsolidationDeduplicationGuard:
             session.add_message("user", f"msg{i}")
             session.add_message("assistant", f"resp{i}")
         loop.sessions.save(session)
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
         consolidation_calls = 0
 
@@ -697,9 +696,8 @@ class TestConsolidationDeduplicationGuard:
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
-        loop = AgentLoop(
-            bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
-        )
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+        loop._CONSOLIDATION_KEEP_COUNT = 5
 
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -709,11 +707,12 @@ class TestConsolidationDeduplicationGuard:
             session.add_message("user", f"msg{i}")
             session.add_message("assistant", f"resp{i}")
         loop.sessions.save(session)
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
         async def _fake_consolidate(sess, archive_all: bool = False) -> bool:
             await asyncio.sleep(0.05)
             if not archive_all:
-                sess.last_consolidated = len(sess.messages) - (loop.memory_window // 2)
+                sess.last_consolidated = len(sess.messages) - loop._CONSOLIDATION_KEEP_COUNT
             return True
 
         loop._consolidate_memory = _fake_consolidate  # type: ignore[method-assign]
@@ -741,9 +740,7 @@ class TestConsolidationDeduplicationGuard:
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
-        loop = AgentLoop(
-            bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
-        )
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
 
         s1 = Session(key="cli:one")
         s2 = Session(key="cli:two")
@@ -762,7 +759,7 @@ class TestConsolidationDeduplicationGuard:
             active -= 1
             session_arg = next((arg for arg in args if isinstance(arg, Session)), None)
             assert session_arg is not None
-            keep_count = kwargs.get("memory_window", 10) // 2
+            keep_count = kwargs.get("keep_count", 5)
             session_arg.last_consolidated = len(session_arg.messages) - keep_count
             return True
 
@@ -791,9 +788,7 @@ class TestConsolidationDeduplicationGuard:
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
-        loop = AgentLoop(
-            bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
-        )
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
 
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -803,6 +798,7 @@ class TestConsolidationDeduplicationGuard:
             session.add_message("user", f"msg{i}")
             session.add_message("assistant", f"resp{i}")
         loop.sessions.save(session)
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
         consolidation_calls = 0
         active = 0
@@ -843,9 +839,7 @@ class TestConsolidationDeduplicationGuard:
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
-        loop = AgentLoop(
-            bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
-        )
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
 
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -855,6 +849,7 @@ class TestConsolidationDeduplicationGuard:
             session.add_message("user", f"msg{i}")
             session.add_message("assistant", f"resp{i}")
         loop.sessions.save(session)
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
         started = asyncio.Event()
 
@@ -888,9 +883,7 @@ class TestConsolidationDeduplicationGuard:
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
-        loop = AgentLoop(
-            bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
-        )
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
 
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -900,6 +893,7 @@ class TestConsolidationDeduplicationGuard:
             session.add_message("user", f"msg{i}")
             session.add_message("assistant", f"resp{i}")
         loop.sessions.save(session)
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
         started = asyncio.Event()
         release = asyncio.Event()
@@ -946,9 +940,7 @@ class TestConsolidationDeduplicationGuard:
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
-        loop = AgentLoop(
-            bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
-        )
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
 
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -990,9 +982,7 @@ class TestConsolidationDeduplicationGuard:
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
-        loop = AgentLoop(
-            bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
-        )
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
 
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -1002,6 +992,7 @@ class TestConsolidationDeduplicationGuard:
             session.add_message("user", f"msg{i}")
             session.add_message("assistant", f"resp{i}")
         loop.sessions.save(session)
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
         started = asyncio.Event()
         release = asyncio.Event()
@@ -1051,9 +1042,7 @@ class TestConsolidationDeduplicationGuard:
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
-        loop = AgentLoop(
-            bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
-        )
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
 
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])

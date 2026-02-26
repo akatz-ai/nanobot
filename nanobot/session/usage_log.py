@@ -212,8 +212,8 @@ def get_session_summary(session_path: Path) -> dict[str, Any] | None:
     total_input = last.get("cumulative_input", 0)
     total_output = last.get("cumulative_output", 0)
 
-    # Calculate average cache hit rate
-    cache_hits = [e.get("cache_hit_pct", 0) for e in entries]
+    # Calculate average cache hit rate (clamp to 0-100 to handle old corrupted entries)
+    cache_hits = [min(e.get("cache_hit_pct", 0), 100.0) for e in entries]
     avg_cache_hit = sum(cache_hits) / len(cache_hits) if cache_hits else 0
 
     # Peak utilization

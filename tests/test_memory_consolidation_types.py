@@ -15,7 +15,7 @@ from nanobot.agent.memory import MemoryStore
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 
 
-def _make_session(message_count: int = 30, memory_window: int = 50):
+def _make_session(message_count: int = 30):
     """Create a mock session with messages."""
     session = MagicMock()
     session.messages = [
@@ -75,7 +75,7 @@ class TestMemoryConsolidationTypeHandling:
         )
         session = _make_session(message_count=60)
 
-        result = await store.consolidate(session, provider, "test-model", memory_window=50)
+        result = await store.consolidate(session, provider, "test-model", keep_count=25)
 
         assert result is True
         assert store.history_file.exists()
@@ -99,7 +99,7 @@ class TestMemoryConsolidationTypeHandling:
         )
         session = _make_session(message_count=60)
 
-        result = await store.consolidate(session, provider, "test-model", memory_window=50)
+        result = await store.consolidate(session, provider, "test-model", keep_count=25)
 
         assert result is True
         assert store.history_file.exists()
@@ -134,7 +134,7 @@ class TestMemoryConsolidationTypeHandling:
         provider.chat = AsyncMock(return_value=response)
         session = _make_session(message_count=60)
 
-        result = await store.consolidate(session, provider, "test-model", memory_window=50)
+        result = await store.consolidate(session, provider, "test-model", keep_count=25)
 
         assert result is True
         assert "User discussed testing." in store.history_file.read_text()
@@ -149,7 +149,7 @@ class TestMemoryConsolidationTypeHandling:
         )
         session = _make_session(message_count=60)
 
-        result = await store.consolidate(session, provider, "test-model", memory_window=50)
+        result = await store.consolidate(session, provider, "test-model", keep_count=25)
 
         assert result is False
         assert not store.history_file.exists()
@@ -161,7 +161,7 @@ class TestMemoryConsolidationTypeHandling:
         provider = AsyncMock()
         session = _make_session(message_count=10)
 
-        result = await store.consolidate(session, provider, "test-model", memory_window=50)
+        result = await store.consolidate(session, provider, "test-model", keep_count=25)
 
         assert result is True
         provider.chat.assert_not_called()

@@ -184,7 +184,7 @@ class MemoryStore:
         model: str,
         *,
         archive_all: bool = False,
-        memory_window: int = 50,
+        keep_count: int = 25,
     ) -> bool:
         """Consolidate old messages into MEMORY.md + HISTORY.md via LLM tool call.
 
@@ -192,11 +192,10 @@ class MemoryStore:
         """
         if archive_all:
             old_messages = list(session.messages)
-            keep_count = 0
             target_last_consolidated = 0
             logger.info("Memory consolidation (archive_all): {} messages", len(session.messages))
         else:
-            keep_count = memory_window // 2
+            keep_count = max(0, keep_count)
             if len(session.messages) <= keep_count:
                 return True
             if len(session.messages) - session.last_consolidated <= 0:

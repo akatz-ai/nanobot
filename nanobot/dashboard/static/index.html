@@ -525,6 +525,159 @@ function buildContextPanel(ctxEntry) {
   return panel;
 }
 
+// ---------------------------------------------------------------------------
+// Session Viewer — paginated, filterable, auto-scrolls to bottom
+// ---------------------------------------------------------------------------
+
+const SESSION_PAGE_SIZE = 100;
+
+// Persistent filter state across re-renders within the same session
+let sessionFilterState = {
+  showUser: true,
+  showAssistant: true,
+  showTool: true,
+  showSystem: true,
+};
+
+function _classifyRole(role) {
+  if (role === 'user') return 'user';
+  if (role === 'assistant') return 'assistant';
+  if (role === 'tool') return 'tool';
+  return 'system';
+}
+
+function _shouldShowMsg(msg) {
+  const cat = _classifyRole(msg.role || 'system');
+  return sessionFilterState['show' + cat.charAt(0).toUpperCase() + cat.slice(1)];
+}
+
+function buildConsolidationMarker(lastConsolidated, continuityContent, pendingContinuity, continuityEntry) {
+  const markerEl = html('div', { className: 'consolidation-marker' });
+  markerEl.appendChild(html('div', { className: 'flex items-center gap-2 text-xs text-amber-400/80 py-1' }, [
+    html('span', {}, `▲ Consolidated through message #${lastConsolidated}`),
+    html('div', { className: 'flex-1 border-t border-dashed border-amber-500/30' }),
+  ]));
+
+  const ccText = continuityContent || pendingContinuity;
+  if (ccText) {
+    const ccPanel = html('div', { className: 'mt-1 mb-2 border border-orange-500/30 rounded-md bg-orange-950/15 overflow-hidden' });
+    const ccHeader = html('div', {
+      className: 'flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-orange-900/20 transition-colors',
+      onClick: () => {
+        ccBody.classList.toggle('hidden');
+        ccArrow.textContent = ccBody.classList.contains('hidden') ? '▶' : '▼';
+      },
+    }, [
+      html('span', { className: 'text-orange-400 text-xs' }, '🔄'),
+      html('span', { className: 'text-[10px] font-semibold text-orange-300 uppercase tracking-wider' }, 'Post-Compaction Continuity Injection'),
+      html('span', { className: 'text-[10px] text-slate-500 ml-1' }, `(${ccText.length} chars)`),
+    ]);
+    const ccArrow = html('span', { className: 'text-[10px] text-orange-400 ml-auto flex-shrink-0' }, '▶');
+    ccHeader.appendChild(ccArrow);
+    ccPanel.appendChild(ccHeader);
+
+    const ccBody = html('div', { className: 'hidden border-t border-orange-500/20 px-3 py-2' });
+    if (continuityEntry) {
+      ccBody.appendChild(html('div', { className: 'text-[10px] text-slate-500 mb-2' }, [
+        `Injected at turn #${continuityEntry.turn_index}`,
+        continuityEntry.user_message_index != null ? ` (message index ${continuityEntry.user_message_index})` : '',
+        ` · ${continuityEntry.timestamp ? new Date(continuityEntry.timestamp).toLocaleString() : ''}`,
+      ].join('')));
+    } else if (pendingContinuity) {
+      ccBody.appendChild(html('div', { className: 'text-[10px] text-amber-400 mb-2' }, '⏳ Pending — not yet consumed (will be injected on next user message)'));
+    }
+    ccBody.appendChild(html('pre', {
+      className: 'text-xs text-orange-200/80 whitespace-pre-wrap break-words max-h-80 overflow-y-auto bg-bg-900/50 rounded p-3',
+    }, ccText));
+    ccPanel.appendChild(ccBody);
+    markerEl.appendChild(ccPanel);
+  }
+  return markerEl;
+}
+
+function buildMessageEl(msg, globalIdx, ctxByMsgIdx, ctxEntries, ctxCursorRef) {
+  const role = msg.role || 'unknown';
+  const roleClass = `msg-${_classifyRole(role)}`;
+  const roleLabel = role.toUpperCase();
+  const roleColors = { system: 'text-slate-400', user: 'text-blue-400', assistant: 'text-green-400', tool: 'text-amber-400' };
+
+  const msgEl = html('div', { className: `${roleClass} rounded-md px-4 py-3`, 'data-role': _classifyRole(role) });
+
+  // Header row
+  const hdrRow = html('div', { className: 'flex items-center gap-2 mb-1.5' }, [
+    html('span', { className: `text-[10px] font-bold uppercase tracking-wider ${roleColors[role] || 'text-slate-400'}` }, roleLabel),
+    html('span', { className: 'text-[10px] text-slate-600 font-mono' }, `#${globalIdx}`),
+  ]);
+  if (msg.timestamp) {
+    hdrRow.appendChild(html('span', { className: 'text-[10px] text-slate-600 ml-auto' }, fmtDate(msg.timestamp)));
+  }
+  msgEl.appendChild(hdrRow);
+
+  // Context panel for user messages
+  if (role === 'user' && ctxByMsgIdx && ctxEntries) {
+    let ctxEntry = ctxByMsgIdx.get(globalIdx);
+    if (!ctxEntry && ctxCursorRef.v < ctxEntries.length) {
+      const candidate = ctxEntries[ctxCursorRef.v];
+      const candidateIdx = candidate.user_message_index;
+      if (candidateIdx == null || Math.abs(candidateIdx - globalIdx) <= 3) {
+        ctxEntry = candidate;
+        ctxCursorRef.v++;
+      }
+    }
+    if (ctxEntry) {
+      msgEl.appendChild(buildContextPanel(ctxEntry));
+    }
+  }
+
+  // Content
+  const content = msg.content || '';
+  if (role === 'tool' && msg.tool_call_id) {
+    msgEl.appendChild(html('div', { className: 'text-xs text-amber-300/60 font-mono mb-1' }, `tool_call_id: ${msg.tool_call_id}`));
+    const pre = html('div', { className: 'font-mono text-xs text-slate-300 whitespace-pre-wrap break-all max-h-40 overflow-y-auto bg-bg-900/50 rounded p-2' }, truncate(content, 2000));
+    const toggle = html('button', { className: 'text-[10px] text-accent-400 hover:text-accent-300 mt-1', onClick: () => {
+      if (pre.style.maxHeight === 'none') { pre.style.maxHeight = '10rem'; toggle.textContent = 'Show more'; }
+      else { pre.style.maxHeight = 'none'; toggle.textContent = 'Show less'; }
+    }}, content.length > 2000 ? 'Show more' : '');
+    msgEl.appendChild(pre);
+    if (content.length > 500) msgEl.appendChild(toggle);
+  } else if (content.length > 3000) {
+    const preview = html('div', { className: 'text-sm text-slate-300 whitespace-pre-wrap break-words max-h-48 overflow-hidden' }, content.slice(0, 1500) + '…');
+    const full = html('div', { className: 'text-sm text-slate-300 whitespace-pre-wrap break-words hidden' }, content);
+    const toggle = html('button', { className: 'text-[10px] text-accent-400 hover:text-accent-300 mt-1', onClick: () => {
+      const showing = full.classList.contains('hidden');
+      preview.classList.toggle('hidden', showing);
+      full.classList.toggle('hidden', !showing);
+      toggle.textContent = showing ? 'Show less' : `Show all (${content.length} chars)`;
+    }}, `Show all (${content.length} chars)`);
+    msgEl.appendChild(preview);
+    msgEl.appendChild(full);
+    msgEl.appendChild(toggle);
+  } else {
+    msgEl.appendChild(html('div', { className: 'text-sm text-slate-300 whitespace-pre-wrap break-words' }, content));
+  }
+
+  // Tool calls (from assistant messages)
+  if (msg.tool_calls && msg.tool_calls.length) {
+    for (const tc of msg.tool_calls) {
+      const fn = tc.function || tc;
+      const tcEl = html('div', { className: 'mt-2 bg-bg-900/50 rounded-md p-2 border border-surface-600' }, [
+        html('div', { className: 'flex items-center gap-2 cursor-pointer', onClick: (e) => {
+          e.currentTarget.nextElementSibling.classList.toggle('hidden');
+        }}, [
+          html('span', { className: 'text-xs text-amber-300 font-mono font-semibold' }, `${fn.name || 'tool'}`),
+          html('span', { className: 'text-[10px] text-slate-500' }, '(click to toggle args)'),
+        ]),
+        html('pre', { className: 'hidden text-xs text-slate-400 mt-1 whitespace-pre-wrap break-all max-h-60 overflow-y-auto' },
+          typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments, null, 2)
+        ),
+      ]);
+      msgEl.appendChild(tcEl);
+    }
+  }
+
+  return msgEl;
+}
+
 async function renderSession() {
   const { agent, sessionKey } = state;
   setBreadcrumbs(
@@ -536,224 +689,287 @@ async function renderSession() {
   const app = $('#app');
   app.innerHTML = '<div class="flex justify-center mt-20"><div class="spinner"></div></div>';
 
-  // Fetch session data and context log in parallel
-  const [data, ctxData] = await Promise.all([
-    api(`/api/agents/${agent}/sessions/${sessionKey}`),
+  // First fetch: lightweight call to get metadata + total message count.
+  // We request offset=0&limit=0 so no messages are returned — just metadata + count.
+  const metaResp = await api(`/api/agents/${agent}/sessions/${sessionKey}?offset=0&limit=1`);
+  const totalMessages = metaResp.messageCount;
+  const metadata = metaResp.metadata;
+  const lastConsolidated = metadata.last_consolidated || 0;
+
+  // Now fetch the last SESSION_PAGE_SIZE messages + context log in parallel.
+  const initialOffset = Math.max(0, totalMessages - SESSION_PAGE_SIZE);
+  const [pageData, ctxData] = await Promise.all([
+    api(`/api/agents/${agent}/sessions/${sessionKey}?offset=${initialOffset}&limit=${SESSION_PAGE_SIZE}`),
     api(`/api/agents/${agent}/sessions/${sessionKey}/context`).catch(() => ({ entries: [] })),
   ]);
+
+  const loadedMessages = pageData.messages;  // the actual messages we got back
   app.innerHTML = '';
 
-  // Build index: message index → context entry
-  // The context log records user_message_index (the session message count at turn start).
-  // We match each context entry to the closest user message at or after that index.
+  // Context log index
+  const ctxEntries = ctxData.entries || [];
   const ctxByMsgIdx = new Map();
-  for (const entry of (ctxData.entries || [])) {
+  for (const entry of ctxEntries) {
     const idx = entry.user_message_index;
     if (idx != null) ctxByMsgIdx.set(idx, entry);
   }
-  // Also build a sequential list for fallback matching by turn order
-  const ctxEntries = ctxData.entries || [];
-  let ctxCursor = 0;
 
-  // Find the first post-compaction continuity context from the context log.
-  // This is the snapshot that was injected after compaction so the agent
-  // retained awareness of the active conversation thread.
+  // Find continuity context
   let continuityEntry = null;
   let continuityContent = null;
   for (const entry of ctxEntries) {
     const sysMsgs = entry.system_messages || [];
     const cc = sysMsgs.find(sm => sm.label === 'continuity_context');
-    if (cc && cc.content) {
-      continuityEntry = entry;
-      continuityContent = cc.content;
+    if (cc && cc.content) { continuityEntry = entry; continuityContent = cc.content; break; }
+  }
+  const pendingContinuity = (metadata.metadata || {}).continuity_context || null;
+
+  // ---- Layout ----
+  // Fixed header area (session info + sticky filter bar)
+  const headerArea = html('div', { className: 'mb-0' });
+
+  // Session info
+  headerArea.appendChild(html('div', { className: 'mb-3' }, [
+    html('h2', { className: 'text-lg font-semibold text-slate-200 font-mono' }, metadata.key || sessionKey),
+    html('p', { className: 'text-xs text-slate-500 mt-1' }, [
+      `${totalMessages} messages · consolidated through #${lastConsolidated} · created ${fmtDate(metadata.created_at)}`,
+      ctxEntries.length ? ` · ${ctxEntries.length} context log entries` : '',
+      continuityContent ? ' · 🔄 continuity injected' : '',
+      pendingContinuity ? ' · ⏳ continuity pending' : '',
+    ].join('')),
+  ]));
+
+  if (ctxEntries.length > 0) {
+    headerArea.appendChild(html('div', { className: 'mb-2 text-[10px] text-purple-400' },
+      '🧠 Context log available — click the purple bar on user messages to see what the LLM received'));
+  }
+
+  app.appendChild(headerArea);
+
+  // Sticky filter bar
+  const filterBar = html('div', {
+    className: 'sticky top-12 z-40 bg-bg-900/95 backdrop-blur border-b border-surface-600 -mx-4 px-4 py-2 flex items-center gap-3 flex-wrap',
+  });
+
+  const filterLabel = html('span', { className: 'text-[10px] text-slate-500 uppercase tracking-wider font-semibold mr-1' }, 'Filter:');
+  filterBar.appendChild(filterLabel);
+
+  // Filter button styles — spelled out so Tailwind CDN can detect the classes
+  const filterTypes = [
+    { key: 'showUser', label: 'User', icon: '💬',
+      activeClass: 'bg-blue-500/20 border-blue-500/50 text-blue-300',
+    },
+    { key: 'showAssistant', label: 'Assistant', icon: '🤖',
+      activeClass: 'bg-green-500/20 border-green-500/50 text-green-300',
+    },
+    { key: 'showTool', label: 'Tool', icon: '🔧',
+      activeClass: 'bg-amber-500/20 border-amber-500/50 text-amber-300',
+    },
+    { key: 'showSystem', label: 'System', icon: '⚙️',
+      activeClass: 'bg-slate-500/20 border-slate-500/50 text-slate-300',
+    },
+  ];
+  const inactiveClass = 'bg-surface-800 border-surface-700 text-slate-600 line-through';
+  const btnBase = 'px-2.5 py-1 text-[11px] rounded-md border transition-all font-medium';
+
+  const filterButtons = {};
+  for (const ft of filterTypes) {
+    const active = sessionFilterState[ft.key];
+    const btn = html('button', {
+      className: `${btnBase} ${active ? ft.activeClass : inactiveClass}`,
+      onClick: () => {
+        sessionFilterState[ft.key] = !sessionFilterState[ft.key];
+        applyFilters();
+        const nowActive = sessionFilterState[ft.key];
+        btn.className = `${btnBase} ${nowActive ? ft.activeClass : inactiveClass}`;
+      },
+    }, `${ft.icon} ${ft.label}`);
+    filterButtons[ft.key] = btn;
+    filterBar.appendChild(btn);
+  }
+
+  // Message count indicator — tracks loaded messages explicitly
+  let loadedCount = loadedMessages.length;
+  const countIndicator = html('span', { className: 'text-[10px] text-slate-500 ml-auto font-mono', id: 'msg-count-indicator' },
+    `Showing ${loadedCount} of ${totalMessages}`);
+  filterBar.appendChild(countIndicator);
+
+  app.appendChild(filterBar);
+
+  // Scrollable message area
+  const scrollContainer = html('div', {
+    className: 'mt-2',
+    id: 'session-scroll-container',
+  });
+
+  // "Load more" button at top
+  let currentOffset = initialOffset;
+  const loadMoreContainer = html('div', { id: 'load-more-container', className: 'mb-3' });
+
+  if (currentOffset > 0) {
+    const loadMoreBtn = html('button', {
+      className: 'w-full py-3 text-sm text-accent-400 hover:text-accent-300 bg-surface-800 hover:bg-surface-700 border border-surface-600 rounded-lg transition-colors font-medium',
+      id: 'load-more-btn',
+      onClick: loadOlderMessages,
+    }, `⬆ Load older messages (${currentOffset} remaining)`);
+    loadMoreContainer.appendChild(loadMoreBtn);
+  }
+  scrollContainer.appendChild(loadMoreContainer);
+
+  // Timeline container
+  const timeline = html('div', { className: 'space-y-2', id: 'session-timeline' });
+  scrollContainer.appendChild(timeline);
+  app.appendChild(scrollContainer);
+
+  // Track context cursor for sequential matching
+  // We need to find the right cursor position for the loaded page
+  const ctxCursorRef = { v: 0 };
+  // Advance cursor to match our starting offset
+  for (let i = 0; i < ctxEntries.length; i++) {
+    if ((ctxEntries[i].user_message_index || 0) >= initialOffset) {
+      ctxCursorRef.v = i;
       break;
     }
   }
-  // Also check session metadata for pending (unconsumed) continuity context
-  const pendingContinuity = (data.metadata.metadata || {}).continuity_context || null;
 
-  // Header
-  const hdr = html('div', { className: 'mb-4 flex items-center justify-between' }, [
-    html('div', {}, [
-      html('h2', { className: 'text-lg font-semibold text-slate-200 font-mono' }, data.metadata.key || sessionKey),
-      html('p', { className: 'text-xs text-slate-500 mt-1' }, [
-        `${data.messageCount} messages · consolidated through #${data.metadata.last_consolidated || 0} · created ${fmtDate(data.metadata.created_at)}`,
-        ctxEntries.length ? ` · ${ctxEntries.length} context log entries` : '',
-        continuityContent ? ' · 🔄 continuity injected' : '',
-        pendingContinuity ? ' · ⏳ continuity pending' : '',
-      ].join('')),
-    ]),
-  ]);
-  app.appendChild(hdr);
-
-  // Context log legend (if we have entries)
-  if (ctxEntries.length > 0) {
-    const legend = html('div', { className: 'mb-3 flex items-center gap-3 text-[10px] text-slate-500' }, [
-      html('span', { className: 'text-purple-400' }, '🧠 Context log available — click the purple bar on user messages to see what the LLM received'),
-    ]);
-    app.appendChild(legend);
-  }
-
-  // Message timeline
-  const timeline = html('div', { className: 'space-y-2 fade-in' });
-  const lastConsolidated = data.metadata.last_consolidated || 0;
-  let markerShown = false;
-
-  data.messages.forEach((msg, idx) => {
-    // Consolidation boundary
-    if (!markerShown && idx >= lastConsolidated && lastConsolidated > 0) {
-      markerShown = true;
-      const markerEl = html('div', { className: 'consolidation-marker' });
-
-      // Boundary header line
-      markerEl.appendChild(html('div', { className: 'flex items-center gap-2 text-xs text-amber-400/80 py-1' }, [
-        html('span', {}, `▲ Consolidated through message #${lastConsolidated}`),
-        html('div', { className: 'flex-1 border-t border-dashed border-amber-500/30' }),
-      ]));
-
-      // Show continuity context (the snapshot injected into the next turn)
-      const ccText = continuityContent || pendingContinuity;
-      if (ccText) {
-        const ccPanel = html('div', { className: 'mt-1 mb-2 border border-orange-500/30 rounded-md bg-orange-950/15 overflow-hidden' });
-
-        // Header bar
-        const ccHeader = html('div', {
-          className: 'flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-orange-900/20 transition-colors',
-          onClick: () => {
-            ccBody.classList.toggle('hidden');
-            ccArrow.textContent = ccBody.classList.contains('hidden') ? '▶' : '▼';
-          },
-        }, [
-          html('span', { className: 'text-orange-400 text-xs' }, '🔄'),
-          html('span', { className: 'text-[10px] font-semibold text-orange-300 uppercase tracking-wider' }, 'Post-Compaction Continuity Injection'),
-          html('span', { className: 'text-[10px] text-slate-500 ml-1' }, `(${ccText.length} chars)`),
-        ]);
-        const ccArrow = html('span', { className: 'text-[10px] text-orange-400 ml-auto flex-shrink-0' }, '▶');
-        ccHeader.appendChild(ccArrow);
-        ccPanel.appendChild(ccHeader);
-
-        // Collapsible body
-        const ccBody = html('div', { className: 'hidden border-t border-orange-500/20 px-3 py-2' });
-
-        // If it came from the context log, show which turn it was injected into
-        if (continuityEntry) {
-          ccBody.appendChild(html('div', { className: 'text-[10px] text-slate-500 mb-2' }, [
-            `Injected at turn #${continuityEntry.turn_index}`,
-            continuityEntry.user_message_index != null ? ` (message index ${continuityEntry.user_message_index})` : '',
-            ` · ${continuityEntry.timestamp ? new Date(continuityEntry.timestamp).toLocaleString() : ''}`,
-          ].join('')));
-        } else if (pendingContinuity) {
-          ccBody.appendChild(html('div', { className: 'text-[10px] text-amber-400 mb-2' }, '⏳ Pending — not yet consumed (will be injected on next user message)'));
-        }
-
-        // The actual content
-        ccBody.appendChild(html('pre', {
-          className: 'text-xs text-orange-200/80 whitespace-pre-wrap break-words max-h-80 overflow-y-auto bg-bg-900/50 rounded p-3',
-        }, ccText));
-
-        // Show the full system message if available
-        if (continuityContent && continuityContent !== ccText) {
-          ccBody.appendChild(html('div', { className: 'text-[10px] text-slate-500 mt-2' }, 'Full system message (as sent to LLM):'));
-          ccBody.appendChild(html('pre', {
-            className: 'text-xs text-slate-400 whitespace-pre-wrap break-words max-h-60 overflow-y-auto bg-bg-900/50 rounded p-2 mt-1',
-          }, continuityContent));
-        }
-
-        ccPanel.appendChild(ccBody);
-        markerEl.appendChild(ccPanel);
-      }
-
-      timeline.appendChild(markerEl);
-    }
-
-    const role = msg.role || 'unknown';
-    const roleClass = `msg-${role === 'system' ? 'system' : role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : 'tool'}`;
-    const roleLabel = role.toUpperCase();
-    const roleColors = { system: 'text-slate-400', user: 'text-blue-400', assistant: 'text-green-400', tool: 'text-amber-400' };
-
-    const msgEl = html('div', { className: `${roleClass} rounded-md px-4 py-3` });
-
-    // Header row
-    const hdrRow = html('div', { className: 'flex items-center gap-2 mb-1.5' }, [
-      html('span', { className: `text-[10px] font-bold uppercase tracking-wider ${roleColors[role] || 'text-slate-400'}` }, roleLabel),
-      html('span', { className: 'text-[10px] text-slate-600 font-mono' }, `#${idx}`),
-    ]);
-    if (msg.timestamp) {
-      hdrRow.appendChild(html('span', { className: 'text-[10px] text-slate-600 ml-auto' }, fmtDate(msg.timestamp)));
-    }
-    msgEl.appendChild(hdrRow);
-
-    // Context panel for user messages
-    if (role === 'user') {
-      // Try exact match first, then sequential fallback
-      let ctxEntry = ctxByMsgIdx.get(idx);
-      if (!ctxEntry && ctxCursor < ctxEntries.length) {
-        // Sequential fallback: assign the next unmatched context entry to this user message
-        const candidate = ctxEntries[ctxCursor];
-        const candidateIdx = candidate.user_message_index;
-        // Accept if the candidate index is close to this message index (within a few)
-        if (candidateIdx == null || Math.abs(candidateIdx - idx) <= 3) {
-          ctxEntry = candidate;
-          ctxCursor++;
-        }
-      }
-      if (ctxEntry) {
-        msgEl.appendChild(buildContextPanel(ctxEntry));
-      }
-    }
-
-    // Content
-    const content = msg.content || '';
-    if (role === 'tool' && msg.tool_call_id) {
-      // Tool result
-      msgEl.appendChild(html('div', { className: 'text-xs text-amber-300/60 font-mono mb-1' }, `tool_call_id: ${msg.tool_call_id}`));
-      const pre = html('div', { className: 'font-mono text-xs text-slate-300 whitespace-pre-wrap break-all max-h-40 overflow-y-auto bg-bg-900/50 rounded p-2' }, truncate(content, 2000));
-      const toggle = html('button', { className: 'text-[10px] text-accent-400 hover:text-accent-300 mt-1', onClick: () => {
-        if (pre.style.maxHeight === 'none') { pre.style.maxHeight = '10rem'; toggle.textContent = 'Show more'; }
-        else { pre.style.maxHeight = 'none'; toggle.textContent = 'Show less'; }
-      }}, content.length > 2000 ? 'Show more' : '');
-      msgEl.appendChild(pre);
-      if (content.length > 500) msgEl.appendChild(toggle);
-    } else if (content.length > 3000) {
-      // Long content — collapsible
-      const preview = html('div', { className: 'text-sm text-slate-300 whitespace-pre-wrap break-words max-h-48 overflow-hidden' }, content.slice(0, 1500) + '…');
-      const full = html('div', { className: 'text-sm text-slate-300 whitespace-pre-wrap break-words hidden' }, content);
-      const toggle = html('button', { className: 'text-[10px] text-accent-400 hover:text-accent-300 mt-1', onClick: () => {
-        const showing = full.classList.contains('hidden');
-        preview.classList.toggle('hidden', showing);
-        full.classList.toggle('hidden', !showing);
-        toggle.textContent = showing ? 'Show less' : `Show all (${content.length} chars)`;
-      }}, `Show all (${content.length} chars)`);
-      msgEl.appendChild(preview);
-      msgEl.appendChild(full);
-      msgEl.appendChild(toggle);
-    } else {
-      msgEl.appendChild(html('div', { className: 'text-sm text-slate-300 whitespace-pre-wrap break-words' }, content));
-    }
-
-    // Tool calls (from assistant messages)
-    if (msg.tool_calls && msg.tool_calls.length) {
-      for (const tc of msg.tool_calls) {
-        const fn = tc.function || tc;
-        const tcEl = html('div', { className: 'mt-2 bg-bg-900/50 rounded-md p-2 border border-surface-600' }, [
-          html('div', { className: 'flex items-center gap-2 cursor-pointer', onClick: (e) => {
-            e.currentTarget.nextElementSibling.classList.toggle('hidden');
-          }}, [
-            html('span', { className: 'text-xs text-amber-300 font-mono font-semibold' }, `${fn.name || 'tool'}`),
-            html('span', { className: 'text-[10px] text-slate-500' }, '(click to toggle args)'),
-          ]),
-          html('pre', { className: 'hidden text-xs text-slate-400 mt-1 whitespace-pre-wrap break-all max-h-60 overflow-y-auto' },
-            typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments, null, 2)
-          ),
-        ]);
-        msgEl.appendChild(tcEl);
-      }
-    }
-
-    timeline.appendChild(msgEl);
+  // Render initial page
+  let consolidationMarkerShown = initialOffset >= lastConsolidated;
+  renderMessageBatch(loadedMessages, initialOffset, timeline, {
+    lastConsolidated, continuityContent, pendingContinuity, continuityEntry,
+    ctxByMsgIdx, ctxEntries, ctxCursorRef,
+    consolidationMarkerShown,
   });
 
-  app.appendChild(timeline);
+  // Scroll to bottom
+  requestAnimationFrame(() => {
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' });
+  });
+
+  // Apply initial filters
+  applyFilters();
+
+  // ---- Load older messages ----
+  async function loadOlderMessages() {
+    const btn = document.getElementById('load-more-btn');
+    if (!btn || currentOffset <= 0) return;
+    btn.textContent = '⏳ Loading...';
+    btn.disabled = true;
+
+    const newOffset = Math.max(0, currentOffset - SESSION_PAGE_SIZE);
+    const fetchLimit = currentOffset - newOffset;
+
+    try {
+      const olderData = await api(`/api/agents/${agent}/sessions/${sessionKey}?offset=${newOffset}&limit=${fetchLimit}`);
+
+      // Save scroll position (distance from bottom)
+      const scrollBottom = document.body.scrollHeight - window.scrollY;
+
+      // Build new elements in a temp container
+      const fragment = document.createDocumentFragment();
+      const tempTimeline = html('div', { className: 'space-y-2' });
+
+      // Reset context cursor for this batch
+      const batchCtxCursor = { v: 0 };
+      for (let i = 0; i < ctxEntries.length; i++) {
+        if ((ctxEntries[i].user_message_index || 0) >= newOffset) {
+          batchCtxCursor.v = i;
+          break;
+        }
+      }
+
+      const batchConsolidationShown = newOffset >= lastConsolidated;
+      renderMessageBatch(olderData.messages, newOffset, tempTimeline, {
+        lastConsolidated, continuityContent, pendingContinuity, continuityEntry,
+        ctxByMsgIdx, ctxEntries, ctxCursorRef: batchCtxCursor,
+        consolidationMarkerShown: batchConsolidationShown,
+      });
+
+      // If this batch includes the consolidation marker, remove any duplicate from the existing timeline
+      if (!batchConsolidationShown && newOffset < lastConsolidated) {
+        const existingMarker = timeline.querySelector('.consolidation-marker');
+        if (existingMarker) existingMarker.remove();
+        consolidationMarkerShown = true;
+      }
+
+      // Prepend the new messages before existing ones
+      while (tempTimeline.firstChild) {
+        fragment.appendChild(tempTimeline.firstChild);
+      }
+      timeline.insertBefore(fragment, timeline.firstChild);
+
+      currentOffset = newOffset;
+      loadedCount += olderData.messages.length;
+
+      // Update load more button
+      const container = document.getElementById('load-more-container');
+      container.innerHTML = '';
+      if (currentOffset > 0) {
+        const newBtn = html('button', {
+          className: 'w-full py-3 text-sm text-accent-400 hover:text-accent-300 bg-surface-800 hover:bg-surface-700 border border-surface-600 rounded-lg transition-colors font-medium',
+          id: 'load-more-btn',
+          onClick: loadOlderMessages,
+        }, `⬆ Load older messages (${currentOffset} remaining)`);
+        container.appendChild(newBtn);
+      }
+
+      // Restore scroll position (maintain distance from bottom)
+      requestAnimationFrame(() => {
+        window.scrollTo({ top: document.body.scrollHeight - scrollBottom, behavior: 'instant' });
+      });
+
+      // Apply filters to new messages (also updates the count indicator)
+      applyFilters();
+
+    } catch (e) {
+      btn.textContent = `⚠ Error: ${e.message}. Click to retry.`;
+      btn.disabled = false;
+    }
+  }
+
+  function applyFilters() {
+    const allMsgs = timeline.querySelectorAll('[data-role]');
+    let visibleCount = 0;
+    allMsgs.forEach(el => {
+      const role = el.getAttribute('data-role');
+      const key = 'show' + role.charAt(0).toUpperCase() + role.slice(1);
+      const show = sessionFilterState[key] !== false;
+      el.style.display = show ? '' : 'none';
+      if (show) visibleCount++;
+    });
+    // Update count indicator
+    const indicator = document.getElementById('msg-count-indicator');
+    if (indicator) {
+      if (visibleCount === loadedCount) {
+        indicator.textContent = `${loadedCount} of ${totalMessages} loaded`;
+      } else {
+        indicator.textContent = `${visibleCount} visible · ${loadedCount} loaded · ${totalMessages} total`;
+      }
+    }
+  }
+}
+
+function renderMessageBatch(messages, startOffset, container, opts) {
+  const {
+    lastConsolidated, continuityContent, pendingContinuity, continuityEntry,
+    ctxByMsgIdx, ctxEntries, ctxCursorRef,
+  } = opts;
+  let consolidationMarkerShown = opts.consolidationMarkerShown || false;
+
+  messages.forEach((msg, localIdx) => {
+    const globalIdx = startOffset + localIdx;
+
+    // Consolidation boundary
+    if (!consolidationMarkerShown && globalIdx >= lastConsolidated && lastConsolidated > 0) {
+      consolidationMarkerShown = true;
+      container.appendChild(buildConsolidationMarker(lastConsolidated, continuityContent, pendingContinuity, continuityEntry));
+    }
+
+    const el = buildMessageEl(msg, globalIdx, ctxByMsgIdx, ctxEntries, ctxCursorRef);
+    container.appendChild(el);
+  });
+
+  // Update the flag on opts so caller knows
+  opts.consolidationMarkerShown = consolidationMarkerShown;
 }
 
 // ---------------------------------------------------------------------------

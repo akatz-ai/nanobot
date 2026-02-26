@@ -41,11 +41,8 @@ class LayoutValidation:
 
     @property
     def ok(self) -> bool:
-        return (
-            not self.missing_categories
-            and not self.missing_channels
-            and not self.wrong_parent_channels
-        )
+        """Layout is OK if required channels exist. Wrong parent is cosmetic, not a failure."""
+        return not self.missing_categories and not self.missing_channels
 
 
 async def validate_discord_bot_access(bot_token: str, guild_id: str) -> dict[str, Any]:
@@ -110,6 +107,8 @@ def validate_basic_layout(channels: list[dict[str, Any]]) -> LayoutValidation:
         channel_id = str(ch.get("id"))
         report.channel_ids[channel_name] = channel_id
 
+        # Track parent mismatch as informational but don't treat as failure —
+        # the channel ID is what matters for routing, not its category.
         expected_parent = report.category_ids.get(expected_category)
         actual_parent = str(ch.get("parent_id") or "")
         if expected_parent and actual_parent != expected_parent:
@@ -158,7 +157,17 @@ async def setup_basic_server(guild_id: str, bot_token: str) -> ServerSetupResult
     for channel_name, (parent_category, topic) in BASIC_TEXT_CHANNELS.items():
         existing = text_by_name.get(channel_name.casefold())
         if existing:
-            channel_ids[channel_name] = str(existing["id"])
+            channel_id = str(existing["id"])
+            channel_ids[channel_name] = channel_id
+
+            # Try to move channel under the correct category if it's misplaced
+            expected_parent = category_ids.get(parent_category)
+            actual_parent = str(existing.get("parent_id") or "")
+            if expected_parent and actual_parent != expected_parent:
+                moved = await _try_move_channel(channel_id, expected_parent, bot_token)
+                if moved:
+                    from loguru import logger
+                    logger.info("Moved #{} to category {}", channel_name, parent_category)
             continue
 
         channel_id = await discord.create_guild_channel(
@@ -185,6 +194,21 @@ async def setup_basic_server(guild_id: str, bot_token: str) -> ServerSetupResult
         channel_ids=channel_ids,
         webhook_urls={"general": general_webhook},
     )
+
+
+async def _try_move_channel(channel_id: str, new_parent_id: str, bot_token: str) -> bool:
+    """Attempt to move a channel to a different category. Returns True on success."""
+    headers = {"Authorization": f"Bot {bot_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.patch(
+                f"{DISCORD_API_BASE}/channels/{channel_id}",
+                headers=headers,
+                json={"parent_id": new_parent_id},
+            )
+            return resp.status_code == 200
+    except Exception:
+        return False
 
 
 async def _ensure_channel_webhook(

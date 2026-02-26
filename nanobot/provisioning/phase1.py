@@ -170,17 +170,16 @@ async def run_phase1_checks(
     layout = validate_basic_layout(channels)
 
     if layout.ok:
-        results.append(ProvisionCheck("discord-layout", True, "Required categories/channels exist"))
+        detail = "Required categories/channels exist"
+        if layout.wrong_parent_channels:
+            detail += f" (note: {', '.join(layout.wrong_parent_channels)} under different category — cosmetic only)"
+        results.append(ProvisionCheck("discord-layout", True, detail))
     else:
         detail_parts: list[str] = []
         if layout.missing_categories:
             detail_parts.append(f"missing categories: {', '.join(layout.missing_categories)}")
         if layout.missing_channels:
             detail_parts.append(f"missing channels: {', '.join(layout.missing_channels)}")
-        if layout.wrong_parent_channels:
-            detail_parts.append(
-                f"wrong parent category: {', '.join(layout.wrong_parent_channels)}"
-            )
         results.append(ProvisionCheck("discord-layout", False, "; ".join(detail_parts)))
 
     # Ensure config maps the general profile to a known channel.

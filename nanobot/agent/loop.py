@@ -25,6 +25,7 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.session.context_log import TurnContextLogger
+from nanobot.session.usage_log import TokenUsageLogger
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
@@ -150,6 +151,7 @@ class AgentLoop:
         self._consolidation_locks: dict[str, asyncio.Lock] = {}
         self._memory_file_lock = asyncio.Lock()  # Serialize global memory file writes across sessions.
         self._context_loggers: dict[str, TurnContextLogger] = {}
+        self._usage_loggers: dict[str, TokenUsageLogger] = {}
         self._memory_module = None
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._processing_lock = asyncio.Lock()
@@ -237,6 +239,14 @@ class AgentLoop:
             session_path = self.sessions._get_session_path(key)
             self._context_loggers[key] = TurnContextLogger(session_path)
         return self._context_loggers[key]
+
+    def _get_usage_logger(self, session: Session) -> TokenUsageLogger:
+        """Get or create a TokenUsageLogger for a session."""
+        key = session.key
+        if key not in self._usage_loggers:
+            session_path = self.sessions._get_session_path(key)
+            self._usage_loggers[key] = TokenUsageLogger(session_path)
+        return self._usage_loggers[key]
 
     async def _retrieve_memory_context(
         self,
@@ -409,17 +419,33 @@ class AgentLoop:
                 max_tokens=self.max_tokens,
             )
 
-            # Track token usage for compaction decisions
+            # Track token usage for compaction decisions + sidecar log
             if response.usage and session is not None:
                 input_tokens = response.usage.get("prompt_tokens", 0)
+                output_tokens = response.usage.get("completion_tokens", 0)
+                cache_read = response.usage.get("cache_read_input_tokens", 0)
+                cache_creation = response.usage.get("cache_creation_input_tokens", 0)
                 if input_tokens:
                     self._last_input_tokens[session.key] = input_tokens
-                    logger.debug(
-                        "Turn {} token usage: input={}, output={}, total={}",
-                        iteration,
+                    context_window = self._get_context_window_size()
+                    utilization = round(input_tokens / context_window * 100, 1) if context_window else 0
+                    logger.info(
+                        "Token usage: in={} out={} cache_read={} cache_create={} | {:.1f}% of {}k window",
                         input_tokens,
-                        response.usage.get("completion_tokens", 0),
-                        response.usage.get("total_tokens", 0),
+                        output_tokens,
+                        cache_read,
+                        cache_creation,
+                        utilization,
+                        context_window // 1000,
+                    )
+                    # Write to sidecar usage log
+                    usage_logger = self._get_usage_logger(session)
+                    usage_logger.log_usage(
+                        usage=response.usage,
+                        iteration=iteration,
+                        context_window=context_window,
+                        model=self.model,
+                        finish_reason=response.finish_reason,
                     )
 
             # --- Layer 1: Truncation guard ---
@@ -592,6 +618,7 @@ class AgentLoop:
             resume_notice=self._RESUME_SYSTEM_MESSAGE,
             user_message_index=len(session.messages),
         )
+        self._get_usage_logger(session).new_turn()
         self.subagents.set_skill_index(self.context.get_last_skills_summary())
         final_content, _, all_msgs = await self._run_agent_loop(
             initial_messages,
@@ -763,6 +790,7 @@ class AgentLoop:
                 resume_notice=resume_notice,
                 user_message_index=len(session.messages),
             )
+            self._get_usage_logger(session).new_turn()
             self.subagents.set_skill_index(self.context.get_last_skills_summary())
             turn_start = max(len(initial_messages) - 1, 0)
             final_content, _, all_msgs = await self._run_agent_loop(
@@ -920,6 +948,7 @@ class AgentLoop:
             resume_notice=resume_notice,
             user_message_index=len(session.messages),
         )
+        self._get_usage_logger(session).new_turn()
         self.subagents.set_skill_index(self.context.get_last_skills_summary())
         turn_start = max(len(initial_messages) - 1, 0)
 

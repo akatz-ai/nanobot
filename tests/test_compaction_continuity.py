@@ -248,8 +248,8 @@ class TestCompactionContinuityIntegration:
         assert call_order[:2] == ["consolidate", "chat"]
 
     @pytest.mark.asyncio
-    async def test_continuity_passed_inline_not_metadata(self, tmp_path):
-        """Compaction should pass continuity directly to build_messages in the same turn."""
+    async def test_continuity_passed_to_build_messages_and_persisted(self, tmp_path):
+        """Compaction should pass continuity to build_messages and persist in metadata."""
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
@@ -287,7 +287,9 @@ class TestCompactionContinuityIntegration:
 
         assert captured["continuity_context"] is not None
         assert "Question" in captured["continuity_context"]
-        assert "continuity_context" not in session.metadata
+        # Continuity is now persisted in metadata for subsequent turns
+        assert "continuity_context" in session.metadata
+        assert session.metadata["continuity_context"] == captured["continuity_context"]
 
     @pytest.mark.asyncio
     async def test_no_continuity_for_archive_all(self, tmp_path):

@@ -860,6 +860,7 @@ class AgentLoop:
                 self._prune_consolidation_lock(session.key, lock)
 
             session.clear()
+            session.metadata.pop("continuity_context", None)
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
@@ -867,12 +868,6 @@ class AgentLoop:
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
-
-        # Legacy cleanup: older async compaction stored continuity context in metadata.
-        # Inline compaction now passes it directly in-process.
-        if "continuity_context" in session.metadata:
-            session.metadata.pop("continuity_context", None)
-            self.sessions.save(session)
 
         # Token-based compaction: check if the session's last known input token count
         # exceeds 70% of the model's context window.
@@ -942,8 +937,11 @@ class AgentLoop:
                             # reading either way to avoid immediate retrigger loops.
                             self._last_input_tokens.pop(session.key, None)
                             if session.last_consolidated > prev_consolidated:
-                                self.sessions.save(session)
+                                # Persist continuity in metadata so it's injected every turn
+                                if continuity:
+                                    session.metadata["continuity_context"] = continuity
                                 continuity_context = continuity
+                                self.sessions.save(session)
                                 try:
                                     await self.bus.publish_outbound(OutboundMessage(
                                         channel=msg.channel,
@@ -977,8 +975,12 @@ class AgentLoop:
 
         memory_context = await self._retrieve_memory_context(session, msg.content)
         history = session.get_history(max_messages=self._HISTORY_MAX_MESSAGES)
+
+        # Load persisted continuity context if no inline compaction produced one this turn
+        if not continuity_context:
+            continuity_context = session.metadata.get("continuity_context")
         if continuity_context:
-            logger.info("Injecting continuity context ({} chars) into post-compaction turn", len(continuity_context))
+            logger.info("Injecting continuity context ({} chars)", len(continuity_context))
 
         initial_messages = self.context.build_messages(
             history=history,

@@ -252,6 +252,9 @@ class SkillsLoader:
     def _check_requirements(self, skill_meta: dict) -> bool:
         """Check if skill requirements are met (bins, env vars)."""
         requires = skill_meta.get("requires", {})
+        if not isinstance(requires, dict):
+            logger.warning("Skill has malformed 'requires' (expected dict, got {})", type(requires).__name__)
+            return False
         for b in requires.get("bins", []):
             if not shutil.which(b):
                 return False

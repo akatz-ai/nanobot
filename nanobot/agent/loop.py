@@ -1190,23 +1190,60 @@ class AgentLoop:
                             return True
                         completed_batches = 0
                         batch_start = start_index
+                        accumulated_entries: list[Any] = []
                         while batch_start < end_index:
                             batch_end = min(batch_start + batch_size, end_index)
                             logger.info(
                                 "Hybrid consolidation batch {} for {}: messages[{}:{}]",
                                 completed_batches + 1,
                                 session.key,
-                                batch_start,
-                                batch_end,
-                            )
-                            result = await self._memory_module.hybrid.compact(
-                                session_key=session.key,
-                                messages=session.messages,
-                                start_index=batch_start,
-                                end_index=batch_end,
-                                agent_id=self.agent_id,
-                            )
+                                    batch_start,
+                                    batch_end,
+                                )
+                            try:
+                                result = await self._memory_module.hybrid.compact(
+                                    session_key=session.key,
+                                    messages=session.messages,
+                                    start_index=batch_start,
+                                    end_index=batch_end,
+                                    agent_id=self.agent_id,
+                                    skip_memory_rewrite=True,
+                                )
+                            except Exception as e:
+                                if accumulated_entries and hasattr(self._memory_module.hybrid, "rewrite_memory_md"):
+                                    try:
+                                        await self._memory_module.hybrid.rewrite_memory_md(
+                                            entries=accumulated_entries,
+                                            session_key=session.key,
+                                        )
+                                    except Exception as rewrite_exc:
+                                        logger.warning(
+                                            "Hybrid run-level MEMORY.md rewrite failed after batch exception: {}",
+                                            rewrite_exc,
+                                        )
+                                logger.warning(
+                                    "Hybrid consolidation batch exception for {} at messages[{}:{}]: {}",
+                                    session.key,
+                                    batch_start,
+                                    batch_end,
+                                    e,
+                                )
+                                return False
+                            batch_entries = getattr(result, "entries", None)
+                            if isinstance(batch_entries, list) and batch_entries:
+                                accumulated_entries.extend(batch_entries)
                             if hasattr(result, "success") and not bool(getattr(result, "success")):
+                                if accumulated_entries and hasattr(self._memory_module.hybrid, "rewrite_memory_md"):
+                                    try:
+                                        await self._memory_module.hybrid.rewrite_memory_md(
+                                            entries=accumulated_entries,
+                                            session_key=session.key,
+                                        )
+                                    except Exception as e:
+                                        logger.warning(
+                                            "Hybrid run-level MEMORY.md rewrite failed after batch error: {}",
+                                            e,
+                                        )
                                 logger.warning(
                                     "Hybrid consolidation batch failed for {} at messages[{}:{}]: {}",
                                     session.key,
@@ -1220,6 +1257,15 @@ class AgentLoop:
                             self.sessions.save(session)
                             completed_batches += 1
                             batch_start = batch_end
+
+                        if accumulated_entries and hasattr(self._memory_module.hybrid, "rewrite_memory_md"):
+                            try:
+                                await self._memory_module.hybrid.rewrite_memory_md(
+                                    entries=accumulated_entries,
+                                    session_key=session.key,
+                                )
+                            except Exception as e:
+                                logger.warning("Hybrid run-level MEMORY.md rewrite failed: {}", e)
 
                         logger.info(
                             "Hybrid memory consolidation done: {} messages, batches={}, "

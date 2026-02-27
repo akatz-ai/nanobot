@@ -532,6 +532,50 @@ async def test_extraction_empty_suspicious(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_memory_rewrite_once(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    agent._CONSOLIDATION_KEEP_COUNT = 10
+    agent._memory_graph_config = {
+        "consolidation": {"engine": "hybrid", "batch_messages": 30}
+    }
+
+    async def _ok_compact(*, start_index: int, end_index: int, **kwargs):
+        return SimpleNamespace(
+            success=True,
+            entries=[f"batch:{start_index}-{end_index}"],
+            error=None,
+        )
+
+    rewrite_memory_md = AsyncMock(return_value=None)
+    hybrid = SimpleNamespace(
+        compact=AsyncMock(side_effect=_ok_compact),
+        rewrite_memory_md=rewrite_memory_md,
+    )
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+
+    session = agent.sessions.get_or_create("cli:test")
+    for i in range(95):
+        session.add_message("user", f"msg-{i}")
+    agent.sessions.save(session)
+
+    ok = await agent._consolidate_memory(session, archive_all=False)
+
+    assert ok is True
+    assert session.last_consolidated == 85
+    assert hybrid.compact.await_count == 3
+    assert rewrite_memory_md.await_count == 1
+    rewrite_entries = rewrite_memory_md.await_args.kwargs["entries"]
+    assert rewrite_entries == ["batch:0-30", "batch:30-60", "batch:60-85"]
+    for call in hybrid.compact.await_args_list:
+        assert call.kwargs["skip_memory_rewrite"] is True
+
+
+@pytest.mark.asyncio
 async def test_consolidate_memory_hybrid_preserves_partial_batch_progress_on_failure(tmp_path: Path):
     agent = AgentLoop(
         bus=MessageBus(),
@@ -575,6 +619,48 @@ async def test_consolidate_memory_hybrid_preserves_partial_batch_progress_on_fai
         for call in hybrid.compact.await_args_list
     ]
     assert retry_windows == [(30, 60), (60, 85)]
+
+
+@pytest.mark.asyncio
+async def test_partial_batch_failure(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    agent._CONSOLIDATION_KEEP_COUNT = 10
+    agent._memory_graph_config = {
+        "consolidation": {"engine": "hybrid", "batch_messages": 30}
+    }
+
+    call_counter = {"count": 0}
+
+    async def _partial_failure(*, start_index: int, end_index: int, **kwargs):
+        call_counter["count"] += 1
+        if call_counter["count"] == 1:
+            return SimpleNamespace(success=True, entries=["batch-1"], error=None)
+        return SimpleNamespace(success=False, entries=[], error="batch 2 failed")
+
+    rewrite_memory_md = AsyncMock(return_value=None)
+    hybrid = SimpleNamespace(
+        compact=AsyncMock(side_effect=_partial_failure),
+        rewrite_memory_md=rewrite_memory_md,
+    )
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+
+    session = agent.sessions.get_or_create("cli:test")
+    for i in range(95):
+        session.add_message("user", f"msg-{i}")
+    agent.sessions.save(session)
+
+    ok = await agent._consolidate_memory(session, archive_all=False)
+
+    assert ok is False
+    assert session.last_consolidated == 30
+    assert hybrid.compact.await_count == 2
+    rewrite_memory_md.assert_awaited_once()
+    assert rewrite_memory_md.await_args.kwargs["entries"] == ["batch-1"]
 
 
 @pytest.mark.asyncio

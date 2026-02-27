@@ -463,6 +463,75 @@ async def test_consolidate_memory_hybrid_chunks_large_windows(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_extraction_failure_no_checkpoint_advance(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    agent._CONSOLIDATION_KEEP_COUNT = 10
+    agent._memory_graph_config = {
+        "consolidation": {"engine": "hybrid", "batch_messages": 30}
+    }
+
+    call_count = {"count": 0}
+
+    async def _fail_compact(**kwargs):
+        call_count["count"] += 1
+        return SimpleNamespace(success=False, error="json decode error")
+
+    hybrid = SimpleNamespace(compact=_fail_compact)
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+
+    session = agent.sessions.get_or_create("cli:test")
+    for i in range(95):
+        session.add_message("user", f"msg-{i}")
+    agent.sessions.save(session)
+    start_checkpoint = session.last_consolidated
+
+    ok = await agent._consolidate_memory(session, archive_all=False)
+
+    assert ok is False
+    assert session.last_consolidated == start_checkpoint
+    assert call_count["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_extraction_empty_suspicious(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    agent._CONSOLIDATION_KEEP_COUNT = 5
+    agent._memory_graph_config = {
+        "consolidation": {"engine": "hybrid", "batch_messages": 30}
+    }
+
+    async def _suspicious_empty(*, messages, start_index: int, end_index: int, **kwargs):
+        chunk = messages[start_index:end_index]
+        user_turns = sum(1 for msg in chunk if msg.get("role") == "user")
+        if user_turns >= 10:
+            return SimpleNamespace(success=False, error="suspicious empty extraction")
+        return SimpleNamespace(success=True, error=None)
+
+    hybrid = SimpleNamespace(compact=_suspicious_empty)
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+
+    session = agent.sessions.get_or_create("cli:test")
+    for i in range(20):
+        session.add_message("user", f"user-msg-{i}")
+    start_checkpoint = session.last_consolidated
+
+    ok = await agent._consolidate_memory(session, archive_all=False)
+
+    assert ok is False
+    assert session.last_consolidated == start_checkpoint
+
+
+@pytest.mark.asyncio
 async def test_consolidate_memory_hybrid_preserves_partial_batch_progress_on_failure(tmp_path: Path):
     agent = AgentLoop(
         bus=MessageBus(),

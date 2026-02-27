@@ -1199,13 +1199,22 @@ class AgentLoop:
                                 batch_start,
                                 batch_end,
                             )
-                            await self._memory_module.hybrid.compact(
+                            result = await self._memory_module.hybrid.compact(
                                 session_key=session.key,
                                 messages=session.messages,
                                 start_index=batch_start,
                                 end_index=batch_end,
                                 agent_id=self.agent_id,
                             )
+                            if hasattr(result, "success") and not bool(getattr(result, "success")):
+                                logger.warning(
+                                    "Hybrid consolidation batch failed for {} at messages[{}:{}]: {}",
+                                    session.key,
+                                    batch_start,
+                                    batch_end,
+                                    getattr(result, "error", "unknown error"),
+                                )
+                                return False
                             session.last_consolidated = batch_end
                             # Persist per-batch checkpoint so failures are resumable.
                             self.sessions.save(session)
@@ -1229,13 +1238,20 @@ class AgentLoop:
                         "Hybrid consolidation executing: messages[{}:{}] -> last_consolidated={}",
                         start_index, end_index, target_last_consolidated,
                     )
-                    await self._memory_module.hybrid.compact(
+                    result = await self._memory_module.hybrid.compact(
                         session_key=session.key,
                         messages=session.messages,
                         start_index=start_index,
                         end_index=end_index,
                         agent_id=self.agent_id,
                     )
+                    if hasattr(result, "success") and not bool(getattr(result, "success")):
+                        logger.warning(
+                            "Hybrid memory consolidation failed for {}: {}",
+                            session.key,
+                            getattr(result, "error", "unknown error"),
+                        )
+                        return False
                     session.last_consolidated = target_last_consolidated
                     logger.info(
                         "Hybrid memory consolidation done: {} messages, last_consolidated={}",

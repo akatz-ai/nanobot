@@ -158,7 +158,7 @@ def onboard():
     """Initialize nanobot configuration and workspace."""
     from nanobot.config.loader import get_config_path, load_config, save_config
     from nanobot.config.schema import Config
-    from nanobot.utils.helpers import get_workspace_path
+    from nanobot.utils.helpers import get_workspace_path, sync_workspace_templates
     
     config_path = get_config_path()
     
@@ -185,8 +185,7 @@ def onboard():
         workspace.mkdir(parents=True, exist_ok=True)
         console.print(f"[green]✓[/green] Created workspace at {workspace}")
     
-    # Create default bootstrap files
-    _create_workspace_templates(workspace)
+    sync_workspace_templates(workspace)
     
     console.print(f"\n{__logo__} nanobot is ready!")
     console.print("\nNext steps:")
@@ -194,44 +193,6 @@ def onboard():
     console.print("     Get one at: https://openrouter.ai/keys")
     console.print("  2. Chat: [cyan]nanobot agent -m \"Hello!\"[/cyan]")
     console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
-
-
-
-
-def _create_workspace_templates(workspace: Path):
-    """Create default workspace template files from bundled templates."""
-    from importlib.resources import files as pkg_files
-
-    templates_dir = pkg_files("nanobot") / "templates"
-
-    for item in templates_dir.iterdir():
-        if not item.name.endswith(".md"):
-            continue
-        dest = workspace / item.name
-        if not dest.exists():
-            dest.write_text(item.read_text(encoding="utf-8"), encoding="utf-8")
-            console.print(f"  [dim]Created {item.name}[/dim]")
-
-    memory_dir = workspace / "memory"
-    memory_dir.mkdir(exist_ok=True)
-
-    memory_template = templates_dir / "memory" / "MEMORY.md"
-    memory_file = memory_dir / "MEMORY.md"
-    if not memory_file.exists():
-        memory_file.write_text(memory_template.read_text(encoding="utf-8"), encoding="utf-8")
-        console.print("  [dim]Created memory/MEMORY.md[/dim]")
-
-    history_file = memory_dir / "HISTORY.md"
-    if not history_file.exists():
-        history_file.write_text("", encoding="utf-8")
-        console.print("  [dim]Created memory/HISTORY.md[/dim]")
-
-    history_daily_dir = memory_dir / "history"
-    history_daily_dir.mkdir(exist_ok=True)
-
-    (workspace / "skills").mkdir(exist_ok=True)
-
-
 def _setup_secondary_env_vars(config: Config) -> None:
     """Set env vars for secondary providers (OpenAI, Groq, etc.) so litellm can find them."""
     import os

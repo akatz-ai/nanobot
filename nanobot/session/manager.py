@@ -150,8 +150,30 @@ class Session:
 
     def _normalize_checkpoint_entry(self, msg: dict[str, Any]) -> dict[str, Any] | None:
         entry = {k: v for k, v in msg.items() if k != "reasoning_content"}
-        if entry.get("role") not in {"user", "assistant", "tool"}:
+        role = entry.get("role")
+        if role not in {"user", "assistant", "tool"}:
             return None
+
+        if role == "user":
+            content = entry.get("content")
+            if isinstance(content, str):
+                from nanobot.agent.context import ContextBuilder
+
+                if content.startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
+                    return None
+            elif isinstance(content, list):
+                entry["content"] = [
+                    {"type": "text", "text": "[image]"}
+                    if (
+                        isinstance(item, dict)
+                        and item.get("type") == "image_url"
+                        and isinstance(item.get("image_url"), dict)
+                        and str(item.get("image_url", {}).get("url", "")).startswith("data:image/")
+                    )
+                    else item
+                    for item in content
+                ]
+
         entry.setdefault("timestamp", datetime.now().isoformat())
         return entry
 

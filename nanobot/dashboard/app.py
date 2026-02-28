@@ -102,6 +102,8 @@ def _parse_session(path: Path) -> tuple[dict, list[dict]]:
                 continue
             if data.get("_type") == "metadata":
                 metadata = data
+            elif data.get("_type") == "compaction":
+                continue  # compaction entries handled separately
             else:
                 messages.append(data)
     return metadata, messages
@@ -359,7 +361,7 @@ def _parse_session_paginated(
     *,
     offset: int | None = None,
     limit: int | None = None,
-) -> tuple[dict, list[dict], int]:
+) -> tuple[dict, list[dict], int, list[dict[str, Any]]]:
     """Parse a session JSONL file with optional tail-based pagination.
 
     When *offset* and *limit* are provided, only messages in the range
@@ -367,11 +369,16 @@ def _parse_session_paginated(
     file).  The caller typically computes *offset* from the end so that the
     most recent messages are fetched first.
 
-    Returns ``(metadata, messages_slice, total_message_count)``.
+    Compaction entries are excluded from the message stream and total count.
+    They are collected separately and returned as a list so the frontend can
+    render them at their logical ``first_kept_index`` position.
+
+    Returns ``(metadata, messages_slice, total_message_count, compactions)``.
     """
     metadata: dict = {}
     total = 0
     messages: list[dict] = []
+    compactions: list[dict[str, Any]] = []
     want_all = offset is None and limit is None
 
     with open(path) as f:
@@ -386,6 +393,9 @@ def _parse_session_paginated(
             if data.get("_type") == "metadata":
                 metadata = data
                 continue
+            if data.get("_type") == "compaction" and isinstance(data, dict):
+                compactions.append(data)
+                continue
             if want_all:
                 messages.append(data)
             else:
@@ -393,7 +403,7 @@ def _parse_session_paginated(
                     messages.append(data)
             total += 1
 
-    return metadata, messages, total
+    return metadata, messages, total, compactions
 
 
 @app.get("/api/agents/{name}/sessions/{key:path}")
@@ -416,11 +426,16 @@ async def agent_session_detail(
     path = _resolve_session_path(name, key)
 
     if offset is not None and limit is not None:
-        meta, msgs, total = _parse_session_paginated(path, offset=offset, limit=limit)
+        meta, msgs, total, compactions = _parse_session_paginated(
+            path,
+            offset=offset,
+            limit=limit,
+        )
         return {
             "metadata": meta,
             "messages": msgs,
             "messageCount": total,
+            "compactions": compactions,
             "offset": offset,
             "limit": limit,
             "hasMore": offset > 0,

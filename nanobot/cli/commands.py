@@ -558,8 +558,12 @@ def gateway_worker(
             target = router.default_agent
         if not target:
             return None
+        # Inject the job's own ID so the agent can always self-remove.
+        # Replace {job_id} placeholder and also prepend metadata.
+        message = job.payload.message.replace("{job_id}", job.id)
+        message = f"[Cron job_id={job.id}] {message}"
         response = await target.loop.process_direct(
-            job.payload.message,
+            message,
             session_key=f"cron:{job.id}",
             channel=job.payload.channel or "cli",
             chat_id=job.payload.to or "direct",
@@ -1335,8 +1339,10 @@ def cron_run(
     result_holder = []
 
     async def on_job(job: CronJob) -> str | None:
+        message = job.payload.message.replace("{job_id}", job.id)
+        message = f"[Cron job_id={job.id}] {message}"
         response = await agent_loop.process_direct(
-            job.payload.message,
+            message,
             session_key=f"cron:{job.id}",
             channel=job.payload.channel or "cli",
             chat_id=job.payload.to or "direct",

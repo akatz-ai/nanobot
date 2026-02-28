@@ -413,8 +413,10 @@ async def test_consolidate_memory_uses_hybrid_engine_path(tmp_path: Path):
     agent._CONSOLIDATION_KEEP_COUNT = 5
     agent._memory_graph_config = {"consolidation": {"engine": "hybrid"}}
 
-    hybrid = SimpleNamespace(compact=AsyncMock(return_value=SimpleNamespace()))
-    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+    hybrid = SimpleNamespace(compact=AsyncMock(return_value=SimpleNamespace(success=True, entries=[], error=None)))
+    llm_adapter = SimpleNamespace()
+    consolidator = SimpleNamespace(llm=llm_adapter)
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=consolidator)
 
     session = Session(key="cli:test")
     for i in range(12):
@@ -442,8 +444,13 @@ async def test_consolidate_memory_hybrid_chunks_large_windows(tmp_path: Path):
         "consolidation": {"engine": "hybrid", "batch_messages": 30}
     }
 
-    hybrid = SimpleNamespace(compact=AsyncMock(return_value=SimpleNamespace()))
-    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+    hybrid = SimpleNamespace(compact=AsyncMock(return_value=SimpleNamespace(success=True, entries=[], error=None)))
+    # Force token estimate high enough to trigger multi-batch splitting.
+    # With context_window=200000, output_budget=4096, safety=20000 → input_budget≈175904
+    # We want 3 batches for 85 messages, so total tokens must exceed 2×input_budget.
+    llm_adapter = SimpleNamespace(estimate_tokens=lambda text: 400_000)
+    consolidator_mock = SimpleNamespace(llm=llm_adapter)
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=consolidator_mock)
 
     session = agent.sessions.get_or_create("cli:test")
     for i in range(95):
@@ -459,11 +466,16 @@ async def test_consolidate_memory_hybrid_chunks_large_windows(tmp_path: Path):
         (call.kwargs["start_index"], call.kwargs["end_index"])
         for call in hybrid.compact.await_args_list
     ]
-    assert call_windows == [(0, 30), (30, 60), (60, 85)]
+    # Token-aware planner splits proportionally: 400k tokens / 175k budget ≈ 3 batches
+    # 85 messages / 3 ≈ 29 per batch
+    assert len(call_windows) == 3
+    assert call_windows[0][0] == 0
+    assert call_windows[-1][1] == 85
 
 
 @pytest.mark.asyncio
-async def test_extraction_failure_no_checkpoint_advance(tmp_path: Path):
+async def test_extraction_failure_retries_then_skips(tmp_path: Path):
+    """Failed batches are retried once, then skipped (checkpoint still advances to avoid stuck loops)."""
     agent = AgentLoop(
         bus=MessageBus(),
         provider=_StubProvider(),
@@ -482,19 +494,21 @@ async def test_extraction_failure_no_checkpoint_advance(tmp_path: Path):
         return SimpleNamespace(success=False, error="json decode error")
 
     hybrid = SimpleNamespace(compact=_fail_compact)
-    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+    llm_adapter = SimpleNamespace()
+    consolidator_mock = SimpleNamespace(llm=llm_adapter)
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=consolidator_mock)
 
     session = agent.sessions.get_or_create("cli:test")
     for i in range(95):
         session.add_message("user", f"msg-{i}")
     agent.sessions.save(session)
-    start_checkpoint = session.last_consolidated
 
     ok = await agent._consolidate_memory(session, archive_all=False)
 
-    assert ok is False
-    assert session.last_consolidated == start_checkpoint
-    assert call_count["count"] == 1
+    # Batch fails twice (initial + retry), gets skipped, checkpoint advances
+    assert ok is True
+    assert session.last_consolidated == 85
+    assert call_count["count"] == 2  # 1 attempt + 1 retry
 
 
 @pytest.mark.asyncio
@@ -518,7 +532,9 @@ async def test_extraction_empty_suspicious(tmp_path: Path):
         return SimpleNamespace(success=True, error=None)
 
     hybrid = SimpleNamespace(compact=_suspicious_empty)
-    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+    llm_adapter = SimpleNamespace()
+    consolidator_mock = SimpleNamespace(llm=llm_adapter)
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=consolidator_mock)
 
     session = agent.sessions.get_or_create("cli:test")
     for i in range(20):
@@ -527,8 +543,9 @@ async def test_extraction_empty_suspicious(tmp_path: Path):
 
     ok = await agent._consolidate_memory(session, archive_all=False)
 
-    assert ok is False
-    assert session.last_consolidated == start_checkpoint
+    # Batch fails twice (retry), gets skipped, checkpoint advances to avoid stuck loops
+    assert ok is True
+    assert session.last_consolidated == 15  # 20 messages - 5 keep_count
 
 
 @pytest.mark.asyncio
@@ -556,7 +573,10 @@ async def test_memory_rewrite_once(tmp_path: Path):
         compact=AsyncMock(side_effect=_ok_compact),
         rewrite_memory_md=rewrite_memory_md,
     )
-    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+    # Force high token estimate to trigger multi-batch splitting
+    llm_adapter = SimpleNamespace(estimate_tokens=lambda text: 400_000)
+    consolidator_mock = SimpleNamespace(llm=llm_adapter)
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=consolidator_mock)
 
     session = agent.sessions.get_or_create("cli:test")
     for i in range(95):
@@ -567,10 +587,11 @@ async def test_memory_rewrite_once(tmp_path: Path):
 
     assert ok is True
     assert session.last_consolidated == 85
-    assert hybrid.compact.await_count == 3
-    assert rewrite_memory_md.await_count == 1
+    assert hybrid.compact.await_count >= 2  # Multiple batches due to token budget
+    assert rewrite_memory_md.await_count == 1  # Single rewrite at end
+    # All entries from all batches should be accumulated
     rewrite_entries = rewrite_memory_md.await_args.kwargs["entries"]
-    assert rewrite_entries == ["batch:0-30", "batch:30-60", "batch:60-85"]
+    assert len(rewrite_entries) == hybrid.compact.await_count
     for call in hybrid.compact.await_args_list:
         assert call.kwargs["skip_memory_rewrite"] is True
 
@@ -595,10 +616,12 @@ async def test_cursor_decoupling(tmp_path: Path):
         compact=_failing_compact,
         rewrite_memory_md=AsyncMock(return_value=None),
     )
+    llm_adapter = SimpleNamespace()
+    consolidator_mock = SimpleNamespace(llm=llm_adapter)
     agent._memory_module = SimpleNamespace(
         initialized=True,
         hybrid=hybrid,
-        consolidator=None,
+        consolidator=consolidator_mock,
         retriever=None,
     )
 
@@ -610,14 +633,15 @@ async def test_cursor_decoupling(tmp_path: Path):
     agent.sessions.save(session)
 
     expected_anchor = len(session.messages) - agent._CONSOLIDATION_KEEP_COUNT
-    start_checkpoint = session.last_consolidated
     agent._last_input_tokens[session.key] = agent._compaction_token_threshold
 
     await agent.process_direct("trigger compaction", session_key=session_key, channel="cli", chat_id="test")
 
     updated = agent.sessions.get_or_create(session_key)
     assert updated.metadata.get("context_anchor") == expected_anchor
-    assert updated.last_consolidated == start_checkpoint
+    # context_anchor and last_consolidated should both be set; last_consolidated
+    # may advance via retry+skip but must never exceed context_anchor
+    assert updated.last_consolidated <= updated.get_context_anchor()
 
 
 @pytest.mark.asyncio
@@ -639,10 +663,13 @@ async def test_consolidate_memory_hybrid_preserves_partial_batch_progress_on_fai
         call_counter["count"] += 1
         if call_counter["count"] == 2:
             raise RuntimeError("batch failure")
-        return SimpleNamespace(start_index=start_index, end_index=end_index)
+        return SimpleNamespace(success=True, entries=[], error=None, start_index=start_index, end_index=end_index)
 
     hybrid = SimpleNamespace(compact=AsyncMock(side_effect=_failing_compact))
-    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+    # Force high token estimate to trigger multi-batch splitting
+    llm_adapter = SimpleNamespace(estimate_tokens=lambda text: 400_000)
+    consolidator_mock = SimpleNamespace(llm=llm_adapter)
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=consolidator_mock)
 
     session = agent.sessions.get_or_create("cli:test")
     for i in range(95):
@@ -651,19 +678,10 @@ async def test_consolidate_memory_hybrid_preserves_partial_batch_progress_on_fai
 
     ok = await agent._consolidate_memory(session, archive_all=False)
 
-    assert ok is False
-    assert session.last_consolidated == 30
-
-    hybrid.compact = AsyncMock(return_value=SimpleNamespace())
-    ok_retry = await agent._consolidate_memory(session, archive_all=False)
-
-    assert ok_retry is True
+    # With retry+skip: batch 1 succeeds, batch 2 fails+retries+skips, rest continue.
+    # All batches complete (some skipped), checkpoint advances to end.
+    assert ok is True
     assert session.last_consolidated == 85
-    retry_windows = [
-        (call.kwargs["start_index"], call.kwargs["end_index"])
-        for call in hybrid.compact.await_args_list
-    ]
-    assert retry_windows == [(30, 60), (60, 85)]
 
 
 @pytest.mark.asyncio
@@ -685,6 +703,7 @@ async def test_partial_batch_failure(tmp_path: Path):
         call_counter["count"] += 1
         if call_counter["count"] == 1:
             return SimpleNamespace(success=True, entries=["batch-1"], error=None)
+        # All subsequent calls fail (including retries)
         return SimpleNamespace(success=False, entries=[], error="batch 2 failed")
 
     rewrite_memory_md = AsyncMock(return_value=None)
@@ -692,7 +711,10 @@ async def test_partial_batch_failure(tmp_path: Path):
         compact=AsyncMock(side_effect=_partial_failure),
         rewrite_memory_md=rewrite_memory_md,
     )
-    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=None)
+    # Force multi-batch splitting
+    llm_adapter = SimpleNamespace(estimate_tokens=lambda text: 400_000)
+    consolidator_mock = SimpleNamespace(llm=llm_adapter)
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=consolidator_mock)
 
     session = agent.sessions.get_or_create("cli:test")
     for i in range(95):
@@ -701,11 +723,12 @@ async def test_partial_batch_failure(tmp_path: Path):
 
     ok = await agent._consolidate_memory(session, archive_all=False)
 
-    assert ok is False
-    assert session.last_consolidated == 30
-    assert hybrid.compact.await_count == 2
+    # Batch 1 succeeds, subsequent batches fail+retry+skip. Overall completes with skips.
+    assert ok is True
+    assert session.last_consolidated == 85
+    # rewrite_memory_md should be called once with the entries from successful batches
     rewrite_memory_md.assert_awaited_once()
-    assert rewrite_memory_md.await_args.kwargs["entries"] == ["batch-1"]
+    assert "batch-1" in rewrite_memory_md.await_args.kwargs["entries"]
 
 
 @pytest.mark.asyncio

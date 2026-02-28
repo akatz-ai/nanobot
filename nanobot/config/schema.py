@@ -232,6 +232,7 @@ class AgentDefaults(Base):
     temperature: float = 0.1
     max_tool_iterations: int = 40
     memory_window: int = 50  # Reserved for provisioning defaults / future retrieval tuning
+    reasoning_effort: str | None = None  # low / medium / high — enables LLM thinking mode
 
 
 class AgentProfile(Base):
@@ -242,6 +243,7 @@ class AgentProfile(Base):
     max_tokens: int | None = None
     temperature: float | None = None
     max_tool_iterations: int | None = None
+    reasoning_effort: str | None = None
     skills: list[str] | None = None  # Skill whitelist (None = all available)
     system_identity: str | None = None  # Custom identity text for this agent
     discord_channels: list[str] = Field(default_factory=list)  # Discord channel IDs mapped to this agent
@@ -261,6 +263,11 @@ class AgentProfile(Base):
             max_tokens=self.max_tokens if self.max_tokens is not None else defaults.max_tokens,
             temperature=self.temperature if self.temperature is not None else defaults.temperature,
             max_tool_iterations=self.max_tool_iterations if self.max_tool_iterations is not None else defaults.max_tool_iterations,
+            reasoning_effort=(
+                self.reasoning_effort
+                if self.reasoning_effort is not None
+                else defaults.reasoning_effort
+            ),
             skills=self.skills,
             system_identity=self.system_identity,
             discord_channels=self.discord_channels,
@@ -278,6 +285,7 @@ class ResolvedAgentProfile(Base):
     max_tokens: int
     temperature: float
     max_tool_iterations: int
+    reasoning_effort: str | None = None
     skills: list[str] | None = None
     system_identity: str | None = None
     discord_channels: list[str] = Field(default_factory=list)

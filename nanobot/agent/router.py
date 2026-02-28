@@ -142,6 +142,7 @@ class AgentRouter:
             max_tokens=d.max_tokens,
             temperature=d.temperature,
             max_tool_iterations=d.max_tool_iterations,
+            reasoning_effort=d.reasoning_effort,
         )
 
     async def _create_agent_instance(
@@ -165,6 +166,7 @@ class AgentRouter:
             temperature=profile.temperature,
             max_tokens=profile.max_tokens,
             max_iterations=profile.max_tool_iterations,
+            reasoning_effort=profile.reasoning_effort,
             brave_api_key=self.config.tools.web.search.api_key or None,
             exec_config=self.config.tools.exec,
             cron_service=self.cron_service,

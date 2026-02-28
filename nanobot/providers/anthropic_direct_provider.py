@@ -12,6 +12,7 @@ from loguru import logger
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_COUNT_TOKENS_URL = "https://api.anthropic.com/v1/messages/count_tokens"
 ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_BETA = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14"
 SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
@@ -384,6 +385,61 @@ class AnthropicDirectProvider(LLMProvider):
             finish_reason=finish_reason,
             usage=usage,
         )
+
+    async def count_tokens(
+        self,
+        messages: list[dict[str, Any]],
+        model: str | None = None,
+        system: str | None = None,
+    ) -> int | None:
+        """Count input tokens using Anthropic's free token counting endpoint.
+
+        Returns the token count, or None if the request fails.
+        """
+        resolved_model = model or self.default_model
+        if "/" in resolved_model:
+            resolved_model = resolved_model.split("/", 1)[1]
+
+        clean_messages = self._sanitize_empty_content(messages)
+        clean_messages = self._sanitize_tool_pairs(clean_messages)
+        prepared = self._build_body(
+            messages=clean_messages,
+            tools=None,
+            model=resolved_model,
+            max_tokens=1,
+            temperature=0.0,
+        )
+
+        body: dict[str, Any] = {
+            "model": resolved_model,
+            "messages": prepared.get("messages", []),
+        }
+        if system is not None:
+            body["system"] = system
+        elif prepared.get("system"):
+            body["system"] = prepared["system"]
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    ANTHROPIC_COUNT_TOKENS_URL,
+                    headers=self._build_headers(),
+                    json=body,
+                )
+
+            if resp.status_code == 200:
+                value = resp.json().get("input_tokens")
+                return int(value) if isinstance(value, (int, float)) else None
+
+            logger.warning(
+                "Token counting failed ({}): {}",
+                resp.status_code,
+                resp.text[:200],
+            )
+            return None
+        except Exception as e:
+            logger.warning("Token counting error: {}", e)
+            return None
 
     def get_default_model(self) -> str:
         return self.default_model

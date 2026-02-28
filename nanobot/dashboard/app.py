@@ -408,6 +408,11 @@ async def agent_session_detail(
         actual_key = key[:-len("/context")]
         return await agent_session_context(name, actual_key)
 
+    # Intercept compaction log requests (key ends with /compaction)
+    if key.endswith("/compaction"):
+        actual_key = key[:-len("/compaction")]
+        return await agent_session_compaction(name, actual_key)
+
     path = _resolve_session_path(name, key)
 
     if offset is not None and limit is not None:
@@ -428,6 +433,55 @@ async def agent_session_detail(
         "messages": msgs,
         "messageCount": len(msgs),
     }
+
+
+async def agent_session_compaction(name: str, key: str):
+    """Return the compaction event log for a session."""
+    path = _resolve_session_path(name, key)
+    compaction_path = path.with_suffix(".compaction.jsonl")
+    if not compaction_path.exists():
+        return {"events": [], "count": 0}
+
+    events: list[dict] = []
+    with open(compaction_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    events.sort(key=lambda e: e.get("timestamp", ""))
+    return {"events": events, "count": len(events)}
+
+
+@app.get("/api/agents/{name}/compaction")
+async def agent_compaction_all(name: str):
+    """Return all compaction events across all sessions for an agent."""
+    adir = _agent_dir(name)
+    all_events: list[dict] = []
+
+    for sp in _session_files(adir):
+        compaction_path = sp.with_suffix(".compaction.jsonl")
+        if not compaction_path.exists():
+            continue
+        session_key = sp.stem
+        with open(compaction_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                    event["_session_file"] = sp.name
+                    all_events.append(event)
+                except json.JSONDecodeError:
+                    continue
+
+    all_events.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+    return {"events": all_events, "count": len(all_events)}
 
 
 async def agent_session_context(name: str, key: str):

@@ -70,15 +70,6 @@ class DiscordSystemStatusConfig(Base):
     poll_interval_s: int = 60  # How often to update (seconds)
 
 
-class DiscordCompactionDashboardConfig(Base):
-    """Discord compaction dashboard configuration."""
-
-    enabled: bool = False
-    channel_id: str = ""  # Channel to post the compaction message in (defaults to system_status channel)
-    message_id: str = ""  # Existing message ID to edit (auto-created if empty)
-    poll_interval_s: int = 60  # How often to update (seconds)
-
-
 class DiscordConfig(Base):
     """Discord channel configuration."""
 
@@ -90,7 +81,6 @@ class DiscordConfig(Base):
     guild_id: str = ""  # Guild ID for dynamic channel creation
     usage_dashboard: DiscordUsageDashboardConfig = Field(default_factory=DiscordUsageDashboardConfig)
     system_status: DiscordSystemStatusConfig = Field(default_factory=DiscordSystemStatusConfig)
-    compaction_dashboard: DiscordCompactionDashboardConfig = Field(default_factory=DiscordCompactionDashboardConfig)
 
 
 class EmailConfig(Base):

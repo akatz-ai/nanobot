@@ -62,6 +62,7 @@ tailwind.config = {
   .collapsible-content { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; }
   .collapsible-content.open { max-height: 100000px; }
   .consolidation-marker { border-top: 2px dashed #f59e0b; margin: 0.5rem 0; padding-top: 0.5rem; }
+  .compaction-bar { letter-spacing: 0.05em; }
 </style>
 </head>
 <body class="min-h-screen">
@@ -234,7 +235,7 @@ async function renderAgentDetail() {
   app.innerHTML = '';
 
   // Tab bar
-  const tabs = ['memory', 'sessions', 'identity'];
+  const tabs = ['memory', 'sessions', 'compaction', 'identity'];
   const tabBar = html('div', { className: 'flex gap-1 border-b border-surface-600 mb-5' });
   for (const t of tabs) {
     const btn = html('button', {
@@ -250,6 +251,7 @@ async function renderAgentDetail() {
 
   if (state.tab === 'memory') await renderMemoryTab(name, content);
   else if (state.tab === 'sessions') await renderSessionsTab(name, content);
+  else if (state.tab === 'compaction') await renderCompactionTab(name, content);
   else if (state.tab === 'identity') await renderIdentityTab(name, content);
 }
 
@@ -382,6 +384,254 @@ async function renderIdentityTab(name, container) {
     ]);
     container.appendChild(card);
   }
+}
+
+// --- Compaction Tab ---
+async function renderCompactionTab(name, container) {
+  const data = await api(`/api/agents/${name}/compaction`);
+
+  if (!data.events || data.events.length === 0) {
+    container.appendChild(html('div', { className: 'bg-surface-800 border border-surface-600 rounded-lg p-8 text-center' }, [
+      html('div', { className: 'text-3xl mb-3' }, '🔄'),
+      html('h3', { className: 'text-lg font-semibold text-slate-300 mb-2' }, 'No Compaction Events'),
+      html('p', { className: 'text-sm text-slate-500' }, 'Compaction events will appear here once the session context exceeds the token threshold.'),
+    ]));
+    return;
+  }
+
+  // Summary cards
+  const totalEvents = data.events.length;
+  const successCount = data.events.filter(e => e.result?.success).length;
+  const failCount = totalEvents - successCount;
+  const totalItems = data.events.reduce((sum, e) => sum + (e.result?.total_items || 0), 0);
+  const totalBatches = data.events.reduce((sum, e) => sum + (e.result?.total_batches || 0), 0);
+  const avgDuration = Math.round(data.events.reduce((sum, e) => sum + (e.result?.total_duration_ms || 0), 0) / totalEvents);
+
+  const stats = html('div', { className: 'grid grid-cols-2 md:grid-cols-5 gap-3 mb-5' });
+  [
+    { label: 'Total Events', value: totalEvents, color: 'text-slate-200' },
+    { label: 'Successful', value: successCount, color: 'text-green-400' },
+    { label: 'Failed', value: failCount, color: failCount > 0 ? 'text-red-400' : 'text-slate-400' },
+    { label: 'Items Extracted', value: totalItems, color: 'text-cyan-400' },
+    { label: 'Avg Duration', value: _fmtDuration(avgDuration), color: 'text-slate-300' },
+  ].forEach(s => {
+    stats.appendChild(html('div', { className: 'bg-surface-800 border border-surface-600 rounded-md p-3 text-center' }, [
+      html('div', { className: `text-xl font-semibold ${s.color}` }, String(s.value)),
+      html('div', { className: 'text-[10px] text-slate-500 uppercase tracking-wider mt-1' }, s.label),
+    ]));
+  });
+  container.appendChild(stats);
+
+  // Event list
+  for (const event of data.events) {
+    container.appendChild(_buildCompactionEventCard(event));
+  }
+}
+
+function _fmtDuration(ms) {
+  if (!ms || ms === 0) return '—';
+  if (ms >= 60000) return `${(ms / 60000).toFixed(1)}m`;
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${ms}ms`;
+}
+
+function _fmtTokens(n) {
+  if (!n) return '0';
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(0)}k`;
+  return String(n);
+}
+
+function _progressBar(pct, width = 20) {
+  pct = Math.max(0, Math.min(1, pct));
+  const filled = Math.round(pct * width);
+  return '█'.repeat(filled) + '░'.repeat(width - filled);
+}
+
+function _buildCompactionEventCard(event) {
+  const trigger = event.trigger || {};
+  const pre = event.pre_context || {};
+  const batches = event.batches || [];
+  const post = event.post_context || {};
+  const result = event.result || {};
+
+  const success = result.success;
+  const borderColor = success ? 'border-green-500/30' : 'border-red-500/30';
+  const statusEmoji = success ? '✅' : '❌';
+  const statusBg = success ? 'bg-green-950/20' : 'bg-red-950/20';
+
+  const ts = event.timestamp || '';
+  const tsDisplay = ts ? new Date(ts).toLocaleString() : 'unknown';
+  const sessionKey = event.session_key || event._session_file || '—';
+
+  const card = html('div', { className: `bg-surface-800 border ${borderColor} rounded-lg overflow-hidden mb-4` });
+
+  // Header
+  const header = html('div', {
+    className: `px-4 py-3 border-b border-surface-600 flex items-center gap-3 cursor-pointer ${statusBg} hover:brightness-110 transition-all`,
+    onClick: () => { body.classList.toggle('hidden'); arrow.textContent = body.classList.contains('hidden') ? '▶' : '▼'; },
+  });
+  header.appendChild(html('span', { className: 'text-sm' }, statusEmoji));
+  header.appendChild(html('span', { className: 'text-sm font-semibold text-slate-200' }, tsDisplay));
+  header.appendChild(html('span', { className: 'text-xs text-slate-500 font-mono' }, sessionKey));
+
+  // Trigger summary in header
+  const utilPct = trigger.utilization_pct || 0;
+  const triggerChip = html('span', { className: 'ml-auto text-xs font-mono text-slate-400' },
+    `${_fmtTokens(trigger.input_tokens)}/${_fmtTokens(trigger.context_window)} (${utilPct.toFixed(0)}%)`
+  );
+  header.appendChild(triggerChip);
+
+  if (result.total_duration_ms) {
+    header.appendChild(html('span', { className: 'text-xs text-slate-500' }, _fmtDuration(result.total_duration_ms)));
+  }
+  const arrow = html('span', { className: 'text-xs text-slate-500 ml-2' }, '▶');
+  header.appendChild(arrow);
+  card.appendChild(header);
+
+  // Body (collapsed by default)
+  const body = html('div', { className: 'hidden' });
+
+  // ── Trigger section ──
+  const triggerSection = html('div', { className: 'px-4 py-3 border-b border-surface-600/50' });
+  triggerSection.appendChild(html('div', { className: 'text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2' }, '⚡ Trigger'));
+
+  const utilBar = _progressBar(utilPct / 100);
+  triggerSection.appendChild(html('div', { className: 'font-mono text-xs text-slate-300 mb-1' },
+    `Context: ${utilBar} ${utilPct.toFixed(1)}% (${_fmtTokens(trigger.input_tokens)} / ${_fmtTokens(trigger.context_window)})`
+  ));
+  triggerSection.appendChild(html('div', { className: 'text-xs text-slate-500' },
+    `Threshold: ${_fmtTokens(trigger.threshold)} · Messages: ${trigger.total_messages || 0} · Consolidated: ${trigger.last_consolidated || 0} · Anchor: ${trigger.context_anchor || 0}`
+  ));
+  body.appendChild(triggerSection);
+
+  // ── Pre-compaction context ──
+  if (pre && Object.keys(pre).length > 0) {
+    const preSection = html('div', { className: 'px-4 py-3 border-b border-surface-600/50' });
+    preSection.appendChild(html('div', { className: 'text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2' }, '📋 Pre-Compaction Context'));
+
+    const preGrid = html('div', { className: 'grid grid-cols-2 md:grid-cols-3 gap-2' });
+    [
+      { label: 'System Prompt', value: `${(pre.system_prompt_chars || 0).toLocaleString()}c` },
+      { label: 'MEMORY.md', value: `${(pre.memory_md_chars || 0).toLocaleString()}c` },
+      { label: 'Conversation', value: `${pre.conversation_messages || 0} msgs (from idx ${pre.conversation_start_index || 0})` },
+      { label: 'History', value: `${(pre.history_chars || 0).toLocaleString()}c` },
+      { label: 'Continuity Snapshot', value: pre.continuity_snapshot_chars ? `${pre.continuity_snapshot_chars.toLocaleString()}c` : '—' },
+    ].forEach(item => {
+      preGrid.appendChild(html('div', { className: 'text-xs' }, [
+        html('span', { className: 'text-slate-500' }, item.label + ': '),
+        html('span', { className: 'text-slate-300 font-mono' }, item.value),
+      ]));
+    });
+    preSection.appendChild(preGrid);
+    body.appendChild(preSection);
+  }
+
+  // ── Batches ──
+  if (batches.length > 0) {
+    const batchSection = html('div', { className: 'px-4 py-3 border-b border-surface-600/50' });
+    const okBatches = batches.filter(b => b.success).length;
+    const totalItems = batches.reduce((s, b) => s + (b.items_extracted || 0), 0);
+    batchSection.appendChild(html('div', { className: 'text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2' },
+      `🔬 Extraction Batches — ${okBatches}/${batches.length} succeeded · ${totalItems} items`
+    ));
+
+    for (const b of batches) {
+      const bOk = b.success;
+      const bEmoji = bOk ? '✅' : '❌';
+      const bBorder = bOk ? 'border-green-500/20' : 'border-red-500/20';
+      const bBg = bOk ? 'bg-green-950/10' : 'bg-red-950/10';
+      const [bStart, bEnd] = b.msg_range || [0, 0];
+
+      const batchEl = html('div', { className: `${bBg} border ${bBorder} rounded-md p-3 mb-2` });
+
+      // Batch header
+      batchEl.appendChild(html('div', { className: 'flex items-center gap-2 flex-wrap' }, [
+        html('span', { className: 'text-xs' }, bEmoji),
+        html('span', { className: 'text-xs font-semibold text-slate-300' }, `Batch ${b.batch_index}`),
+        html('span', { className: 'text-xs text-slate-500 font-mono' }, `msgs[${bStart}:${bEnd}]`),
+        html('span', { className: 'text-xs text-slate-500' }, `→ ${b.items_extracted || 0} items`),
+        html('span', { className: 'text-xs text-slate-600' }, _fmtDuration(b.duration_ms)),
+        html('span', { className: 'text-xs text-slate-600 font-mono' },
+          `transcript: ${_fmtTokens(b.transcript_chars)}c · response: ${_fmtTokens(b.llm_response_chars)}c`
+        ),
+      ]));
+
+      // Error message
+      if (b.error && !bOk) {
+        batchEl.appendChild(html('div', { className: 'mt-2 text-xs text-red-400 bg-red-950/30 rounded px-2 py-1 font-mono' }, b.error));
+      }
+
+      // LLM response preview (show for failed or empty batches)
+      if (b.llm_response_preview && (!bOk || b.items_extracted === 0)) {
+        const previewEl = html('pre', {
+          className: 'hidden mt-2 text-xs text-slate-400 whitespace-pre-wrap break-words max-h-40 overflow-y-auto bg-bg-900/50 rounded p-2',
+        }, b.llm_response_preview);
+        const toggleBtn = html('button', {
+          className: 'text-[10px] text-accent-400 hover:text-accent-300 mt-1',
+          onClick: () => {
+            previewEl.classList.toggle('hidden');
+            toggleBtn.textContent = previewEl.classList.contains('hidden') ? 'Show LLM response' : 'Hide LLM response';
+          },
+        }, 'Show LLM response');
+        batchEl.appendChild(toggleBtn);
+        batchEl.appendChild(previewEl);
+      }
+
+      // Successful batch with preview
+      if (b.llm_response_preview && bOk && b.items_extracted > 0) {
+        const previewEl = html('pre', {
+          className: 'hidden mt-2 text-xs text-slate-400 whitespace-pre-wrap break-words max-h-40 overflow-y-auto bg-bg-900/50 rounded p-2',
+        }, b.llm_response_preview);
+        const toggleBtn = html('button', {
+          className: 'text-[10px] text-accent-400 hover:text-accent-300 mt-1',
+          onClick: () => {
+            previewEl.classList.toggle('hidden');
+            toggleBtn.textContent = previewEl.classList.contains('hidden') ? 'Show LLM response' : 'Hide LLM response';
+          },
+        }, 'Show LLM response');
+        batchEl.appendChild(toggleBtn);
+        batchEl.appendChild(previewEl);
+      }
+
+      batchSection.appendChild(batchEl);
+    }
+    body.appendChild(batchSection);
+  }
+
+  // ── Post-compaction context ──
+  if (post && Object.keys(post).length > 0 && success) {
+    const postSection = html('div', { className: 'px-4 py-3 border-b border-surface-600/50' });
+    postSection.appendChild(html('div', { className: 'text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2' }, '📍 Post-Compaction Context'));
+
+    const postGrid = html('div', { className: 'grid grid-cols-2 md:grid-cols-3 gap-2' });
+    [
+      { label: 'New Anchor', value: post.new_context_anchor },
+      { label: 'New Consolidated', value: post.new_last_consolidated },
+      { label: 'Visible Messages', value: `${post.visible_messages || 0} (keep=${post.keep_count || 25})` },
+      { label: 'Continuity Injected', value: post.continuity_chars ? `${post.continuity_chars.toLocaleString()}c` : '—' },
+      { label: 'Items Extracted', value: post.total_items_extracted || 0 },
+      { label: 'History File', value: post.history_file || '—' },
+    ].forEach(item => {
+      postGrid.appendChild(html('div', { className: 'text-xs' }, [
+        html('span', { className: 'text-slate-500' }, item.label + ': '),
+        html('span', { className: 'text-slate-300 font-mono' }, String(item.value)),
+      ]));
+    });
+    postSection.appendChild(postGrid);
+    body.appendChild(postSection);
+  }
+
+  // ── Result / Error ──
+  if (!success && result.error) {
+    const errSection = html('div', { className: 'px-4 py-3 bg-red-950/20' });
+    errSection.appendChild(html('div', { className: 'text-[10px] font-semibold text-red-400 uppercase tracking-wider mb-1' }, '⚠️ Error'));
+    errSection.appendChild(html('div', { className: 'text-xs text-red-300 font-mono' }, result.error));
+    body.appendChild(errSection);
+  }
+
+  card.appendChild(body);
+  return card;
 }
 
 // ---------------------------------------------------------------------------

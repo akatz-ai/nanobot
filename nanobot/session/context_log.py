@@ -104,7 +104,7 @@ class TurnContextLogger:
         user_message_index: int | None,
     ) -> None:
         # Extract system messages and the base system prompt
-        system_messages: list[dict[str, str]] = []
+        system_messages: list[dict[str, Any]] = []
         system_prompt: str | None = None
 
         for i, msg in enumerate(built_messages):
@@ -118,6 +118,7 @@ class TurnContextLogger:
                     "index": i,
                     "label": "system_prompt",
                     "length": len(content),
+                    "char_count": len(content),
                     "hash": self._hash(content),
                 })
             else:
@@ -128,10 +129,15 @@ class TurnContextLogger:
                     "label": label,
                     "content": content,
                     "length": len(content),
+                    "char_count": len(content),
                 })
 
         prompt_hash = self._hash(system_prompt) if system_prompt else None
         prompt_changed = prompt_hash != self._last_prompt_hash
+        compaction_summary_injected = any(
+            sm.get("label") == "compaction_summary"
+            for sm in system_messages
+        )
 
         entry: dict[str, Any] = {
             "turn_index": self._turn_counter,
@@ -143,6 +149,7 @@ class TurnContextLogger:
             "system_messages": system_messages,
             "memory_context_raw": memory_context,
             "resume_notice": resume_notice,
+            "compaction_summary_injected": compaction_summary_injected,
             "total_messages": len(built_messages),
             "total_chars": sum(
                 len(m.get("content", "") if isinstance(m.get("content"), str) else str(m.get("content", "")))
@@ -174,10 +181,14 @@ class TurnContextLogger:
             return "daily_history"
         if "Retrieved Memory" in content:
             return "retrieved_memory"
+        if (
+            "## Goal" in content
+            and "## Progress" in content
+            and "## Next Steps" in content
+        ):
+            return "compaction_summary"
         if "interrupted mid-turn" in content or "system restart" in content:
             return "resume_notice"
-        if "Session Continuity" in content and "compacted" in content:
-            return "continuity_context"
         return "other"
 
 

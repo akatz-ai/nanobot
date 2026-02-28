@@ -337,7 +337,7 @@ class TestSessionPersistence:
         assert loaded.last_consolidated == 2
 
     def test_cursor_migration(self, temp_manager):
-        """Sessions without context_anchor should initialize it from last_consolidated."""
+        """Sessions with legacy metadata should still load sane cursors."""
         path = temp_manager._get_session_path("test:cursor_migration")
         path.write_text(
             "\n".join(
@@ -362,8 +362,6 @@ class TestSessionPersistence:
         temp_manager.invalidate("test:cursor_migration")
         loaded = temp_manager.get_or_create("test:cursor_migration")
         assert loaded.last_consolidated == 1
-        assert loaded.metadata["context_anchor"] == 1
-        assert loaded.get_context_anchor() == 1
 
 
 class TestConsolidationTriggerConditions:
@@ -688,18 +686,25 @@ class TestConsolidationDeduplicationGuard:
         loop.tools.get_definitions = MagicMock(return_value=[])
 
         session = loop.sessions.get_or_create("cli:test")
+        payload = "x" * 2500
         for i in range(15):
-            session.add_message("user", f"msg{i}")
-            session.add_message("assistant", f"resp{i}")
+            session.add_message("user", f"msg{i} {payload}")
+            session.add_message("assistant", f"resp{i} {payload}")
         loop.sessions.save(session)
         loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
         consolidation_calls = 0
 
-        async def _fake_consolidate(_session, archive_all: bool = False) -> bool:
+        async def _fake_consolidate(
+            _session,
+            archive_all: bool = False,
+            extraction_range=None,
+        ) -> bool:
             nonlocal consolidation_calls
             consolidation_calls += 1
-            if not archive_all:
+            if extraction_range:
+                _session.last_consolidated = extraction_range[1]
+            elif not archive_all:
                 _session.last_consolidated = len(_session.messages) - 5
             return True
 
@@ -733,15 +738,22 @@ class TestConsolidationDeduplicationGuard:
         loop.tools.get_definitions = MagicMock(return_value=[])
 
         session = loop.sessions.get_or_create("cli:test")
+        payload = "x" * 2500
         for i in range(15):
-            session.add_message("user", f"msg{i}")
-            session.add_message("assistant", f"resp{i}")
+            session.add_message("user", f"msg{i} {payload}")
+            session.add_message("assistant", f"resp{i} {payload}")
         loop.sessions.save(session)
         loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
-        async def _fake_consolidate(sess, archive_all: bool = False) -> bool:
+        async def _fake_consolidate(
+            sess,
+            archive_all: bool = False,
+            extraction_range=None,
+        ) -> bool:
             await asyncio.sleep(0.05)
-            if not archive_all:
+            if extraction_range:
+                sess.last_consolidated = extraction_range[1]
+            elif not archive_all:
                 sess.last_consolidated = len(sess.messages) - loop._CONSOLIDATION_KEEP_COUNT
             return True
 
@@ -823,9 +835,10 @@ class TestConsolidationDeduplicationGuard:
         loop.tools.get_definitions = MagicMock(return_value=[])
 
         session = loop.sessions.get_or_create("cli:test")
+        payload = "x" * 2500
         for i in range(15):
-            session.add_message("user", f"msg{i}")
-            session.add_message("assistant", f"resp{i}")
+            session.add_message("user", f"msg{i} {payload}")
+            session.add_message("assistant", f"resp{i} {payload}")
         loop.sessions.save(session)
         loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
@@ -833,13 +846,19 @@ class TestConsolidationDeduplicationGuard:
         active = 0
         max_active = 0
 
-        async def _fake_consolidate(_session, archive_all: bool = False) -> bool:
+        async def _fake_consolidate(
+            _session,
+            archive_all: bool = False,
+            extraction_range=None,
+        ) -> bool:
             nonlocal consolidation_calls, active, max_active
             consolidation_calls += 1
             active += 1
             max_active = max(max_active, active)
             await asyncio.sleep(0.05)
-            if not archive_all:
+            if extraction_range:
+                _session.last_consolidated = extraction_range[1]
+            elif not archive_all:
                 _session.last_consolidated = len(_session.messages) - 5
             active -= 1
             return True
@@ -889,33 +908,42 @@ class TestConsolidationDeduplicationGuard:
         loop.tools.get_definitions = MagicMock(return_value=[])
 
         session = loop.sessions.get_or_create("cli:test")
+        payload = "x" * 2500
         for i in range(15):
-            session.add_message("user", f"msg{i}")
-            session.add_message("assistant", f"resp{i}")
+            session.add_message("user", f"msg{i} {payload}")
+            session.add_message("assistant", f"resp{i} {payload}")
         loop.sessions.save(session)
         loop._last_input_tokens[session.key] = loop._compaction_token_threshold
 
         archived_count = -1
 
-        async def _fake_consolidate(sess, archive_all: bool = False) -> bool:
+        async def _fake_consolidate(
+            sess,
+            archive_all: bool = False,
+            extraction_range=None,
+        ) -> bool:
             nonlocal archived_count
             if archive_all:
                 archived_count = len(sess.messages)
                 return True
-            sess.last_consolidated = len(sess.messages) - 3
+            if extraction_range:
+                sess.last_consolidated = extraction_range[1]
+            else:
+                sess.last_consolidated = len(sess.messages) - 3
             return True
 
         loop._consolidate_memory = _fake_consolidate  # type: ignore[method-assign]
 
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
         await loop._process_message(msg)
+        expected_archived = len(loop.sessions.get_or_create("cli:test").messages)
 
         new_msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/new")
         response = await loop._process_message(new_msg)
         assert response is not None
         assert "new session started" in response.content.lower()
-        assert archived_count == 5, (
-            f"Expected unconsolidated tail (3 prior + 2 current-turn messages), got {archived_count}"
+        assert archived_count == expected_archived, (
+            f"Expected full-session archival ({expected_archived}), got {archived_count}"
         )
 
         session_after = loop.sessions.get_or_create("cli:test")
@@ -944,7 +972,11 @@ class TestConsolidationDeduplicationGuard:
         loop.sessions.save(session)
         before_count = len(session.messages)
 
-        async def _failing_consolidate(sess, archive_all: bool = False) -> bool:
+        async def _failing_consolidate(
+            sess,
+            archive_all: bool = False,
+            extraction_range=None,
+        ) -> bool:
             if archive_all:
                 return False
             return True
@@ -989,7 +1021,11 @@ class TestConsolidationDeduplicationGuard:
         loop._consolidation_locks.setdefault(session.key, asyncio.Lock())
         assert session.key in loop._consolidation_locks
 
-        async def _ok_consolidate(sess, archive_all: bool = False) -> bool:
+        async def _ok_consolidate(
+            sess,
+            archive_all: bool = False,
+            extraction_range=None,
+        ) -> bool:
             return True
 
         loop._consolidate_memory = _ok_consolidate  # type: ignore[method-assign]

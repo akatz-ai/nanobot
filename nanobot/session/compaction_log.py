@@ -54,7 +54,6 @@ class CompactionEvent:
         utilization_pct: float,
         total_messages: int,
         last_consolidated: int,
-        context_anchor: int,
     ) -> None:
         self.data["trigger"] = {
             "input_tokens": input_tokens,
@@ -63,7 +62,6 @@ class CompactionEvent:
             "utilization_pct": round(utilization_pct, 1),
             "total_messages": total_messages,
             "last_consolidated": last_consolidated,
-            "context_anchor": context_anchor,
         }
 
     # ── Pre-compaction context layout ─────────────────────────────────
@@ -76,7 +74,6 @@ class CompactionEvent:
         history_chars: int,
         conversation_messages: int,
         conversation_start_index: int,
-        continuity_snapshot_chars: int = 0,
     ) -> None:
         self.data["pre_context"] = {
             "system_prompt_chars": system_prompt_chars,
@@ -84,7 +81,6 @@ class CompactionEvent:
             "history_chars": history_chars,
             "conversation_messages": conversation_messages,
             "conversation_start_index": conversation_start_index,
-            "continuity_snapshot_chars": continuity_snapshot_chars,
         }
 
     # ── Per-batch extraction info ─────────────────────────────────────
@@ -120,22 +116,30 @@ class CompactionEvent:
     def set_post_compaction_context(
         self,
         *,
-        new_context_anchor: int,
+        first_kept_index: int,
         new_last_consolidated: int,
         keep_count: int,
         visible_messages: int,
-        continuity_chars: int = 0,
         total_items_extracted: int = 0,
         history_file: str | None = None,
+        summary_length: int = 0,
+        file_ops_read_count: int = 0,
+        file_ops_modified_count: int = 0,
+        is_iterative_update: bool = False,
+        cut_point_type: str = "clean",
     ) -> None:
         self.data["post_context"] = {
-            "new_context_anchor": new_context_anchor,
+            "first_kept_index": first_kept_index,
             "new_last_consolidated": new_last_consolidated,
             "keep_count": keep_count,
             "visible_messages": visible_messages,
-            "continuity_chars": continuity_chars,
             "total_items_extracted": total_items_extracted,
             "history_file": history_file,
+            "summary_length": summary_length,
+            "file_ops_read_count": file_ops_read_count,
+            "file_ops_modified_count": file_ops_modified_count,
+            "is_iterative_update": is_iterative_update,
+            "cut_point_type": cut_point_type,
         }
 
     # ── Final result ──────────────────────────────────────────────────

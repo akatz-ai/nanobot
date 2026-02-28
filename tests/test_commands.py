@@ -632,16 +632,13 @@ async def test_cursor_decoupling(tmp_path: Path):
         session.add_message(role, f"msg-{i}")
     agent.sessions.save(session)
 
-    expected_anchor = len(session.messages) - agent._CONSOLIDATION_KEEP_COUNT
+    expected_end = len(session.messages) - agent._CONSOLIDATION_KEEP_COUNT
     agent._last_input_tokens[session.key] = agent._compaction_token_threshold
 
     await agent.process_direct("trigger compaction", session_key=session_key, channel="cli", chat_id="test")
 
     updated = agent.sessions.get_or_create(session_key)
-    assert updated.metadata.get("context_anchor") == expected_anchor
-    # context_anchor and last_consolidated should both be set; last_consolidated
-    # may advance via retry+skip but must never exceed context_anchor
-    assert updated.last_consolidated <= updated.get_context_anchor()
+    assert updated.last_consolidated <= expected_end
 
 
 @pytest.mark.asyncio

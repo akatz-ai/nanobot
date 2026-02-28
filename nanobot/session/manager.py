@@ -1,5 +1,7 @@
 """Session management for conversation history."""
 
+from __future__ import annotations
+
 import json
 import os
 import shutil
@@ -11,6 +13,80 @@ from typing import Any
 from loguru import logger
 
 from nanobot.utils.helpers import ensure_dir, safe_filename
+
+
+@dataclass
+class CompactionEntry:
+    """Structured compaction checkpoint persisted in session JSONL."""
+
+    summary: str
+    first_kept_index: int
+    tokens_before: int
+    file_ops: dict[str, list[str]]
+    previous_summary: str | None
+    timestamp: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CompactionEntry:
+        summary = data.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            raise ValueError("CompactionEntry.summary must be a non-empty string")
+
+        raw_first_kept = data.get("first_kept_index", 0)
+        try:
+            first_kept_index = int(raw_first_kept)
+        except (TypeError, ValueError) as e:
+            raise ValueError("CompactionEntry.first_kept_index must be an int") from e
+
+        raw_tokens_before = data.get("tokens_before", 0)
+        try:
+            tokens_before = int(raw_tokens_before)
+        except (TypeError, ValueError) as e:
+            raise ValueError("CompactionEntry.tokens_before must be an int") from e
+
+        file_ops_raw = data.get("file_ops", {})
+        if not isinstance(file_ops_raw, dict):
+            file_ops_raw = {}
+        file_ops: dict[str, list[str]] = {}
+        for key in ("read_files", "modified_files"):
+            values = file_ops_raw.get(key, [])
+            if isinstance(values, list):
+                file_ops[key] = [str(item) for item in values if item is not None]
+            else:
+                file_ops[key] = []
+
+        previous_summary_raw = data.get("previous_summary")
+        previous_summary = (
+            previous_summary_raw if isinstance(previous_summary_raw, str) else None
+        )
+
+        timestamp_raw = data.get("timestamp")
+        timestamp = (
+            timestamp_raw if isinstance(timestamp_raw, str) and timestamp_raw.strip()
+            else datetime.now().isoformat()
+        )
+
+        return cls(
+            summary=summary,
+            first_kept_index=first_kept_index,
+            tokens_before=max(0, tokens_before),
+            file_ops=file_ops,
+            previous_summary=previous_summary,
+            timestamp=timestamp,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "summary": self.summary,
+            "first_kept_index": self.first_kept_index,
+            "tokens_before": self.tokens_before,
+            "file_ops": {
+                "read_files": list(self.file_ops.get("read_files", [])),
+                "modified_files": list(self.file_ops.get("modified_files", [])),
+            },
+            "previous_summary": self.previous_summary,
+            "timestamp": self.timestamp,
+        }
 
 
 def _sanitize_tool_pairs(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -89,14 +165,17 @@ class Session:
 
     key: str  # channel:chat_id
     messages: list[dict[str, Any]] = field(default_factory=list)
+    compactions: list[dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
     last_consolidated: int = 0  # Number of messages already consolidated to files
     _path: Path | None = field(default=None, repr=False, compare=False)
     _persisted_count: int = field(default=0, repr=False, compare=False)
+    _persisted_compaction_count: int = field(default=0, repr=False, compare=False)
     _persisted_last_consolidated: int = field(default=0, repr=False, compare=False)
     _persisted_metadata_sig: str = field(default="", repr=False, compare=False)
+    _persisted_compactions_sig: str = field(default="", repr=False, compare=False)
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the session."""
@@ -114,6 +193,8 @@ class Session:
         self._path = path
         if not self._persisted_metadata_sig:
             self._persisted_metadata_sig = self._metadata_signature()
+        if not self._persisted_compactions_sig:
+            self._persisted_compactions_sig = self._compactions_signature()
 
     def _metadata_signature(self) -> str:
         """Stable signature of metadata for no-op save detection."""
@@ -125,8 +206,17 @@ class Session:
     def mark_persisted(self) -> None:
         """Record the current in-memory state as fully persisted."""
         self._persisted_count = len(self.messages)
+        self._persisted_compaction_count = len(self.compactions)
         self._persisted_last_consolidated = self.last_consolidated
         self._persisted_metadata_sig = self._metadata_signature()
+        self._persisted_compactions_sig = self._compactions_signature()
+
+    def _compactions_signature(self) -> str:
+        """Stable signature of compaction entries for no-op save detection."""
+        try:
+            return json.dumps(self.compactions, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            return repr(self.compactions)
 
     def _ensure_file_initialized(self) -> None:
         """Create session file with metadata header if missing/empty."""
@@ -210,50 +300,103 @@ class Session:
 
         self._persisted_count = len(self.messages)
 
-    def get_context_anchor(self) -> int:
-        """Return persisted context anchor with sane defaults and clamping."""
-        raw = self.metadata.get("context_anchor", self.last_consolidated)
-        try:
-            anchor = int(raw)
-        except (TypeError, ValueError):
-            anchor = self.last_consolidated
-        anchor = max(self.last_consolidated, anchor)
-        anchor = min(anchor, len(self.messages))
-        return anchor
+    def append_compaction(
+        self,
+        *,
+        summary: str,
+        first_kept_index: int,
+        tokens_before: int,
+        file_ops: dict[str, list[str]] | None = None,
+        previous_summary: str | None = None,
+        timestamp: str | None = None,
+    ) -> CompactionEntry:
+        """Append a compaction entry and persist it directly to JSONL when bound."""
+        entry = CompactionEntry(
+            summary=summary,
+            first_kept_index=int(first_kept_index),
+            tokens_before=max(0, int(tokens_before)),
+            file_ops={
+                "read_files": list((file_ops or {}).get("read_files", [])),
+                "modified_files": list((file_ops or {}).get("modified_files", [])),
+            },
+            previous_summary=previous_summary,
+            timestamp=timestamp or datetime.now().isoformat(),
+        )
+        payload = entry.to_dict()
+        self.compactions.append(payload)
+        self.updated_at = datetime.now()
 
-    def set_context_anchor(self, value: int) -> int:
-        """Set context anchor while preserving compaction invariants."""
-        anchor = max(0, int(value))
-        anchor = min(anchor, len(self.messages))
-        anchor = max(anchor, self.last_consolidated)
-        self.metadata["context_anchor"] = anchor
-        return anchor
+        if self._path is not None:
+            self._ensure_file_initialized()
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"_type": "compaction", **payload}, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            self._persisted_compaction_count = len(self.compactions)
+            self._persisted_compactions_sig = self._compactions_signature()
+
+        return entry
+
+    def get_last_compaction(self) -> CompactionEntry | None:
+        """Return the latest compaction entry with bounded first_kept_index."""
+        if not self.compactions:
+            return None
+        raw = self.compactions[-1]
+        if not isinstance(raw, dict):
+            logger.warning("Invalid compaction entry type in session {}: {}", self.key, type(raw).__name__)
+            return None
+        try:
+            entry = CompactionEntry.from_dict(raw)
+        except ValueError as e:
+            logger.warning("Skipping invalid compaction entry in session {}: {}", self.key, e)
+            return None
+
+        clamped_index = max(0, min(entry.first_kept_index, len(self.messages)))
+        if clamped_index != entry.first_kept_index:
+            logger.warning(
+                "Clamped compaction first_kept_index for {}: {} -> {} (messages={})",
+                self.key,
+                entry.first_kept_index,
+                clamped_index,
+                len(self.messages),
+            )
+            entry.first_kept_index = clamped_index
+            self.compactions[-1] = entry.to_dict()
+
+        return entry
 
     def validate_compaction_invariants(self) -> None:
         """Validate cursor invariants before persistence."""
-        anchor = self.get_context_anchor()
         if self.last_consolidated < 0:
             raise ValueError("last_consolidated must be >= 0")
-        if self.last_consolidated > anchor:
+        if self.last_consolidated > len(self.messages):
             raise ValueError(
-                f"Invalid compaction cursors: last_consolidated={self.last_consolidated} > context_anchor={anchor}"
+                "Invalid last_consolidated="
+                f"{self.last_consolidated} for message_count={len(self.messages)}"
             )
-        if anchor > len(self.messages):
+        compaction = self.get_last_compaction()
+        if compaction and self.last_consolidated > compaction.first_kept_index:
             raise ValueError(
-                f"Invalid context_anchor={anchor} for message_count={len(self.messages)}"
+                "Invalid compaction cursors: "
+                f"last_consolidated={self.last_consolidated} > "
+                f"first_kept_index={compaction.first_kept_index}"
             )
     
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
         """Return prompt-window messages for LLM input, aligned to a user turn."""
-        context_anchor = self.get_context_anchor()
-        prompt_window = self.messages[context_anchor:]
+        compaction = self.get_last_compaction()
+        if compaction:
+            prompt_window = self.messages[compaction.first_kept_index:]
+        else:
+            prompt_window = self.messages
         sliced = prompt_window[-max_messages:]
 
         # Drop leading non-user messages to avoid orphaned tool_result blocks
-        for i, m in enumerate(sliced):
-            if m.get("role") == "user":
-                sliced = sliced[i:]
-                break
+        if compaction is None:
+            for i, m in enumerate(sliced):
+                if m.get("role") == "user":
+                    sliced = sliced[i:]
+                    break
 
         out: list[dict[str, Any]] = []
         for m in sliced:
@@ -266,6 +409,8 @@ class Session:
         # Sanitize: remove orphaned tool results whose tool_use_id has no
         # matching tool_call in a preceding assistant message.
         out = _sanitize_tool_pairs(out)
+        if compaction:
+            out = [{"role": "system", "content": compaction.summary}] + out
         return out
 
     def detect_resume_state(self) -> str:
@@ -288,8 +433,9 @@ class Session:
     def clear(self) -> None:
         """Clear all messages and reset session to initial state."""
         self.messages = []
+        self.compactions = []
         self.last_consolidated = 0
-        self.metadata["context_anchor"] = 0
+        self.metadata.pop("usage_snapshot", None)
         self.updated_at = datetime.now()
 
 
@@ -356,6 +502,7 @@ class SessionManager:
 
         try:
             messages = []
+            compactions: list[dict[str, Any]] = []
             metadata = {}
             created_at = None
             updated_at = None
@@ -403,23 +550,50 @@ class SessionManager:
                         except (TypeError, ValueError):
                             parsed_last_consolidated = 0
                         last_consolidated = max(0, parsed_last_consolidated)
+                    elif data.get("_type") == "compaction":
+                        try:
+                            compaction = CompactionEntry.from_dict(data)
+                        except ValueError as e:
+                            logger.warning(
+                                "Skipping malformed compaction line {} in {}: {}",
+                                lineno,
+                                path,
+                                e,
+                            )
+                            continue
+                        compactions.append(compaction.to_dict())
+                    elif "_type" in data:
+                        logger.warning(
+                            "Skipping unknown session _type '{}' at line {} in {}",
+                            data.get("_type"),
+                            lineno,
+                            path,
+                        )
                     else:
                         messages.append(data)
 
             if last_consolidated > len(messages):
                 last_consolidated = len(messages)
-            raw_context_anchor = metadata.get("context_anchor", last_consolidated)
-            try:
-                parsed_context_anchor = int(raw_context_anchor)
-            except (TypeError, ValueError):
-                parsed_context_anchor = last_consolidated
-            context_anchor = max(last_consolidated, parsed_context_anchor)
-            context_anchor = min(context_anchor, len(messages))
-            metadata["context_anchor"] = context_anchor
-
+            for idx, compaction in enumerate(compactions):
+                raw_first_kept = compaction.get("first_kept_index", 0)
+                try:
+                    parsed_first_kept = int(raw_first_kept)
+                except (TypeError, ValueError):
+                    parsed_first_kept = 0
+                clamped_first_kept = max(0, min(parsed_first_kept, len(messages)))
+                if clamped_first_kept != parsed_first_kept:
+                    logger.warning(
+                        "Clamped compaction first_kept_index for {} at entry {}: {} -> {}",
+                        key,
+                        idx,
+                        parsed_first_kept,
+                        clamped_first_kept,
+                    )
+                compaction["first_kept_index"] = clamped_first_kept
             session = Session(
                 key=key,
                 messages=messages,
+                compactions=compactions,
                 created_at=created_at or datetime.now(),
                 updated_at=updated_at or created_at or datetime.now(),
                 metadata=metadata,
@@ -440,8 +614,10 @@ class SessionManager:
         if (
             path.exists()
             and session._persisted_count == len(session.messages)
+            and session._persisted_compaction_count == len(session.compactions)
             and session._persisted_last_consolidated == session.last_consolidated
             and session._persisted_metadata_sig == session._metadata_signature()
+            and session._persisted_compactions_sig == session._compactions_signature()
         ):
             self._cache[session.key] = session
             return
@@ -462,6 +638,10 @@ class SessionManager:
                 f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
                 for msg in session.messages:
                     f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+                for compaction in session.compactions:
+                    f.write(
+                        json.dumps({"_type": "compaction", **compaction}, ensure_ascii=False) + "\n"
+                    )
                 f.flush()
                 os.fsync(f.fileno())
             temp_path.replace(path)

@@ -690,12 +690,32 @@ async def compact_session(
 ) -> CompactionEntry | None:
     """Run structured compaction and persist a CompactionEntry when successful."""
     last_input_tokens = _usage_snapshot_tokens(session)
-    pressure_messages = session.get_history(max_messages=max(1, len(session.messages)))
+    baseline_messages = session.get_history(
+        max_messages=max(1, len(session.messages)),
+        prune_tool_results=False,
+        context_window=context_window,
+    )
+    baseline_tokens = sum(estimate_message_tokens(msg) for msg in baseline_messages)
+    pressure_messages = session.get_history(
+        max_messages=max(1, len(session.messages)),
+        context_window=context_window,
+    )
+    post_prune_tokens = sum(estimate_message_tokens(msg) for msg in pressure_messages)
+    pruning_applied = post_prune_tokens < baseline_tokens
+    decision_tokens = (
+        post_prune_tokens
+        if pruning_applied
+        else (
+            int(last_input_tokens)
+            if last_input_tokens is not None
+            else post_prune_tokens
+        )
+    )
     if not should_compact(
         pressure_messages,
         context_window=context_window,
         reserve_tokens=reserve_tokens,
-        last_input_tokens=last_input_tokens,
+        last_input_tokens=decision_tokens,
     ):
         return None
 
@@ -749,11 +769,7 @@ async def compact_session(
         return None
 
     file_ops = extract_file_ops(summary_messages)
-    tokens_before = (
-        int(last_input_tokens)
-        if last_input_tokens is not None
-        else sum(estimate_message_tokens(msg) for msg in pressure_messages)
-    )
+    tokens_before = int(decision_tokens)
 
     entry = session.append_compaction(
         summary=summary,

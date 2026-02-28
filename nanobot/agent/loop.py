@@ -94,6 +94,9 @@ class AgentLoop:
     _CONSOLIDATION_KEEP_COUNT = 25
     _COMPACTION_RESERVE_TOKENS = 16_384
     _COMPACTION_KEEP_RECENT_TOKENS = 20_000
+    _PRUNE_PROTECTED_TOOLS = frozenset(
+        {"memory_recall", "memory_save", "memory_graph", "memory_ingest"}
+    )
 
     def __init__(
         self,
@@ -279,7 +282,12 @@ class AgentLoop:
             if isinstance(self._memory_graph_config, dict):
                 retrieval_cfg = self._memory_graph_config.get("retrieval") or {}
             peer_key = retrieval_cfg["peer_key"] if "peer_key" in retrieval_cfg else session.key
-            recent_turns = session.get_history(max_messages=6)
+            context_window = self._get_context_window_size()
+            recent_turns = session.get_history(
+                max_messages=6,
+                context_window=context_window,
+                protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+            )
             prompt_headroom_words = self._estimate_retrieval_headroom_words(
                 recent_turns=recent_turns,
                 user_message=user_message,
@@ -432,7 +440,12 @@ class AgentLoop:
 
     def _refresh_estimated_token_snapshot(self, session: Session) -> None:
         """Refresh token snapshot from visible prompt window after compaction."""
-        visible_history = session.get_history(max_messages=self._HISTORY_MAX_MESSAGES)
+        context_window = self._get_context_window_size()
+        visible_history = session.get_history(
+            max_messages=self._HISTORY_MAX_MESSAGES,
+            context_window=context_window,
+            protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+        )
         estimated_tokens = int(self._estimate_prompt_tokens(visible_history))
         self._last_input_tokens[session.key] = estimated_tokens
         session.metadata["usage_snapshot"] = {
@@ -740,7 +753,12 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
-        history = session.get_history(max_messages=self._HISTORY_MAX_MESSAGES)
+        context_window = self._get_context_window_size()
+        history = session.get_history(
+            max_messages=self._HISTORY_MAX_MESSAGES,
+            context_window=context_window,
+            protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+        )
         initial_messages = self._build_messages_with_prompt_budget(
             history=history,
             current_message=None,
@@ -911,7 +929,12 @@ class AgentLoop:
             resume_notice = self._resume_notice_for_state(session.detect_resume_state())
             self._set_tool_context(channel, chat_id, metadata.get("message_id"))
             memory_context = await self._retrieve_memory_context(session, msg.content)
-            history = session.get_history(max_messages=self._HISTORY_MAX_MESSAGES)
+            context_window = self._get_context_window_size()
+            history = session.get_history(
+                max_messages=self._HISTORY_MAX_MESSAGES,
+                context_window=context_window,
+                protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+            )
             initial_messages = self._build_messages_with_prompt_budget(
                 history=history,
                 current_message=msg.content,
@@ -1014,7 +1037,11 @@ class AgentLoop:
             if _token_count <= 0:
                 _token_count = int(self._last_input_tokens.get(session.key, 0) or 0)
 
-            pressure_messages = session.get_history(max_messages=self._HISTORY_MAX_MESSAGES)
+            pressure_messages = session.get_history(
+                max_messages=self._HISTORY_MAX_MESSAGES,
+                context_window=_context_window,
+                protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+            )
             _needs_compaction = should_compact(
                 pressure_messages,
                 context_window=_context_window,
@@ -1212,7 +1239,11 @@ class AgentLoop:
                 message_tool.start_turn()
 
         memory_context = await self._retrieve_memory_context(session, msg.content)
-        history = session.get_history(max_messages=self._HISTORY_MAX_MESSAGES)
+        history = session.get_history(
+            max_messages=self._HISTORY_MAX_MESSAGES,
+            context_window=_context_window,
+            protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+        )
 
         initial_messages = self._build_messages_with_prompt_budget(
             history=history,

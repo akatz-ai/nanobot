@@ -152,6 +152,117 @@ def _sanitize_tool_pairs(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 @dataclass
+class PruneResult:
+    messages_pruned: int
+    tokens_saved: int
+    messages_protected: int
+    total_tool_messages: int
+
+
+_DEFAULT_PROTECTED_TOOLS = {
+    "memory_recall",
+    "memory_save",
+    "memory_graph",
+    "memory_ingest",
+}
+
+
+def _tool_content_chars(content: Any) -> int:
+    if isinstance(content, str):
+        return len(content)
+    if content is None:
+        return 0
+    try:
+        return len(json.dumps(content, ensure_ascii=False))
+    except TypeError:
+        return len(str(content))
+
+
+def _prune_tool_results(
+    messages: list[dict[str, Any]],
+    *,
+    prune_protect_tokens: int,
+    prune_minimum_tokens: int,
+    protected_tools: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], PruneResult]:
+    """Prune older tool result payloads from a view of prompt messages."""
+    # Lazy import to avoid circular import: compaction imports Session.
+    from nanobot.session.compaction import estimate_message_tokens
+
+    protected = {
+        str(name)
+        for name in (
+            protected_tools if protected_tools is not None else _DEFAULT_PROTECTED_TOOLS
+        )
+    }
+    turns_seen = 0
+    total_tool_tokens = 0
+    total_tool_messages = 0
+    messages_protected = 0
+    candidates: list[tuple[int, str, int]] = []
+
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        role = msg.get("role")
+        if role == "user":
+            turns_seen += 1
+            continue
+        if role != "tool":
+            continue
+
+        total_tool_messages += 1
+
+        # Keep all tool results for the most recent two user turns.
+        if turns_seen < 2:
+            continue
+
+        tool_tokens = estimate_message_tokens(msg)
+        total_tool_tokens += tool_tokens
+
+        tool_name = msg.get("name")
+        if isinstance(tool_name, str) and tool_name in protected:
+            messages_protected += 1
+            continue
+
+        if total_tool_tokens <= prune_protect_tokens:
+            continue
+
+        original_chars = _tool_content_chars(msg.get("content"))
+        placeholder = (
+            f"[Tool output cleared to save context — {original_chars} chars]"
+        )
+        placeholder_msg = dict(msg)
+        placeholder_msg["content"] = placeholder
+        placeholder_tokens = estimate_message_tokens(placeholder_msg)
+        saved = max(0, tool_tokens - placeholder_tokens)
+        if saved <= 0:
+            continue
+        candidates.append((idx, placeholder, saved))
+
+    total_saved = sum(item[2] for item in candidates)
+    if total_saved < prune_minimum_tokens or not candidates:
+        return messages, PruneResult(
+            messages_pruned=0,
+            tokens_saved=0,
+            messages_protected=messages_protected,
+            total_tool_messages=total_tool_messages,
+        )
+
+    out = list(messages)
+    for idx, placeholder, _saved in candidates:
+        pruned = dict(out[idx])
+        pruned["content"] = placeholder
+        out[idx] = pruned
+
+    return out, PruneResult(
+        messages_pruned=len(candidates),
+        tokens_saved=total_saved,
+        messages_protected=messages_protected,
+        total_tool_messages=total_tool_messages,
+    )
+
+
+@dataclass
 class Session:
     """
     A conversation session.
@@ -382,7 +493,15 @@ class Session:
                 f"first_kept_index={compaction.first_kept_index}"
             )
     
-    def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
+    def get_history(
+        self,
+        max_messages: int = 500,
+        prune_tool_results: bool = True,
+        prune_protect_tokens: int | None = None,
+        prune_minimum_tokens: int | None = None,
+        context_window: int = 200_000,
+        protected_tools: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Return prompt-window messages for LLM input, aligned to a user turn."""
         compaction = self.get_last_compaction()
         if compaction:
@@ -409,6 +528,33 @@ class Session:
         # Sanitize: remove orphaned tool results whose tool_use_id has no
         # matching tool_call in a preceding assistant message.
         out = _sanitize_tool_pairs(out)
+
+        if prune_tool_results and out:
+            effective_protect = (
+                prune_protect_tokens
+                if prune_protect_tokens is not None
+                else max(10_000, int(context_window) // 5)
+            )
+            effective_minimum = (
+                prune_minimum_tokens
+                if prune_minimum_tokens is not None
+                else max(5_000, int(context_window) // 20)
+            )
+            out, prune_result = _prune_tool_results(
+                out,
+                prune_protect_tokens=max(0, int(effective_protect)),
+                prune_minimum_tokens=max(0, int(effective_minimum)),
+                protected_tools=protected_tools,
+            )
+            if prune_result.messages_pruned:
+                logger.info(
+                    "Tool result pruning for {}: pruned={} saved_tokens={} protected={} total_tool_messages={}",
+                    self.key,
+                    prune_result.messages_pruned,
+                    prune_result.tokens_saved,
+                    prune_result.messages_protected,
+                    prune_result.total_tool_messages,
+                )
         if compaction:
             out = [{"role": "system", "content": compaction.summary}] + out
         return out

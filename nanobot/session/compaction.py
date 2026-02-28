@@ -44,7 +44,9 @@ SUMMARIZATION_PROMPT = """Produce a structured summary in this exact format:
 ## Critical Context
 - [Data, examples, or references needed to continue]
 
-Preserve exact file paths, function names, error messages, and version numbers."""
+Preserve exact file paths, function names, error messages, and version numbers.
+Keep the summary concise: under 1200 words and under 6000 characters.
+Collapse stale completed work into grouped bullets when not needed for next steps."""
 
 UPDATE_SUMMARIZATION_PROMPT = """Update the previous structured summary using the new conversation.
 
@@ -54,6 +56,23 @@ Requirements:
 - Move completed items from In Progress to Done.
 - Refresh Next Steps to reflect current state.
 - Keep the same section structure.
+- Keep the summary concise: under 1200 words and under 6000 characters.
+- Collapse stale completed work into grouped bullets when not needed for next steps.
+
+Previous summary:
+<previous_summary>
+{previous_summary}
+</previous_summary>
+"""
+
+SUMMARY_COMPRESSION_PROMPT = """Rewrite the previous structured summary into a tighter version.
+
+Requirements:
+- Keep the same section headers and structure.
+- Preserve exact file paths, function names, error messages, and versions that still matter.
+- Collapse stale completed work into short grouped bullets.
+- Remove details that are no longer needed to safely continue.
+- Keep output under {target_chars} characters.
 
 Previous summary:
 <previous_summary>
@@ -71,6 +90,13 @@ Output compact bullet points covering:
 
 Preserve exact file paths, function names, and error messages.
 """
+
+MAX_PREVIOUS_SUMMARY_CHARS = 8_000
+TARGET_PREVIOUS_SUMMARY_CHARS = 4_000
+MAX_SUMMARY_CHARS = 6_000
+TARGET_SUMMARY_CHARS = 4_000
+MAX_SUMMARY_COMPRESSION_INPUT_CHARS = 20_000
+SUMMARY_COMPRESSION_MAX_TOKENS = 1_600
 
 
 @dataclass
@@ -312,6 +338,83 @@ def _fallback_summary(transcript: str, previous_summary: str | None = None) -> s
     )
 
 
+def _clip_from_start(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    omitted = len(text) - max_chars
+    head = f"[... truncated {omitted} chars from beginning ...]\n"
+    if len(head) >= max_chars:
+        return text[-max_chars:]
+    return head + text[-(max_chars - len(head)) :]
+
+
+def _hard_cap_summary(summary: str, max_chars: int) -> str:
+    if len(summary) <= max_chars:
+        return summary
+    marker = "\n\n[... summary trimmed to stay within compaction budget ...]"
+    keep = max(0, max_chars - len(marker))
+    if keep == 0:
+        return summary[:max_chars]
+    return summary[:keep].rstrip() + marker
+
+
+async def _compress_summary_to_target(
+    summary: str,
+    provider: LLMProvider,
+    model: str,
+    *,
+    target_chars: int,
+    reason: str,
+) -> str:
+    clipped_input = _clip_from_start(summary, MAX_SUMMARY_COMPRESSION_INPUT_CHARS)
+    prompt = SUMMARY_COMPRESSION_PROMPT.format(
+        previous_summary=clipped_input,
+        target_chars=target_chars,
+    )
+
+    attempts = 2
+    for attempt in range(attempts):
+        response = await provider.chat(
+            messages=[
+                {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            model=model,
+            temperature=0.0,
+            max_tokens=SUMMARY_COMPRESSION_MAX_TOKENS,
+        )
+        content = (response.content or "").strip()
+        if not _summary_has_required_sections(content):
+            logger.warning(
+                "Summary compression malformed (reason={}, attempt {}/{}): {}",
+                reason,
+                attempt + 1,
+                attempts,
+                content[:200],
+            )
+            continue
+        if len(content) > target_chars:
+            logger.warning(
+                "Summary compression still over target (reason={}, attempt {}/{}): len={} target={}",
+                reason,
+                attempt + 1,
+                attempts,
+                len(content),
+                target_chars,
+            )
+            continue
+        return content
+
+    logger.warning(
+        "Summary compression fallback triggered (reason={}): source_len={} target={}",
+        reason,
+        len(summary),
+        target_chars,
+    )
+    fallback = _fallback_summary("", previous_summary=clipped_input)
+    return _hard_cap_summary(fallback, target_chars)
+
+
 async def generate_compaction_summary(
     messages: list[dict[str, Any]],
     provider: LLMProvider,
@@ -321,9 +424,29 @@ async def generate_compaction_summary(
 ) -> str:
     """Generate a structured compaction summary from conversation history."""
     transcript = serialize_conversation(messages, max_transcript_chars=max_transcript_chars)
+    effective_previous_summary = previous_summary
+    if (
+        isinstance(effective_previous_summary, str)
+        and len(effective_previous_summary) > MAX_PREVIOUS_SUMMARY_CHARS
+    ):
+        logger.warning(
+            "Previous compaction summary exceeds cap: len={} cap={}. Compressing before update.",
+            len(effective_previous_summary),
+            MAX_PREVIOUS_SUMMARY_CHARS,
+        )
+        effective_previous_summary = await _compress_summary_to_target(
+            effective_previous_summary,
+            provider,
+            model,
+            target_chars=TARGET_PREVIOUS_SUMMARY_CHARS,
+            reason="previous summary over cap",
+        )
+
     prompt_parts = [f"<conversation>\n{transcript}\n</conversation>"]
-    if previous_summary:
-        prompt_parts.append(UPDATE_SUMMARIZATION_PROMPT.format(previous_summary=previous_summary))
+    if effective_previous_summary:
+        prompt_parts.append(
+            UPDATE_SUMMARIZATION_PROMPT.format(previous_summary=effective_previous_summary)
+        )
     prompt_parts.append(SUMMARIZATION_PROMPT)
     prompt = "\n\n".join(prompt_parts)
 
@@ -340,6 +463,21 @@ async def generate_compaction_summary(
         )
         content = (response.content or "").strip()
         if _summary_has_required_sections(content):
+            if len(content) > MAX_SUMMARY_CHARS:
+                logger.warning(
+                    "Compaction summary exceeds cap: len={} cap={}. Compressing output.",
+                    len(content),
+                    MAX_SUMMARY_CHARS,
+                )
+                content = await _compress_summary_to_target(
+                    content,
+                    provider,
+                    model,
+                    target_chars=TARGET_SUMMARY_CHARS,
+                    reason="generated summary over cap",
+                )
+            if len(content) > MAX_SUMMARY_CHARS:
+                content = _hard_cap_summary(content, MAX_SUMMARY_CHARS)
             return content
         logger.warning(
             "Compaction summary malformed (attempt {}/{}): {}",
@@ -348,7 +486,8 @@ async def generate_compaction_summary(
             content[:200],
         )
 
-    return _fallback_summary(transcript, previous_summary=previous_summary)
+    fallback = _fallback_summary(transcript, previous_summary=effective_previous_summary)
+    return _hard_cap_summary(fallback, MAX_SUMMARY_CHARS)
 
 
 async def generate_turn_prefix_summary(

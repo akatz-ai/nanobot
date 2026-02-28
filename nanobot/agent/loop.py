@@ -25,6 +25,7 @@ from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
+from nanobot.session.compaction_log import CompactionEvent, CompactionLogger
 from nanobot.session.context_log import TurnContextLogger
 from nanobot.session.usage_log import TokenUsageLogger
 from nanobot.session.manager import Session, SessionManager
@@ -156,6 +157,7 @@ class AgentLoop:
         self._memory_file_lock = asyncio.Lock()  # Serialize global memory file writes across sessions.
         self._context_loggers: dict[str, TurnContextLogger] = {}
         self._usage_loggers: dict[str, TokenUsageLogger] = {}
+        self._compaction_loggers: dict[str, CompactionLogger] = {}
         self._memory_module = None
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._processing_lock = asyncio.Lock()
@@ -267,6 +269,14 @@ class AgentLoop:
             session_path = self.sessions._get_session_path(key)
             self._usage_loggers[key] = TokenUsageLogger(session_path)
         return self._usage_loggers[key]
+
+    def _get_compaction_logger(self, session: Session) -> CompactionLogger:
+        """Get or create a CompactionLogger for a session."""
+        key = session.key
+        if key not in self._compaction_loggers:
+            session_path = self.sessions._get_session_path(key)
+            self._compaction_loggers[key] = CompactionLogger(session_path)
+        return self._compaction_loggers[key]
 
     async def _retrieve_memory_context(
         self,
@@ -924,6 +934,17 @@ class AgentLoop:
                 "Compaction TRIGGERED for {} — reason: {}",
                 session.key, _compaction_reason,
             )
+            _compaction_t0 = time.monotonic()
+            _compaction_event = CompactionEvent(session.key)
+            _compaction_event.set_trigger(
+                input_tokens=_token_count,
+                threshold=self._compaction_token_threshold,
+                context_window=self._get_context_window_size(),
+                utilization_pct=_token_count / self._get_context_window_size() * 100 if self._get_context_window_size() else 0,
+                total_messages=len(session.messages),
+                last_consolidated=session.last_consolidated,
+                context_anchor=session.get_context_anchor(),
+            )
             lock = self._get_consolidation_lock(session.key)
             self._consolidating.add(session.key)
             try:
@@ -937,6 +958,8 @@ class AgentLoop:
                             len(session.messages),
                         )
                         self._last_input_tokens.pop(session.key, None)
+                        _compaction_event.finalize(success=True, error="preflight no-op")
+                        self._get_compaction_logger(session).write(_compaction_event)
                     else:
                         try:
                             await self.bus.publish_outbound(OutboundMessage(
@@ -955,6 +978,18 @@ class AgentLoop:
                                 "Saved continuity context ({} chars) for post-compaction injection",
                                 len(continuity),
                             )
+
+                        # Capture pre-compaction context layout
+                        _memory_md_chars = len(self.context.memory.read_long_term() or "")
+                        _history_chars = 0  # daily history is not always loaded
+                        _compaction_event.set_pre_compaction_context(
+                            system_prompt_chars=len(self.context.build_system_prompt() or ""),
+                            memory_md_chars=_memory_md_chars,
+                            history_chars=_history_chars,
+                            conversation_messages=len(session.messages) - session.get_context_anchor(),
+                            conversation_start_index=session.get_context_anchor(),
+                            continuity_snapshot_chars=len(continuity) if continuity else 0,
+                        )
 
                         previous_anchor = session.get_context_anchor()
                         target_anchor = max(
@@ -980,6 +1015,9 @@ class AgentLoop:
                                 len(session.messages) + self._CONTINUITY_TTL_MESSAGES
                             )
                             self.sessions.save(session)
+
+                        # Pass compaction event to consolidation for per-batch recording
+                        self._active_compaction_event = _compaction_event
                         if await self._consolidate_memory(session):
                             # _consolidate_memory returns True on no-ops too; clear stale token
                             # reading either way to avoid immediate retrigger loops.
@@ -988,6 +1026,18 @@ class AgentLoop:
                                 # Persist continuity for bounded follow-up turns.
                                 continuity_context = continuity_context or continuity
                                 self.sessions.save(session)
+                                _compaction_event.set_post_compaction_context(
+                                    new_context_anchor=session.get_context_anchor(),
+                                    new_last_consolidated=session.last_consolidated,
+                                    keep_count=self._CONSOLIDATION_KEEP_COUNT,
+                                    visible_messages=len(session.messages) - session.get_context_anchor(),
+                                    continuity_chars=len(continuity) if continuity else 0,
+                                    total_items_extracted=_compaction_event.data["result"].get("total_items", 0) if _compaction_event.data.get("result") else 0,
+                                )
+                                _compaction_event.finalize(
+                                    success=True,
+                                    total_duration_ms=int((time.monotonic() - _compaction_t0) * 1000),
+                                )
                                 try:
                                     await self.bus.publish_outbound(OutboundMessage(
                                         channel=msg.channel,
@@ -1005,10 +1055,31 @@ class AgentLoop:
                                     "Compaction was a no-op for {} (checkpoint unchanged at {})",
                                     session.key, prev_consolidated,
                                 )
+                                _compaction_event.finalize(
+                                    success=True,
+                                    error="checkpoint unchanged (no-op)",
+                                    total_duration_ms=int((time.monotonic() - _compaction_t0) * 1000),
+                                )
                         else:
                             logger.warning("Compaction failed for {}", session.key)
+                            _compaction_event.finalize(
+                                success=False,
+                                error="consolidation returned False",
+                                total_duration_ms=int((time.monotonic() - _compaction_t0) * 1000),
+                            )
+                        self._active_compaction_event = None
+                        self._get_compaction_logger(session).write(_compaction_event)
             except Exception:
                 logger.exception("Inline compaction failed for {}", session.key)
+                try:
+                    _compaction_event.finalize(
+                        success=False,
+                        error="exception in inline compaction",
+                        total_duration_ms=int((time.monotonic() - _compaction_t0) * 1000),
+                    )
+                    self._get_compaction_logger(session).write(_compaction_event)
+                except Exception:
+                    pass
             finally:
                 self._consolidating.discard(session.key)
                 self._prune_consolidation_lock(session.key, lock)
@@ -1213,6 +1284,7 @@ class AgentLoop:
                         completed_batches = 0
                         batch_start = start_index
                         accumulated_entries: list[Any] = []
+                        _ce = getattr(self, "_active_compaction_event", None)
                         while batch_start < end_index:
                             batch_end = min(batch_start + batch_size, end_index)
                             logger.info(
@@ -1222,6 +1294,7 @@ class AgentLoop:
                                     batch_start,
                                     batch_end,
                                 )
+                            _batch_t0 = time.monotonic()
                             try:
                                 result = await self._memory_module.hybrid.compact(
                                     session_key=session.key,
@@ -1232,6 +1305,20 @@ class AgentLoop:
                                     skip_memory_rewrite=True,
                                 )
                             except Exception as e:
+                                _batch_ms = int((time.monotonic() - _batch_t0) * 1000)
+                                if _ce:
+                                    _ce.add_batch(
+                                        batch_index=completed_batches,
+                                        msg_start=batch_start,
+                                        msg_end=batch_end,
+                                        transcript_chars=0,
+                                        llm_response_chars=0,
+                                        llm_response_preview=f"EXCEPTION: {e}",
+                                        items_extracted=0,
+                                        success=False,
+                                        error=str(e),
+                                        duration_ms=_batch_ms,
+                                    )
                                 if accumulated_entries and hasattr(self._memory_module.hybrid, "rewrite_memory_md"):
                                     try:
                                         await self._memory_module.hybrid.rewrite_memory_md(
@@ -1251,9 +1338,27 @@ class AgentLoop:
                                     e,
                                 )
                                 return False
+                            _batch_ms = int((time.monotonic() - _batch_t0) * 1000)
                             batch_entries = getattr(result, "entries", None)
+                            _batch_items = len(batch_entries) if isinstance(batch_entries, list) else 0
                             if isinstance(batch_entries, list) and batch_entries:
                                 accumulated_entries.extend(batch_entries)
+
+                            # Record batch in compaction event
+                            if _ce:
+                                _ce.add_batch(
+                                    batch_index=completed_batches,
+                                    msg_start=batch_start,
+                                    msg_end=batch_end,
+                                    transcript_chars=getattr(result, "transcript_chars", 0),
+                                    llm_response_chars=getattr(result, "llm_response_chars", 0),
+                                    llm_response_preview=getattr(result, "llm_response_preview", "") or getattr(result, "error", "") or f"{_batch_items} items",
+                                    items_extracted=_batch_items,
+                                    success=bool(getattr(result, "success", True)),
+                                    error=getattr(result, "error", None),
+                                    duration_ms=_batch_ms,
+                                )
+
                             if hasattr(result, "success") and not bool(getattr(result, "success")):
                                 if accumulated_entries and hasattr(self._memory_module.hybrid, "rewrite_memory_md"):
                                     try:

@@ -715,6 +715,23 @@ def gateway_worker(
         )
         console.print(f"[green]✓[/green] System status: channel={status_cfg.channel_id}, interval={status_cfg.poll_interval_s}s")
 
+    # Create compaction dashboard if configured
+    from nanobot.discord.compaction_dashboard import CompactionDashboard
+    compaction_dashboard: CompactionDashboard | None = None
+    compact_cfg = dc.compaction_dashboard
+    # Fall back to system_status channel if no explicit channel set
+    compact_channel = compact_cfg.channel_id or (status_cfg.channel_id if status_cfg.enabled else "")
+    if dc.enabled and compact_cfg.enabled and compact_channel and dc.token:
+        compaction_dashboard = CompactionDashboard(
+            router=router,
+            discord_token=dc.token,
+            channel_id=compact_channel,
+            poll_interval_s=compact_cfg.poll_interval_s or status_cfg.poll_interval_s or 60,
+            message_id=compact_cfg.message_id or None,
+            config_path=str(get_config_path()),
+        )
+        console.print(f"[green]✓[/green] Compaction dashboard: channel={compact_channel}, interval={compact_cfg.poll_interval_s}s")
+
 
     async def _send_restart_notifications() -> None:
         """Send a system message to all active agent Discord channels after startup."""
@@ -754,6 +771,8 @@ def gateway_worker(
                 await usage_dashboard.start()
             if system_status_dashboard:
                 await system_status_dashboard.start()
+            if compaction_dashboard:
+                await compaction_dashboard.start()
             # Fire restart notifications in the background
             asyncio.create_task(_send_restart_notifications())
             await asyncio.gather(
@@ -763,6 +782,8 @@ def gateway_worker(
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         finally:
+            if compaction_dashboard:
+                await compaction_dashboard.close()
             if system_status_dashboard:
                 await system_status_dashboard.close()
             if usage_dashboard:

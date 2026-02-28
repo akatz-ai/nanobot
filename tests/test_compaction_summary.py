@@ -6,7 +6,6 @@ from nanobot.providers.base import LLMResponse
 from nanobot.session.compaction import (
     MAX_PREVIOUS_SUMMARY_CHARS,
     MAX_SUMMARY_CHARS,
-    TARGET_PREVIOUS_SUMMARY_CHARS,
     TARGET_SUMMARY_CHARS,
     UPDATE_SUMMARIZATION_PROMPT,
     extract_file_ops,

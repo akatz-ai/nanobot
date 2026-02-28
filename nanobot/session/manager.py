@@ -354,6 +354,8 @@ class Session:
         role = entry.get("role")
         if role not in {"user", "assistant", "tool"}:
             return None
+        if role == "assistant" and not entry.get("content") and not entry.get("tool_calls"):
+            return None
 
         if role == "user":
             content = entry.get("content")

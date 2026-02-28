@@ -324,7 +324,10 @@ async def test_failure_recovery_on_summary_error(tmp_path: Path) -> None:
     )
 
     assert session.compactions == []
-    assert "usage_snapshot" not in session.metadata
+    usage_snapshot = session.metadata.get("usage_snapshot")
+    assert isinstance(usage_snapshot, dict)
+    assert usage_snapshot.get("source") == "estimated_visible_history"
+    assert int(usage_snapshot.get("total_input_tokens", 0)) > 0
 
 
 @pytest.mark.asyncio

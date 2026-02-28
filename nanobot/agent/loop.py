@@ -1106,8 +1106,7 @@ class AgentLoop:
                     )
 
                     if entry is None:
-                        self._last_input_tokens.pop(session.key, None)
-                        session.metadata.pop("usage_snapshot", None)
+                        self._refresh_estimated_token_snapshot(session)
                         session.metadata.pop("_structured_compaction_plan", None)
                         _compaction_event.finalize(
                             success=True,

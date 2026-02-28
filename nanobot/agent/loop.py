@@ -639,6 +639,7 @@ class AgentLoop:
                 messages = self.context.add_assistant_message(
                     messages, response.content, tool_call_dicts,
                     reasoning_content=response.reasoning_content,
+                    thinking_blocks=response.thinking_blocks,
                 )
                 # Add synthetic tool results with the truncation notice
                 for tc in response.tool_calls:
@@ -671,6 +672,7 @@ class AgentLoop:
                 messages = self.context.add_assistant_message(
                     messages, response.content, tool_call_dicts,
                     reasoning_content=response.reasoning_content,
+                    thinking_blocks=response.thinking_blocks,
                 )
                 if session is not None and checkpoint_cursor < len(messages):
                     session.checkpoint(messages[checkpoint_cursor:])
@@ -734,6 +736,7 @@ class AgentLoop:
                     messages,
                     final_content,
                     reasoning_content=response.reasoning_content,
+                    thinking_blocks=response.thinking_blocks,
                 )
                 if session is not None and checkpoint_cursor < len(messages):
                     session.checkpoint(messages[checkpoint_cursor:])

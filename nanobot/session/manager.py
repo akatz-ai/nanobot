@@ -350,7 +350,7 @@ class Session:
             os.fsync(f.fileno())
 
     def _normalize_checkpoint_entry(self, msg: dict[str, Any]) -> dict[str, Any] | None:
-        entry = {k: v for k, v in msg.items() if k != "reasoning_content"}
+        entry = dict(msg)
         role = entry.get("role")
         if role not in {"user", "assistant", "tool"}:
             return None

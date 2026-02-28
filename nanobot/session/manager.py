@@ -187,11 +187,45 @@ class Session:
             os.fsync(f.fileno())
 
         self._persisted_count = len(self.messages)
+
+    def get_context_anchor(self) -> int:
+        """Return persisted context anchor with sane defaults and clamping."""
+        raw = self.metadata.get("context_anchor", self.last_consolidated)
+        try:
+            anchor = int(raw)
+        except (TypeError, ValueError):
+            anchor = self.last_consolidated
+        anchor = max(self.last_consolidated, anchor)
+        anchor = min(anchor, len(self.messages))
+        return anchor
+
+    def set_context_anchor(self, value: int) -> int:
+        """Set context anchor while preserving compaction invariants."""
+        anchor = max(0, int(value))
+        anchor = min(anchor, len(self.messages))
+        anchor = max(anchor, self.last_consolidated)
+        self.metadata["context_anchor"] = anchor
+        return anchor
+
+    def validate_compaction_invariants(self) -> None:
+        """Validate cursor invariants before persistence."""
+        anchor = self.get_context_anchor()
+        if self.last_consolidated < 0:
+            raise ValueError("last_consolidated must be >= 0")
+        if self.last_consolidated > anchor:
+            raise ValueError(
+                f"Invalid compaction cursors: last_consolidated={self.last_consolidated} > context_anchor={anchor}"
+            )
+        if anchor > len(self.messages):
+            raise ValueError(
+                f"Invalid context_anchor={anchor} for message_count={len(self.messages)}"
+            )
     
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
-        """Return unconsolidated messages for LLM input, aligned to a user turn."""
-        unconsolidated = self.messages[self.last_consolidated:]
-        sliced = unconsolidated[-max_messages:]
+        """Return prompt-window messages for LLM input, aligned to a user turn."""
+        context_anchor = self.get_context_anchor()
+        prompt_window = self.messages[context_anchor:]
+        sliced = prompt_window[-max_messages:]
 
         # Drop leading non-user messages to avoid orphaned tool_result blocks
         for i, m in enumerate(sliced):
@@ -233,6 +267,7 @@ class Session:
         """Clear all messages and reset session to initial state."""
         self.messages = []
         self.last_consolidated = 0
+        self.metadata["context_anchor"] = 0
         self.updated_at = datetime.now()
 
 
@@ -351,6 +386,14 @@ class SessionManager:
 
             if last_consolidated > len(messages):
                 last_consolidated = len(messages)
+            raw_context_anchor = metadata.get("context_anchor", last_consolidated)
+            try:
+                parsed_context_anchor = int(raw_context_anchor)
+            except (TypeError, ValueError):
+                parsed_context_anchor = last_consolidated
+            context_anchor = max(last_consolidated, parsed_context_anchor)
+            context_anchor = min(context_anchor, len(messages))
+            metadata["context_anchor"] = context_anchor
 
             session = Session(
                 key=key,
@@ -369,6 +412,7 @@ class SessionManager:
     
     def save(self, session: Session) -> None:
         """Save a session to disk."""
+        session.validate_compaction_invariants()
         path = self._get_session_path(session.key)
         session.bind_path(path)
         if (

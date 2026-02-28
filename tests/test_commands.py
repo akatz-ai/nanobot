@@ -576,6 +576,51 @@ async def test_memory_rewrite_once(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_cursor_decoupling(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    agent._CONSOLIDATION_KEEP_COUNT = 5
+    agent._memory_graph_config = {
+        "consolidation": {"engine": "hybrid", "batch_messages": 30}
+    }
+
+    async def _failing_compact(**kwargs):
+        return SimpleNamespace(success=False, entries=[], error="parse failure")
+
+    hybrid = SimpleNamespace(
+        compact=_failing_compact,
+        rewrite_memory_md=AsyncMock(return_value=None),
+    )
+    agent._memory_module = SimpleNamespace(
+        initialized=True,
+        hybrid=hybrid,
+        consolidator=None,
+        retriever=None,
+    )
+
+    session_key = "cli:cursor-decoupling"
+    session = agent.sessions.get_or_create(session_key)
+    for i in range(40):
+        role = "user" if i % 2 == 0 else "assistant"
+        session.add_message(role, f"msg-{i}")
+    agent.sessions.save(session)
+
+    expected_anchor = len(session.messages) - agent._CONSOLIDATION_KEEP_COUNT
+    start_checkpoint = session.last_consolidated
+    agent._last_input_tokens[session.key] = agent._compaction_token_threshold
+
+    await agent.process_direct("trigger compaction", session_key=session_key, channel="cli", chat_id="test")
+
+    updated = agent.sessions.get_or_create(session_key)
+    assert updated.metadata.get("context_anchor") == expected_anchor
+    assert updated.last_consolidated == start_checkpoint
+
+
+@pytest.mark.asyncio
 async def test_consolidate_memory_hybrid_preserves_partial_batch_progress_on_failure(tmp_path: Path):
     agent = AgentLoop(
         bus=MessageBus(),

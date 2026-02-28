@@ -956,19 +956,37 @@ class AgentLoop:
                                 len(continuity),
                             )
 
+                        previous_anchor = session.get_context_anchor()
+                        target_anchor = max(
+                            previous_anchor,
+                            len(session.messages) - self._CONSOLIDATION_KEEP_COUNT,
+                        )
+                        new_anchor = session.set_context_anchor(target_anchor)
+                        if new_anchor > previous_anchor:
+                            logger.info(
+                                "Advanced context_anchor for {}: {} -> {}",
+                                session.key,
+                                previous_anchor,
+                                new_anchor,
+                            )
+                            self.sessions.save(session)
+
                         prev_consolidated = session.last_consolidated
+                        if continuity:
+                            # Anchor is already advanced before memory extraction; preserve immediate continuity.
+                            continuity_context = continuity
+                            session.metadata["continuity_context"] = continuity
+                            session.metadata["continuity_expires_at_message_count"] = (
+                                len(session.messages) + self._CONTINUITY_TTL_MESSAGES
+                            )
+                            self.sessions.save(session)
                         if await self._consolidate_memory(session):
                             # _consolidate_memory returns True on no-ops too; clear stale token
                             # reading either way to avoid immediate retrigger loops.
                             self._last_input_tokens.pop(session.key, None)
                             if session.last_consolidated > prev_consolidated:
                                 # Persist continuity for bounded follow-up turns.
-                                if continuity:
-                                    session.metadata["continuity_context"] = continuity
-                                    session.metadata["continuity_expires_at_message_count"] = (
-                                        len(session.messages) + self._CONTINUITY_TTL_MESSAGES
-                                    )
-                                continuity_context = continuity
+                                continuity_context = continuity_context or continuity
                                 self.sessions.save(session)
                                 try:
                                     await self.bus.publish_outbound(OutboundMessage(
@@ -1181,7 +1199,11 @@ class AgentLoop:
                             )
                             return True
                         start_index = session.last_consolidated
-                        end_index = len(session.messages) - keep_count
+                        if "context_anchor" in session.metadata:
+                            end_index = session.get_context_anchor()
+                        else:
+                            # Compatibility fallback for callers that haven't set context_anchor yet.
+                            end_index = len(session.messages) - keep_count
                         if end_index <= start_index:
                             logger.info(
                                 "Hybrid consolidation no-op: end_index ({}) <= start_index ({})",

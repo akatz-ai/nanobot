@@ -336,6 +336,35 @@ class TestSessionPersistence:
         loaded = temp_manager.get_or_create("test:clamped_last_consolidated")
         assert loaded.last_consolidated == 2
 
+    def test_cursor_migration(self, temp_manager):
+        """Sessions without context_anchor should initialize it from last_consolidated."""
+        path = temp_manager._get_session_path("test:cursor_migration")
+        path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "_type": "metadata",
+                            "key": "test:cursor_migration",
+                            "created_at": "2026-01-01T00:00:00",
+                            "updated_at": "2026-01-01T00:00:00",
+                            "metadata": {},
+                            "last_consolidated": 1,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps({"role": "user", "content": "msg0"}, ensure_ascii=False),
+                    json.dumps({"role": "assistant", "content": "msg1"}, ensure_ascii=False),
+                ]
+            ) + "\n",
+            encoding="utf-8",
+        )
+        temp_manager.invalidate("test:cursor_migration")
+        loaded = temp_manager.get_or_create("test:cursor_migration")
+        assert loaded.last_consolidated == 1
+        assert loaded.metadata["context_anchor"] == 1
+        assert loaded.get_context_anchor() == 1
+
 
 class TestConsolidationTriggerConditions:
     """Test consolidation trigger conditions and logic."""

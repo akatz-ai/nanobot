@@ -555,6 +555,8 @@ class AgentLoop:
         final_content = None
         tools_used: list[str] = []
         checkpoint_cursor = len(messages)
+        _length_continuations = 0
+        _accumulated_content: list[str] = []
 
         # Circuit breaker: track consecutive identical tool calls that produce errors.
         # Only triggers when the model retries the EXACT same tool+args+error combo.
@@ -750,10 +752,41 @@ class AgentLoop:
                     logger.error("LLM returned error: {}", (clean or "")[:200])
                     final_content = clean or "Sorry, I encountered an error calling the AI model."
                     break
-                final_content = clean
+                if response.finish_reason == "length":
+                    if clean:
+                        _accumulated_content.append(clean)
+                    if _length_continuations < 2:
+                        _length_continuations += 1
+                        logger.warning(
+                            "Response truncated (finish_reason=length, continuation {}/2)",
+                            _length_continuations,
+                        )
+                        messages = self.context.add_assistant_message(
+                            messages,
+                            clean,
+                            reasoning_content=response.reasoning_content,
+                            thinking_blocks=response.thinking_blocks,
+                        )
+                        messages.append({"role": "user", "content": "Continue from where you left off."})
+                        if session is not None and checkpoint_cursor < len(messages):
+                            session.checkpoint(messages[checkpoint_cursor:])
+                            checkpoint_cursor = len(messages)
+                        continue
+                    logger.warning(
+                        "Response truncated after {} continuation(s); returning accumulated partial output",
+                        _length_continuations,
+                    )
+
+                if _accumulated_content:
+                    if response.finish_reason != "length" and clean:
+                        _accumulated_content.append(clean)
+                    merged = "\n".join(part for part in _accumulated_content if part)
+                    final_content = merged or clean
+                else:
+                    final_content = clean
                 messages = self.context.add_assistant_message(
                     messages,
-                    final_content,
+                    clean,
                     reasoning_content=response.reasoning_content,
                     thinking_blocks=response.thinking_blocks,
                 )

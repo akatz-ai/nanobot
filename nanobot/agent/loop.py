@@ -793,9 +793,19 @@ class AgentLoop:
         self._save_turn(session, all_msgs, len(initial_messages))
         self.sessions.save(session)
 
+        suppress_final_reply = False
         if message_tool := self.tools.get("message"):
-            if isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
-                return None
+            if isinstance(message_tool, MessageTool):
+                sent_targets = set(message_tool.get_turn_sends())
+                suppress_final_reply = (channel, chat_id) in sent_targets
+
+        if suppress_final_reply:
+            logger.info(
+                "Skipping resumed auto-reply because message tool already sent to {}:{} in this turn",
+                channel,
+                chat_id,
+            )
+            return None
 
         return OutboundMessage(
             channel=channel,

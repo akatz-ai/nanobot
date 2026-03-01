@@ -842,6 +842,9 @@ class AgentLoop:
                 continue
 
             channel, chat_id = self._split_session_key(key)
+            if key.startswith("cron:"):
+                channel = session.metadata.get("origin_channel", channel)
+                chat_id = session.metadata.get("origin_chat_id", chat_id)
             logger.info("Auto-resuming interrupted session {}", key)
             response = await self._resume_session(session, channel, chat_id)
             if response is not None:
@@ -997,6 +1000,9 @@ class AgentLoop:
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
         metadata = msg.metadata or {}
+        if key.startswith("cron:"):
+            session.metadata.setdefault("origin_channel", msg.channel)
+            session.metadata.setdefault("origin_chat_id", msg.chat_id)
 
         # Slash commands
         cmd = msg.content.strip().lower()

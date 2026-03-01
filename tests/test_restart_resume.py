@@ -175,3 +175,34 @@ async def test_end_to_end_interruption_reload_and_auto_resume(tmp_path: Path) ->
         and "interrupted mid-turn by a system restart" in m.get("content", "")
         for m in auto_resume_messages
     )
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_cron_session_uses_origin_routing(tmp_path: Path) -> None:
+    setup_loop = AgentLoop(
+        bus=MessageBus(),
+        provider=_ScriptedProvider([]),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    session = setup_loop.sessions.get_or_create("cron:job-123")
+    session.metadata["origin_channel"] = "discord"
+    session.metadata["origin_chat_id"] = "thread-42"
+    _checkpoint_mid_loop(session)
+    setup_loop.sessions.save(session)
+
+    provider = _ScriptedProvider([LLMResponse(content="resumed cron", tool_calls=[])])
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="stub-model",
+    )
+
+    resumed = await loop.resume_inflight_sessions()
+
+    assert resumed == 1
+    outbound = await loop.bus.consume_outbound()
+    assert outbound.channel == "discord"
+    assert outbound.chat_id == "thread-42"
+    assert outbound.content == "resumed cron"

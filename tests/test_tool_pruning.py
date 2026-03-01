@@ -167,11 +167,25 @@ async def test_pruned_view_affects_compaction_decision() -> None:
         reserve_tokens=5_000,
         last_input_tokens=raw_tokens,
     )
+    # Old/stale snapshot path: short-circuits to "compact" even on pruned history.
+    assert should_compact(
+        pruned_history,
+        context_window=40_000,
+        reserve_tokens=5_000,
+        last_input_tokens=raw_tokens,
+    )
+    pruning_applied = pruned_tokens < raw_tokens
+    if pruning_applied:
+        decision_tokens: int | None = pruned_tokens
+    elif raw_tokens > 0:
+        decision_tokens = raw_tokens
+    else:
+        decision_tokens = None
     assert not should_compact(
         pruned_history,
         context_window=40_000,
         reserve_tokens=5_000,
-        last_input_tokens=pruned_tokens,
+        last_input_tokens=decision_tokens,
     )
 
     provider = AsyncMock()

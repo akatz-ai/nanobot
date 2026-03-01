@@ -1037,16 +1037,32 @@ class AgentLoop:
             if _token_count <= 0:
                 _token_count = int(self._last_input_tokens.get(session.key, 0) or 0)
 
+            baseline_messages = session.get_history(
+                max_messages=self._HISTORY_MAX_MESSAGES,
+                context_window=_context_window,
+                prune_tool_results=False,
+            )
             pressure_messages = session.get_history(
                 max_messages=self._HISTORY_MAX_MESSAGES,
                 context_window=_context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
+            baseline_tokens = sum(estimate_message_tokens(msg) for msg in baseline_messages)
+            post_prune_tokens = sum(estimate_message_tokens(msg) for msg in pressure_messages)
+            pruning_applied = post_prune_tokens < baseline_tokens
+            if pruning_applied:
+                decision_tokens: int | None = post_prune_tokens
+            elif _token_count > 0:
+                decision_tokens = _token_count
+            else:
+                decision_tokens = None
+            if decision_tokens is not None:
+                _token_count = int(decision_tokens)
             _needs_compaction = should_compact(
                 pressure_messages,
                 context_window=_context_window,
                 reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
-                last_input_tokens=_token_count if _token_count > 0 else None,
+                last_input_tokens=decision_tokens,
             )
             threshold = int((_context_window - self._COMPACTION_RESERVE_TOKENS) * 0.7)
             logger.info(

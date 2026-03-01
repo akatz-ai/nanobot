@@ -3,6 +3,7 @@
 import asyncio
 import os
 import signal
+from datetime import datetime
 from pathlib import Path
 import select
 import sys
@@ -568,6 +569,21 @@ def gateway_worker(
             channel=job.payload.channel or "cli",
             chat_id=job.payload.to or "direct",
         )
+        if job.payload.to and response:
+            user_session_key = f"{job.payload.channel or 'cli'}:{job.payload.to}"
+            user_session = target.loop.sessions.get_or_create(user_session_key)
+            cron_summary = {
+                "job_id": job.id,
+                "message": job.payload.message[:200],
+                "response_preview": response[:500],
+                "timestamp": datetime.now().isoformat(),
+            }
+            recent_cron = user_session.metadata.get("recent_cron_actions", [])
+            if not isinstance(recent_cron, list):
+                recent_cron = []
+            recent_cron.append(cron_summary)
+            user_session.metadata["recent_cron_actions"] = recent_cron[-5:]
+            target.loop.sessions.save(user_session)
         if job.payload.deliver and job.payload.to:
             from nanobot.bus.events import OutboundMessage
             await bus.publish_outbound(OutboundMessage(

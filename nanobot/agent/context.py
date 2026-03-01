@@ -214,6 +214,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         chat_id: str | None = None,
         memory_context: str | None = None,
         resume_notice: str | None = None,
+        extra_system_messages: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -227,6 +228,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             chat_id: Current chat/user ID.
             memory_context: Optional retrieved snippets for this turn only.
             resume_notice: Optional restart note injected as a separate system message.
+            extra_system_messages: Optional additional per-turn system messages.
 
         Returns:
             List of messages including system prompt.
@@ -285,6 +287,10 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
         if resume_notice:
             messages.append({"role": "system", "content": resume_notice})
+        if extra_system_messages:
+            for content in extra_system_messages:
+                if content:
+                    messages.append({"role": "system", "content": content})
 
         if current_message is None:
             if resume_notice:

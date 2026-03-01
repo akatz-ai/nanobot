@@ -385,6 +385,7 @@ class AgentLoop:
         chat_id: str | None = None,
         memory_context: str | None = None,
         resume_notice: str | None = None,
+        extra_system_messages: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Build initial messages and trim oldest history if prompt exceeds budget."""
         history_window = list(history)
@@ -402,6 +403,7 @@ class AgentLoop:
             chat_id=chat_id,
             memory_context=memory_context,
             resume_notice=resume_notice,
+            extra_system_messages=extra_system_messages,
         )
         initial_estimate = self._estimate_prompt_tokens(messages)
         estimated = initial_estimate
@@ -419,6 +421,7 @@ class AgentLoop:
                 chat_id=chat_id,
                 memory_context=memory_context,
                 resume_notice=resume_notice,
+                extra_system_messages=extra_system_messages,
             )
             estimated = self._estimate_prompt_tokens(messages)
 
@@ -511,6 +514,22 @@ class AgentLoop:
                 return tc.name
             return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
         return ", ".join(_fmt(tc) for tc in tool_calls)
+
+    @staticmethod
+    def _build_recent_cron_context(recent_cron: list[Any]) -> str | None:
+        """Render bounded system context summarizing recent cron actions."""
+        lines: list[str] = []
+        for action in recent_cron:
+            if not isinstance(action, dict):
+                continue
+            job_id = str(action.get("job_id", "?"))
+            message = " ".join(str(action.get("message", "")).split())[:100]
+            response_preview = " ".join(str(action.get("response_preview", "")).split())[:200]
+            lines.append(f"- [Cron {job_id}] {message} → {response_preview}")
+
+        if not lines:
+            return None
+        return "Recent cron actions you performed:\n" + "\n".join(lines)
 
     @staticmethod
     def _error_signature(tool_name: str, args: dict, error: str) -> str:
@@ -1286,6 +1305,14 @@ class AgentLoop:
                 message_tool.start_turn()
 
         memory_context = await self._retrieve_memory_context(session, msg.content)
+        extra_system_messages: list[str] = []
+        recent_cron = session.metadata.get("recent_cron_actions", [])
+        if isinstance(recent_cron, list) and recent_cron:
+            cron_context = self._build_recent_cron_context(recent_cron)
+            if cron_context:
+                extra_system_messages.append(cron_context)
+            session.metadata.pop("recent_cron_actions", None)
+            self.sessions.save(session)
         history = session.get_history(
             max_messages=self._HISTORY_MAX_MESSAGES,
             context_window=_context_window,
@@ -1300,6 +1327,7 @@ class AgentLoop:
             channel=msg.channel, chat_id=msg.chat_id,
             memory_context=memory_context,
             resume_notice=resume_notice,
+            extra_system_messages=extra_system_messages,
         )
         self._get_context_logger(session).log_turn(
             built_messages=initial_messages,

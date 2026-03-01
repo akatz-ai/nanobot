@@ -11,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from nanobot.agent.loop import AgentLoop
+from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryStore
@@ -209,6 +210,83 @@ def test_context_base_system_prompt_is_stable_across_turns(tmp_path: Path):
     assert turn1[0]["content"] == turn2[0]["content"]
     assert "Current Time" not in turn1[0]["content"]
     assert turn1[-2]["content"] != turn2[-2]["content"]
+
+
+@pytest.mark.asyncio
+async def test_process_message_injects_recent_cron_actions_once(tmp_path: Path):
+    class _CaptureProvider(LLMProvider):
+        def __init__(self):
+            super().__init__(api_key=None, api_base=None)
+            self.calls: list[list[dict]] = []
+
+        async def chat(
+            self,
+            messages: list[dict],
+            tools: list[dict] | None = None,
+            model: str | None = None,
+            max_tokens: int = 4096,
+            temperature: float = 0.7,
+        ) -> LLMResponse:
+            _ = (tools, model, max_tokens, temperature)
+            self.calls.append(messages)
+            return LLMResponse(content="ok", tool_calls=[])
+
+        def get_default_model(self) -> str:
+            return "stub-model"
+
+    provider = _CaptureProvider()
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="stub-model",
+    )
+
+    session = loop.sessions.get_or_create("discord:user-1")
+    session.metadata["recent_cron_actions"] = [
+        {
+            "job_id": "job-123",
+            "message": "Check deployment status and report",
+            "response_preview": "Deployment healthy; no errors detected.",
+            "timestamp": "2026-03-01T00:00:00",
+        }
+    ]
+    loop.sessions.save(session)
+
+    await loop._process_message(
+        InboundMessage(
+            channel="discord",
+            sender_id="user-1",
+            chat_id="user-1",
+            content="What happened while I was away?",
+        )
+    )
+    await loop._process_message(
+        InboundMessage(
+            channel="discord",
+            sender_id="user-1",
+            chat_id="user-1",
+            content="And now?",
+        )
+    )
+
+    assert len(provider.calls) == 2
+    first_call = provider.calls[0]
+    second_call = provider.calls[1]
+    assert any(
+        msg.get("role") == "system"
+        and "Recent cron actions you performed:" in msg.get("content", "")
+        and "[Cron job-123]" in msg.get("content", "")
+        for msg in first_call
+    )
+    assert not any(
+        msg.get("role") == "system"
+        and "Recent cron actions you performed:" in msg.get("content", "")
+        for msg in second_call
+    )
+
+    updated = loop.sessions.get_or_create("discord:user-1")
+    assert "recent_cron_actions" not in updated.metadata
 
 
 def test_retrieved_memory_guardrails_cap_and_truncate():

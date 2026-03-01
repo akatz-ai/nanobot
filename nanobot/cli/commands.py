@@ -584,7 +584,7 @@ def gateway_worker(
             recent_cron.append(cron_summary)
             user_session.metadata["recent_cron_actions"] = recent_cron[-5:]
             target.loop.sessions.save(user_session)
-        if job.payload.deliver and job.payload.to:
+        if job.payload.deliver and job.payload.to and response:
             from nanobot.bus.events import OutboundMessage
             await bus.publish_outbound(OutboundMessage(
                 channel=job.payload.channel or "cli",

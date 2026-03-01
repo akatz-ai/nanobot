@@ -126,14 +126,16 @@ class SubagentManager:
             while iteration < max_iterations:
                 iteration += 1
                 
-                response = await self.provider.chat(
-                    messages=messages,
-                    tools=tools.get_definitions(),
-                    model=self.model,
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                    reasoning_effort=self.reasoning_effort,
-                )
+                chat_kwargs: dict[str, Any] = {
+                    "messages": messages,
+                    "tools": tools.get_definitions(),
+                    "model": self.model,
+                    "temperature": self.temperature,
+                    "max_tokens": self.max_tokens,
+                }
+                if self.reasoning_effort:
+                    chat_kwargs["reasoning_effort"] = self.reasoning_effort
+                response = await self.provider.chat(**chat_kwargs)
                 
                 if response.has_tool_calls:
                     # Add assistant message with tool calls

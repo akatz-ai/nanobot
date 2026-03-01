@@ -554,14 +554,16 @@ class AgentLoop:
 
             _api_start = time.monotonic()
             logger.debug("Calling provider.chat() — iteration {}/{}, {} messages", iteration, self.max_iterations, len(messages))
-            response = await self.provider.chat(
-                messages=messages,
-                tools=self.tools.get_definitions(),
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                reasoning_effort=self.reasoning_effort,
-            )
+            chat_kwargs: dict[str, Any] = {
+                "messages": messages,
+                "tools": self.tools.get_definitions(),
+                "model": self.model,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+            }
+            if self.reasoning_effort:
+                chat_kwargs["reasoning_effort"] = self.reasoning_effort
+            response = await self.provider.chat(**chat_kwargs)
             _api_elapsed = time.monotonic() - _api_start
             logger.debug("provider.chat() returned in {:.1f}s — finish_reason={}, tool_calls={}", _api_elapsed, response.finish_reason, len(response.tool_calls) if response.tool_calls else 0)
 

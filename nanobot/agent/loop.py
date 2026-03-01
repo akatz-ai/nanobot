@@ -27,6 +27,8 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.session.compaction import (
+    _decision_tokens_with_pruning_ceiling,
+    _usage_snapshot_tokens,
     compact_session,
     estimate_message_tokens,
     extract_file_ops,
@@ -1012,6 +1014,7 @@ class AgentLoop:
                 self._prune_consolidation_lock(session.key, lock)
 
             session.clear()
+            self._last_input_tokens.pop(session.key, None)
             session.metadata.pop("usage_snapshot", None)
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
@@ -1028,13 +1031,10 @@ class AgentLoop:
         _token_count = 0
         _context_window = self._get_context_window_size()
         if session.key not in self._consolidating:
-            usage_snapshot = session.metadata.get("usage_snapshot")
-            if isinstance(usage_snapshot, dict):
-                try:
-                    _token_count = int(usage_snapshot.get("total_input_tokens", 0))
-                except (TypeError, ValueError):
-                    _token_count = 0
-            if _token_count <= 0:
+            fresh_snapshot_tokens = _usage_snapshot_tokens(session)
+            if fresh_snapshot_tokens is not None:
+                _token_count = int(fresh_snapshot_tokens)
+            else:
                 _token_count = int(self._last_input_tokens.get(session.key, 0) or 0)
 
             baseline_messages = session.get_history(
@@ -1049,13 +1049,12 @@ class AgentLoop:
             )
             baseline_tokens = sum(estimate_message_tokens(msg) for msg in baseline_messages)
             post_prune_tokens = sum(estimate_message_tokens(msg) for msg in pressure_messages)
-            pruning_applied = post_prune_tokens < baseline_tokens
-            if pruning_applied:
-                decision_tokens: int | None = post_prune_tokens
-            elif _token_count > 0:
-                decision_tokens = _token_count
-            else:
-                decision_tokens = None
+            decision_tokens = _decision_tokens_with_pruning_ceiling(
+                baseline_tokens=baseline_tokens,
+                post_prune_tokens=post_prune_tokens,
+                api_tokens_ceiling=fresh_snapshot_tokens,
+                fallback_tokens=_token_count if _token_count > 0 else None,
+            )
             if decision_tokens is not None:
                 _token_count = int(decision_tokens)
             _needs_compaction = should_compact(

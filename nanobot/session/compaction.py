@@ -97,6 +97,7 @@ MAX_SUMMARY_CHARS = 6_000
 TARGET_SUMMARY_CHARS = 4_000
 MAX_SUMMARY_COMPRESSION_INPUT_CHARS = 20_000
 SUMMARY_COMPRESSION_MAX_TOKENS = 1_600
+USAGE_SNAPSHOT_MAX_MESSAGE_LAG = 100
 
 
 @dataclass
@@ -557,6 +558,9 @@ def find_valid_cut_points(
     points: list[int] = []
 
     for idx, msg in enumerate(messages):
+        if idx < floor:
+            # Ignore pre-compaction history. Its tool-chain state has already been summarized.
+            continue
         role = msg.get("role")
         if role == "assistant":
             for tc in msg.get("tool_calls") or []:
@@ -574,10 +578,11 @@ def find_valid_cut_points(
 
 
 def _find_turn_start(messages: list[dict[str, Any]], index: int, after_index: int) -> int | None:
-    for pos in range(min(index, len(messages) - 1), -1, -1):
+    lower_bound = max(after_index - 1, -1)
+    for pos in range(min(index, len(messages) - 1), lower_bound, -1):
         if messages[pos].get("role") == "user":
             return pos
-    if 0 <= after_index < len(messages):
+    if after_index < len(messages):
         return after_index
     return None
 
@@ -669,15 +674,47 @@ def should_compact(
     return float(estimated_total) > float(threshold)
 
 
-def _usage_snapshot_tokens(session: Session) -> int | None:
+def _usage_snapshot_tokens(
+    session: Session,
+    *,
+    max_message_lag: int = USAGE_SNAPSHOT_MAX_MESSAGE_LAG,
+) -> int | None:
     raw = session.metadata.get("usage_snapshot")
     if not isinstance(raw, dict):
         return None
-    value = raw.get("total_input_tokens")
     try:
-        return int(value)
+        value = int(raw.get("total_input_tokens", 0))
+        message_index = int(raw.get("message_index"))
     except (TypeError, ValueError):
         return None
+    if value <= 0:
+        return None
+    if abs(len(session.messages) - message_index) > max(0, int(max_message_lag)):
+        return None
+    return value
+
+
+def _decision_tokens_with_pruning_ceiling(
+    *,
+    baseline_tokens: int,
+    post_prune_tokens: int,
+    api_tokens_ceiling: int | None,
+    fallback_tokens: int | None = None,
+    default_to_estimate: bool = False,
+) -> int | None:
+    """Resolve compaction decision tokens with prune-aware API token ceiling."""
+    pruning_applied = post_prune_tokens < baseline_tokens
+    if pruning_applied:
+        if api_tokens_ceiling is not None and api_tokens_ceiling > 0:
+            return min(int(post_prune_tokens), int(api_tokens_ceiling))
+        return int(post_prune_tokens)
+    if fallback_tokens is not None and fallback_tokens > 0:
+        return int(fallback_tokens)
+    if api_tokens_ceiling is not None and api_tokens_ceiling > 0:
+        return int(api_tokens_ceiling)
+    if default_to_estimate:
+        return int(post_prune_tokens)
+    return None
 
 
 async def compact_session(
@@ -701,15 +738,12 @@ async def compact_session(
         context_window=context_window,
     )
     post_prune_tokens = sum(estimate_message_tokens(msg) for msg in pressure_messages)
-    pruning_applied = post_prune_tokens < baseline_tokens
-    decision_tokens = (
-        post_prune_tokens
-        if pruning_applied
-        else (
-            int(last_input_tokens)
-            if last_input_tokens is not None
-            else post_prune_tokens
-        )
+    decision_tokens = _decision_tokens_with_pruning_ceiling(
+        baseline_tokens=baseline_tokens,
+        post_prune_tokens=post_prune_tokens,
+        api_tokens_ceiling=last_input_tokens,
+        fallback_tokens=last_input_tokens,
+        default_to_estimate=True,
     )
     if not should_compact(
         pressure_messages,

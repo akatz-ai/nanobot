@@ -481,3 +481,206 @@ async def test_save_reload_round_trip_with_compaction_and_messages(tmp_path: Pat
     assert loaded.messages == before["messages"]
     assert loaded.compactions == before["compactions"]
     assert loaded.last_consolidated == before["last_consolidated"]
+
+
+@pytest.mark.asyncio
+async def test_process_message_pruning_uses_fresh_snapshot_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _make_structured_loop(tmp_path)
+    loop._run_agent_loop = AsyncMock(return_value=("ok", [], []))
+    loop._retrieve_memory_context = AsyncMock(return_value=None)
+
+    original_window = loop.MODEL_CONTEXT_WINDOWS.get(loop.model)
+    loop.MODEL_CONTEXT_WINDOWS[loop.model] = 30_000
+    try:
+        session = loop.sessions.get_or_create("cli:test")
+        session.add_message("user", "old-user")
+        session.add_message("assistant", "old-assistant")
+        session.metadata["usage_snapshot"] = {
+            "total_input_tokens": 8_000,
+            "message_index": len(session.messages),
+        }
+
+        baseline_history = [{"role": "user", "content": "x" * 45_000}]
+        pressure_history = [{"role": "user", "content": "y" * 30_000}]
+
+        def _fake_get_history(*args, **kwargs):
+            if kwargs.get("prune_tool_results") is False:
+                return baseline_history
+            return pressure_history
+
+        monkeypatch.setattr(session, "get_history", _fake_get_history)
+        compact_mock = AsyncMock(return_value=None)
+        monkeypatch.setattr("nanobot.agent.loop.compact_session", compact_mock)
+
+        response = await loop._process_message(
+            InboundMessage(channel="cli", sender_id="user", chat_id="test", content="next")
+        )
+
+        assert response is not None
+        compact_mock.assert_not_awaited()
+    finally:
+        if original_window is None:
+            loop.MODEL_CONTEXT_WINDOWS.pop(loop.model, None)
+        else:
+            loop.MODEL_CONTEXT_WINDOWS[loop.model] = original_window
+
+
+@pytest.mark.asyncio
+async def test_process_message_ignores_stale_snapshot_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _make_structured_loop(tmp_path)
+    loop._run_agent_loop = AsyncMock(return_value=("ok", [], []))
+    loop._retrieve_memory_context = AsyncMock(return_value=None)
+
+    original_window = loop.MODEL_CONTEXT_WINDOWS.get(loop.model)
+    loop.MODEL_CONTEXT_WINDOWS[loop.model] = 30_000
+    try:
+        session = loop.sessions.get_or_create("cli:test")
+        session.add_message("user", "old-user")
+        session.add_message("assistant", "old-assistant")
+        session.metadata["usage_snapshot"] = {
+            "total_input_tokens": 8_000,
+            "message_index": len(session.messages) - 500,
+        }
+        loop._last_input_tokens.pop(session.key, None)
+
+        baseline_history = [{"role": "user", "content": "x" * 45_000}]
+        pressure_history = [{"role": "user", "content": "y" * 30_000}]
+
+        def _fake_get_history(*args, **kwargs):
+            if kwargs.get("prune_tool_results") is False:
+                return baseline_history
+            return pressure_history
+
+        monkeypatch.setattr(session, "get_history", _fake_get_history)
+        compact_mock = AsyncMock(return_value=None)
+        monkeypatch.setattr("nanobot.agent.loop.compact_session", compact_mock)
+
+        response = await loop._process_message(
+            InboundMessage(channel="cli", sender_id="user", chat_id="test", content="next")
+        )
+
+        assert response is not None
+        assert compact_mock.await_count == 1
+    finally:
+        if original_window is None:
+            loop.MODEL_CONTEXT_WINDOWS.pop(loop.model, None)
+        else:
+            loop.MODEL_CONTEXT_WINDOWS[loop.model] = original_window
+
+
+@pytest.mark.asyncio
+async def test_compact_session_pruning_uses_fresh_snapshot_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("cli:test")
+    session.messages = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    session.metadata["usage_snapshot"] = {
+        "total_input_tokens": 8_000,
+        "message_index": len(session.messages),
+    }
+
+    baseline_history = [{"role": "user", "content": "x" * 45_000}]
+    pressure_history = [{"role": "user", "content": "y" * 30_000}]
+
+    def _fake_get_history(*args, **kwargs):
+        if kwargs.get("prune_tool_results") is False:
+            return baseline_history
+        return pressure_history
+
+    monkeypatch.setattr(session, "get_history", _fake_get_history)
+
+    provider = AsyncMock()
+    provider.chat = AsyncMock(return_value=LLMResponse(content=_structured_summary("Fresh")))
+
+    entry = await compact_session(
+        session=session,
+        provider=provider,
+        model="test-model",
+        context_window=30_000,
+        reserve_tokens=16_384,
+        keep_recent_tokens=8,
+    )
+
+    assert entry is None
+    provider.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_compact_session_ignores_stale_snapshot_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("cli:test")
+    session.messages = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    session.metadata["usage_snapshot"] = {
+        "total_input_tokens": 8_000,
+        "message_index": len(session.messages) - 500,
+    }
+
+    baseline_history = [{"role": "user", "content": "x" * 45_000}]
+    pressure_history = [{"role": "user", "content": "y" * 30_000}]
+
+    def _fake_get_history(*args, **kwargs):
+        if kwargs.get("prune_tool_results") is False:
+            return baseline_history
+        return pressure_history
+
+    monkeypatch.setattr(session, "get_history", _fake_get_history)
+
+    provider = AsyncMock()
+    provider.chat = AsyncMock(return_value=LLMResponse(content=_structured_summary("Stale")))
+
+    entry = await compact_session(
+        session=session,
+        provider=provider,
+        model="test-model",
+        context_window=30_000,
+        reserve_tokens=16_384,
+        keep_recent_tokens=8,
+    )
+
+    assert entry is not None
+    assert provider.chat.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_new_command_clears_last_input_token_cache(tmp_path: Path) -> None:
+    loop = _make_structured_loop(tmp_path)
+    loop.provider.chat = AsyncMock(return_value=LLMResponse(content=_structured_summary("Archive")))
+    loop._consolidate_memory = AsyncMock(return_value=True)
+
+    session = loop.sessions.get_or_create("cli:test")
+    session.add_message("user", "hello")
+    session.add_message("assistant", "world")
+    session.metadata["usage_snapshot"] = {
+        "total_input_tokens": 10_000,
+        "message_index": len(session.messages),
+    }
+    loop._last_input_tokens[session.key] = 10_000
+
+    response = await loop._process_message(
+        InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/new")
+    )
+
+    assert response is not None
+    assert "new session started" in response.content.lower()
+    assert session.key not in loop._last_input_tokens

@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -75,6 +76,37 @@ def test_remove_job_deletes_file_and_respects_agent_scope(tmp_path) -> None:
 
     assert service.remove_job(job.id, agent_id="agent-a") is True
     assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_self_removal_does_not_cancel_running_callback(tmp_path) -> None:
+    service = CronService(tmp_path / "cron" / "jobs")
+    job = service.add_job(
+        name="self-remove",
+        schedule=CronSchedule(kind="every", every_ms=1_000),
+        message="remove yourself",
+    )
+    path = tmp_path / "cron" / "jobs" / f"{job.id}.yaml"
+
+    payload = _read_yaml(path)
+    payload["created_at"] = "2000-01-01T00:00:00Z"
+    _write_yaml(path, payload)
+
+    continued_after_remove = False
+
+    async def on_job(current_job):
+        nonlocal continued_after_remove
+        assert service.remove_job(current_job.id)
+        await asyncio.sleep(0)
+        continued_after_remove = True
+
+    service.on_job = on_job
+    service._running = True
+    service._timer_task = asyncio.current_task()
+    await service._on_timer()
+    service.stop()
+
+    assert continued_after_remove is True
 
 
 @pytest.mark.asyncio

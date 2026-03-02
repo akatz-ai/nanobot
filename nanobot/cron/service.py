@@ -182,6 +182,9 @@ class CronService:
     def _read_job_dict(self, path: Path) -> dict[str, Any] | None:
         try:
             payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            # Expected in races where a job was deleted between listing and load.
+            return None
         except Exception as e:
             logger.warning("Failed to read cron job {}: {}", path, e)
             return None
@@ -507,9 +510,20 @@ class CronService:
 
         return next_wake
 
-    def _arm_timer(self) -> None:
+    def _arm_timer(self, *, allow_current_task: bool = False) -> None:
+        try:
+            current_task = asyncio.current_task()
+        except RuntimeError:
+            current_task = None
+
         if self._timer_task:
-            self._timer_task.cancel()
+            if self._timer_task is current_task and not allow_current_task:
+                # Called from inside the active timer callback (for example when
+                # a cron job mutates cron state). Defer re-arming until the
+                # callback exits to avoid cancelling the running callback task.
+                return
+            if self._timer_task is not current_task:
+                self._timer_task.cancel()
             self._timer_task = None
 
         if not self._running:
@@ -547,7 +561,7 @@ class CronService:
             if next_run is not None and now_ms >= next_run:
                 await self._execute_job(job, now_ms=now_ms)
 
-        self._arm_timer()
+        self._arm_timer(allow_current_task=True)
 
     def _finalize_execution(
         self,

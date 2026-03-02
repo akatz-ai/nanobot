@@ -91,7 +91,7 @@ class AgentLoop:
         "gpt-3.5-turbo": 16_385,
     }
     _DEFAULT_CONTEXT_WINDOW = 200_000
-    _COMPACTION_THRESHOLD_RATIO = 0.70  # Compact at 70% of context window
+    _COMPACTION_THRESHOLD_RATIO = 0.75  # Compact at 75% of context window
     _HISTORY_MAX_MESSAGES = 1000
     _CONSOLIDATION_KEEP_COUNT = 25
     _COMPACTION_RESERVE_TOKENS = 16_384
@@ -1228,7 +1228,7 @@ class AgentLoop:
                 reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
                 last_input_tokens=decision_tokens,
             )
-            threshold = int((_context_window - self._COMPACTION_RESERVE_TOKENS) * 0.7)
+            threshold = int((_context_window - self._COMPACTION_RESERVE_TOKENS) * self._COMPACTION_THRESHOLD_RATIO)
             logger.info(
                 "Structured compaction check for {}: tokens={} threshold={} total_messages={} visible_messages={}",
                 session.key,
@@ -1257,7 +1257,7 @@ class AgentLoop:
             _compaction_t0 = time.monotonic()
             _compaction_event = CompactionEvent(session.key)
             _structured_threshold = int(
-                (_context_window - self._COMPACTION_RESERVE_TOKENS) * 0.7
+                (_context_window - self._COMPACTION_RESERVE_TOKENS) * self._COMPACTION_THRESHOLD_RATIO
             )
             _compaction_event.set_trigger(
                 input_tokens=_token_count,

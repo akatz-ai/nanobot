@@ -7,6 +7,9 @@ from typing import Any
 from nanobot.agent.tools.base import Tool
 
 
+READ_FILE_ADVISORY_THRESHOLD = 30_000
+
+
 def _resolve_path(path: str, workspace: Path | None = None, allowed_dir: Path | None = None) -> Path:
     """Resolve path against workspace (if relative) and enforce directory restriction."""
     p = Path(path).expanduser()
@@ -58,6 +61,12 @@ class ReadFileTool(Tool):
                 return f"Error: Not a file: {path}"
 
             content = file_path.read_text(encoding="utf-8")
+            if len(content) > READ_FILE_ADVISORY_THRESHOLD:
+                content += (
+                    f"\n\n---\n⚠️ This file is {len(content):,} characters. "
+                    "For future reads, consider using exec with grep, head, or tail "
+                    "to extract specific sections rather than reading the full file."
+                )
             return content
         except PermissionError as e:
             return f"Error: {e}"

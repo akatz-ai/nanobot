@@ -20,6 +20,40 @@ DISCORD_API_BASE = "https://discord.com/api/v10"
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024  # 25MB (Discord limit)
 MAX_ATTACHMENTS_PER_MSG = 10  # Discord limit
 MAX_MESSAGE_LEN = 2000  # Discord message character limit
+TEXT_EXTENSIONS = {
+    ".txt",
+    ".log",
+    ".json",
+    ".py",
+    ".md",
+    ".csv",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".html",
+    ".sh",
+    ".cfg",
+    ".conf",
+    ".toml",
+    ".ini",
+    ".env",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".css",
+    ".sql",
+    ".rs",
+    ".go",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".rb",
+    ".php",
+}
+LARGE_TEXT_THRESHOLD = 10 * 1024  # 10KB
 
 
 def _split_message(content: str, max_len: int = MAX_MESSAGE_LEN) -> list[str]:
@@ -373,7 +407,29 @@ class DiscordChannel(BaseChannel):
                 resp.raise_for_status()
                 file_path.write_bytes(resp.content)
                 media_paths.append(str(file_path))
-                content_parts.append(f"[attachment: {file_path}]")
+                suffix = Path(filename).suffix.lower()
+                is_text = suffix in TEXT_EXTENSIONS
+                file_size = file_path.stat().st_size
+
+                if is_text and file_size > LARGE_TEXT_THRESHOLD:
+                    try:
+                        with open(file_path, "r", errors="replace") as handle:
+                            line_count = sum(1 for _ in handle)
+                    except Exception:
+                        line_count = None
+                    size_str = (
+                        f"{file_size / 1024:.0f}KB"
+                        if file_size < 1024 * 1024
+                        else f"{file_size / (1024 * 1024):.1f}MB"
+                    )
+                    lines_str = f", ~{line_count:,} lines" if line_count else ""
+                    content_parts.append(
+                        f"[File: {filename} ({size_str}{lines_str}) saved to {file_path}]\n"
+                        "This is a large text file. Use exec with grep, head, tail, or wc to "
+                        "explore it rather than reading the full content with read_file."
+                    )
+                else:
+                    content_parts.append(f"[attachment: {file_path}]")
             except Exception as e:
                 logger.warning("Failed to download Discord attachment: {}", e)
                 content_parts.append(f"[attachment: {filename} - download failed]")

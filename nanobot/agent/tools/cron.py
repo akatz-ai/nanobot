@@ -1,5 +1,6 @@
 """Cron tool for scheduling reminders and tasks."""
 
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,13 +15,13 @@ class CronTool(Tool):
     def __init__(self, cron_service: CronService, agent_id: str = "default"):
         self._cron = cron_service
         self._agent_id = agent_id
-        self._channel = ""
-        self._chat_id = ""
+        self._channel_ctx: ContextVar[str] = ContextVar("cron_tool_channel", default="")
+        self._chat_id_ctx: ContextVar[str] = ContextVar("cron_tool_chat_id", default="")
 
     def set_context(self, channel: str, chat_id: str) -> None:
         """Set the current session context for delivery."""
-        self._channel = channel
-        self._chat_id = chat_id
+        self._channel_ctx.set(channel)
+        self._chat_id_ctx.set(chat_id)
 
     @property
     def name(self) -> str:
@@ -115,9 +116,11 @@ class CronTool(Tool):
         timeout: str | int | None,
         max_runs: int | None,
     ) -> str:
+        channel = self._channel_ctx.get()
+        chat_id = self._chat_id_ctx.get()
         if not message:
             return "Error: message is required for add"
-        if not self._channel or not self._chat_id:
+        if not channel or not chat_id:
             return "Error: no session context (channel/chat_id)"
         if tz and not cron_expr:
             return "Error: tz can only be used with cron_expr"
@@ -147,8 +150,8 @@ class CronTool(Tool):
                 schedule=schedule,
                 message=message,
                 deliver=True,
-                channel=self._channel,
-                to=self._chat_id,
+                channel=channel,
+                to=chat_id,
                 delete_after_run=schedule.kind == "at",
                 agent_id=self._agent_id,
                 timeout=timeout,

@@ -1,10 +1,13 @@
+import asyncio
 import json
+from contextlib import suppress
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from nanobot.agent.loop import AgentLoop
-from nanobot.bus.events import InboundMessage
+from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.session.manager import Session
@@ -206,3 +209,175 @@ async def test_auto_resume_cron_session_uses_origin_routing(tmp_path: Path) -> N
     assert outbound.channel == "discord"
     assert outbound.chat_id == "thread-42"
     assert outbound.content == "resumed cron"
+
+
+async def _shutdown_run(loop: AgentLoop, run_task: asyncio.Task) -> None:
+    loop.stop()
+    run_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await run_task
+
+
+@pytest.mark.asyncio
+async def test_run_starts_loop_immediately_with_pending_resume(tmp_path: Path) -> None:
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=_ScriptedProvider([]),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    session = loop.sessions.get_or_create("cron:job-123")
+    session.metadata["origin_channel"] = "discord"
+    session.metadata["origin_chat_id"] = "thread-42"
+    _checkpoint_mid_loop(session)
+    loop.sessions.save(session)
+
+    resume_started = asyncio.Event()
+
+    async def _blocking_resume(_session: Session, _channel: str, _chat_id: str) -> OutboundMessage:
+        resume_started.set()
+        await asyncio.Event().wait()
+        return OutboundMessage(channel="discord", chat_id="thread-42", content="never")
+
+    loop._resume_session = _blocking_resume  # type: ignore[method-assign]
+    loop._connect_mcp = AsyncMock()
+
+    run_task = asyncio.create_task(loop.run())
+    try:
+        await asyncio.wait_for(resume_started.wait(), timeout=1.0)
+        await loop.bus.publish_inbound(
+            InboundMessage(channel="discord", sender_id="u", chat_id="thread-42", content="/stop")
+        )
+        out = await asyncio.wait_for(loop.bus.consume_outbound(), timeout=1.0)
+        assert "stopped" in out.content.lower()
+    finally:
+        await _shutdown_run(loop, run_task)
+
+
+@pytest.mark.asyncio
+async def test_run_schedules_cron_resumes_as_background_tasks(tmp_path: Path) -> None:
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=_ScriptedProvider([]),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    session = loop.sessions.get_or_create("cron:job-123")
+    session.metadata["origin_channel"] = "discord"
+    session.metadata["origin_chat_id"] = "thread-42"
+    _checkpoint_mid_loop(session)
+    loop.sessions.save(session)
+
+    resume_started = asyncio.Event()
+    allow_finish = asyncio.Event()
+
+    async def _blocking_resume(_session: Session, channel: str, chat_id: str) -> OutboundMessage:
+        resume_started.set()
+        await allow_finish.wait()
+        return OutboundMessage(channel=channel, chat_id=chat_id, content="resumed cron")
+
+    loop._resume_session = _blocking_resume  # type: ignore[method-assign]
+    loop._connect_mcp = AsyncMock()
+
+    run_task = asyncio.create_task(loop.run())
+    try:
+        await asyncio.wait_for(resume_started.wait(), timeout=1.0)
+        assert "cron:job-123" in loop._active_tasks
+        assert "discord:thread-42" in loop._active_tasks
+        assert any(not t.done() for t in loop._active_tasks["cron:job-123"])
+
+        allow_finish.set()
+        outbound = await asyncio.wait_for(loop.bus.consume_outbound(), timeout=1.0)
+        assert outbound.channel == "discord"
+        assert outbound.chat_id == "thread-42"
+        assert outbound.content == "resumed cron"
+    finally:
+        await _shutdown_run(loop, run_task)
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_running_resume_task(tmp_path: Path) -> None:
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=_ScriptedProvider([]),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    session = loop.sessions.get_or_create("cron:job-123")
+    session.metadata["origin_channel"] = "discord"
+    session.metadata["origin_chat_id"] = "thread-42"
+    _checkpoint_mid_loop(session)
+    loop.sessions.save(session)
+
+    resume_started = asyncio.Event()
+    resume_cancelled = asyncio.Event()
+
+    async def _blocking_resume(_session: Session, _channel: str, _chat_id: str) -> OutboundMessage:
+        resume_started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            resume_cancelled.set()
+            raise
+        return OutboundMessage(channel="discord", chat_id="thread-42", content="unexpected")
+
+    loop._resume_session = _blocking_resume  # type: ignore[method-assign]
+    loop._connect_mcp = AsyncMock()
+
+    run_task = asyncio.create_task(loop.run())
+    try:
+        await asyncio.wait_for(resume_started.wait(), timeout=1.0)
+        await loop.bus.publish_inbound(
+            InboundMessage(channel="discord", sender_id="u", chat_id="thread-42", content="/stop")
+        )
+        out = await asyncio.wait_for(loop.bus.consume_outbound(), timeout=1.0)
+        assert "stopped" in out.content.lower()
+        assert resume_cancelled.is_set()
+    finally:
+        await _shutdown_run(loop, run_task)
+
+
+@pytest.mark.asyncio
+async def test_normal_messages_process_while_resume_is_running(tmp_path: Path) -> None:
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=_ScriptedProvider([]),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    session = loop.sessions.get_or_create("cron:job-123")
+    session.metadata["origin_channel"] = "discord"
+    session.metadata["origin_chat_id"] = "thread-42"
+    _checkpoint_mid_loop(session)
+    loop.sessions.save(session)
+
+    resume_started = asyncio.Event()
+
+    async def _blocking_resume(_session: Session, _channel: str, _chat_id: str) -> OutboundMessage:
+        resume_started.set()
+        await asyncio.Event().wait()
+        return OutboundMessage(channel="discord", chat_id="thread-42", content="never")
+
+    async def _mock_process(msg: InboundMessage, **_kwargs: object) -> OutboundMessage:
+        return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=f"echo:{msg.content}")
+
+    loop._resume_session = _blocking_resume  # type: ignore[method-assign]
+    loop._process_message = AsyncMock(side_effect=_mock_process)
+    loop._connect_mcp = AsyncMock()
+
+    run_task = asyncio.create_task(loop.run())
+    try:
+        await asyncio.wait_for(resume_started.wait(), timeout=1.0)
+        await loop.bus.publish_inbound(
+            InboundMessage(channel="discord", sender_id="u", chat_id="room-2", content="hello")
+        )
+        outbound = await asyncio.wait_for(loop.bus.consume_outbound(), timeout=1.0)
+        assert outbound.content == "echo:hello"
+
+        await loop.bus.publish_inbound(
+            InboundMessage(channel="discord", sender_id="u", chat_id="thread-42", content="/stop")
+        )
+        stop_out = await asyncio.wait_for(loop.bus.consume_outbound(), timeout=1.0)
+        assert "stopped" in stop_out.content.lower()
+    finally:
+        await _shutdown_run(loop, run_task)

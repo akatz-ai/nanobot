@@ -178,7 +178,7 @@ class AgentLoop:
         self._compaction_loggers: dict[str, CompactionLogger] = {}
         self._memory_module = None
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
-        self._processing_lock = asyncio.Lock()
+        self._processing_locks: dict[str, asyncio.Lock] = {}
         # Token-based compaction: track last known input_tokens per session
         self._last_input_tokens: dict[str, int] = {}
         self._compaction_token_threshold = self._resolve_compaction_threshold()
@@ -816,6 +816,84 @@ class AgentLoop:
             return key.split(":", 1)
         return "cli", key
 
+    def _get_processing_lock(self, session_key: str) -> asyncio.Lock:
+        lock = self._processing_locks.get(session_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._processing_locks[session_key] = lock
+        return lock
+
+    def _prune_processing_lock(self, session_key: str, lock: asyncio.Lock) -> None:
+        if not lock.locked():
+            self._processing_locks.pop(session_key, None)
+
+    def _track_task(self, task: asyncio.Task, session_keys: set[str]) -> None:
+        keys = tuple(dict.fromkeys(session_keys))
+        for key in keys:
+            self._active_tasks.setdefault(key, []).append(task)
+
+        def _cleanup(done_task: asyncio.Task) -> None:
+            self._untrack_task(done_task, keys)
+
+        task.add_done_callback(_cleanup)
+
+    def _untrack_task(self, task: asyncio.Task, session_keys: tuple[str, ...]) -> None:
+        for key in session_keys:
+            tasks = self._active_tasks.get(key)
+            if not tasks:
+                continue
+            while task in tasks:
+                tasks.remove(task)
+            if not tasks:
+                self._active_tasks.pop(key, None)
+
+    @staticmethod
+    def _resume_task_keys(session_key: str, channel: str, chat_id: str) -> set[str]:
+        routed_key = f"{channel}:{chat_id}"
+        return {session_key, routed_key}
+
+    def _collect_resumable_sessions(self) -> list[tuple[str, str, str]]:
+        sessions: list[tuple[str, str, str]] = []
+        for item in self.sessions.list_sessions():
+            key = item.get("key")
+            if not key:
+                continue
+            if self.bus.inbound_size > 0:
+                break
+
+            session = self.sessions.get_or_create(key)
+            if session.detect_resume_state() not in {"mid_tool", "mid_loop"}:
+                continue
+
+            channel, chat_id = self._split_session_key(key)
+            if key.startswith("cron:"):
+                origin_channel = session.metadata.get("origin_channel")
+                origin_chat_id = session.metadata.get("origin_chat_id")
+                if isinstance(origin_channel, str) and origin_channel:
+                    channel = origin_channel
+                if isinstance(origin_chat_id, str) and origin_chat_id:
+                    chat_id = origin_chat_id
+            sessions.append((key, channel, chat_id))
+        return sessions
+
+    async def _resume_and_publish(self, session_key: str, channel: str, chat_id: str) -> bool:
+        session = self.sessions.get_or_create(session_key)
+        lock = self._get_processing_lock(session_key)
+        try:
+            async with lock:
+                response = await self._resume_session(session, channel, chat_id)
+            if response is not None:
+                await self.bus.publish_outbound(response)
+            return True
+        except asyncio.CancelledError:
+            logger.info("Auto-resume task cancelled for session {}", session_key)
+            raise
+        except Exception:
+            logger.exception("Error auto-resuming interrupted session {}", session_key)
+            return False
+        finally:
+            self._prune_processing_lock(session_key, lock)
+
     async def _resume_session(self, session: Session, channel: str, chat_id: str) -> OutboundMessage | None:
         """Resume an interrupted turn without a new inbound user message."""
         self._set_tool_context(channel, chat_id)
@@ -882,36 +960,36 @@ class AgentLoop:
             return 0
 
         resumed = 0
-        for item in self.sessions.list_sessions():
-            key = item.get("key")
-            if not key:
-                continue
-            if self.bus.inbound_size > 0:
-                break
-
-            session = self.sessions.get_or_create(key)
-            if session.detect_resume_state() not in {"mid_tool", "mid_loop"}:
-                continue
-
-            channel, chat_id = self._split_session_key(key)
-            if key.startswith("cron:"):
-                channel = session.metadata.get("origin_channel", channel)
-                chat_id = session.metadata.get("origin_chat_id", chat_id)
+        for key, channel, chat_id in self._collect_resumable_sessions():
             logger.info("Auto-resuming interrupted session {}", key)
-            response = await self._resume_session(session, channel, chat_id)
-            if response is not None:
-                await self.bus.publish_outbound(response)
-            resumed += 1
-
+            if await self._resume_and_publish(key, channel, chat_id):
+                resumed += 1
         return resumed
+
+    def _schedule_inflight_resumes(self) -> int:
+        """Schedule auto-resume work in background tasks and return task count."""
+        if self.bus.inbound_size > 0:
+            logger.info("Skipping auto-resume: inbound queue already has pending messages")
+            return 0
+
+        scheduled = 0
+        for key, channel, chat_id in self._collect_resumable_sessions():
+            logger.info("Scheduling auto-resume for interrupted session {}", key)
+            task = asyncio.create_task(
+                self._resume_and_publish(key, channel, chat_id),
+                name=f"resume-{key}",
+            )
+            self._track_task(task, self._resume_task_keys(key, channel, chat_id))
+            scheduled += 1
+        return scheduled
 
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
         await self._connect_mcp()
-        resumed = await self.resume_inflight_sessions()
-        if resumed:
-            logger.info("Auto-resumed {} interrupted session(s)", resumed)
+        scheduled = self._schedule_inflight_resumes()
+        if scheduled:
+            logger.info("Auto-resume scheduled for {} interrupted session(s)", scheduled)
         logger.info("Agent loop started")
 
         while self._running:
@@ -924,12 +1002,11 @@ class AgentLoop:
                 await self._handle_stop(msg)
             else:
                 task = asyncio.create_task(self._dispatch(msg))
-                self._active_tasks.setdefault(msg.session_key, []).append(task)
-                task.add_done_callback(lambda t, k=msg.session_key: self._active_tasks.get(k, []) and self._active_tasks[k].remove(t) if t in self._active_tasks.get(k, []) else None)
+                self._track_task(task, {msg.session_key})
 
     async def _handle_stop(self, msg: InboundMessage) -> None:
         """Cancel all active tasks and subagents for the session."""
-        tasks = self._active_tasks.pop(msg.session_key, [])
+        tasks = list(dict.fromkeys(self._active_tasks.pop(msg.session_key, [])))
         cancelled = sum(1 for t in tasks if not t.done() and t.cancel())
         for t in tasks:
             try:
@@ -944,26 +1021,30 @@ class AgentLoop:
         ))
 
     async def _dispatch(self, msg: InboundMessage) -> None:
-        """Process a message under the global lock."""
-        async with self._processing_lock:
-            try:
-                response = await self._process_message(msg)
-                if response is not None:
-                    await self.bus.publish_outbound(response)
-                elif msg.channel == "cli":
+        """Process a message under a per-session lock."""
+        lock = self._get_processing_lock(msg.session_key)
+        try:
+            async with lock:
+                try:
+                    response = await self._process_message(msg)
+                    if response is not None:
+                        await self.bus.publish_outbound(response)
+                    elif msg.channel == "cli":
+                        await self.bus.publish_outbound(OutboundMessage(
+                            channel=msg.channel, chat_id=msg.chat_id,
+                            content="", metadata=msg.metadata or {},
+                        ))
+                except asyncio.CancelledError:
+                    logger.info("Task cancelled for session {}", msg.session_key)
+                    raise
+                except Exception:
+                    logger.exception("Error processing message for session {}", msg.session_key)
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=msg.channel, chat_id=msg.chat_id,
-                        content="", metadata=msg.metadata or {},
+                        content="Sorry, I encountered an error.",
                     ))
-            except asyncio.CancelledError:
-                logger.info("Task cancelled for session {}", msg.session_key)
-                raise
-            except Exception:
-                logger.exception("Error processing message for session {}", msg.session_key)
-                await self.bus.publish_outbound(OutboundMessage(
-                    channel=msg.channel, chat_id=msg.chat_id,
-                    content="Sorry, I encountered an error.",
-                ))
+        finally:
+            self._prune_processing_lock(msg.session_key, lock)
 
     async def close_mcp(self) -> None:
         """Close MCP connections."""

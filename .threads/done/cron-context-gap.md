@@ -3,10 +3,10 @@ schema_version: 1
 id: cron-context-gap
 title: "Cron context gap \u2014 cron callback turns not visible in subsequent agent\
   \ context"
-status: active
+status: done
 priority: 2
 created_at: '2026-03-01T07:06:29Z'
-updated_at: '2026-03-01T07:06:33Z'
+updated_at: '2026-03-01T20:23:30Z'
 ---
 
 ## Tasks
@@ -15,6 +15,25 @@ updated_at: '2026-03-01T07:06:33Z'
 - [ ] cron-context-gap.2 Add test: after a cron callback turn, the next user turn's context includes the cron interaction in the message history
 
 ## Notes
+## Codex Audit Update (2026-03-01)
+
+**Verdict: CONFIRMED** — Root cause validated with file/line evidence.
+
+### Validated Mechanism
+Cron callbacks use session key 'cron:<job_id>' (commands.py:565-570), creating a completely separate session file (cron_3455f4a5.jsonl) from the user's session (discord_1476048732343763189.jsonl). Cron turns ARE persisted — just to the cron session, invisible to the user session.
+
+### Evidence
+- Cron session key: commands.py:565-570 (session_key=f'cron:{job.id}')
+- _process_message uses provided session_key directly: loop.py:997-999
+- Session files keyed by session key: manager.py:603-607
+- Actual files: cron_3455f4a5.jsonl exists separately from discord_1476048732343763189.jsonl
+- No cron-specific filtering in get_history or ContextBuilder
+
+### Recommended Architecture
+- Keep cron execution in dedicated cron session (good for isolation/debug)
+- Add cross-session bridge: write compact 'recent cron action' record to user session metadata
+- Inject concise summary system message on next user turn (bounded to last N actions)
+- Test: next user turn can reference last cron action without dumping raw cron tool logs
 ## Bug Report
 
 **Observed:** After a cron callback fired and the agent processed it (checked Codex status, reported completion, cleaned up monitoring job), the agent had NO memory of this in the next user turn. When the user asked a follow-up question, the agent said 'want me to check if Codex is still running?' — not knowing it had already reported completion moments ago.

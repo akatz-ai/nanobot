@@ -15,8 +15,10 @@ from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryStore
-from nanobot.cli.commands import app
+from nanobot.agent.tools.message import MessageTool
+from nanobot.cli.commands import app, _record_recent_cron_action
 from nanobot.config.schema import Config
+from nanobot.cron.types import CronJob, CronPayload
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.claude_code_provider import ClaudeCodeProvider
 from nanobot.providers.litellm_provider import LiteLLMProvider
@@ -287,6 +289,104 @@ async def test_process_message_injects_recent_cron_actions_once(tmp_path: Path):
 
     updated = loop.sessions.get_or_create("discord:user-1")
     assert "recent_cron_actions" not in updated.metadata
+
+
+@pytest.mark.asyncio
+async def test_cron_bridge_records_message_tool_turn_and_injects_next_user_turn(tmp_path: Path):
+    class _CaptureProvider(LLMProvider):
+        def __init__(self):
+            super().__init__(api_key=None, api_base=None)
+            self.calls: list[list[dict]] = []
+            self._responses = iter(
+                [
+                    LLMResponse(
+                        content="",
+                        tool_calls=[
+                            ToolCallRequest(
+                                id="call-1",
+                                name="message",
+                                arguments={"content": "Deployment healthy. No action required."},
+                            )
+                        ],
+                    ),
+                    LLMResponse(content="Update sent.", tool_calls=[]),
+                    LLMResponse(content="Noted.", tool_calls=[]),
+                ]
+            )
+
+        async def chat(
+            self,
+            messages: list[dict],
+            tools: list[dict] | None = None,
+            model: str | None = None,
+            max_tokens: int = 4096,
+            temperature: float = 0.7,
+        ) -> LLMResponse:
+            _ = (tools, model, max_tokens, temperature)
+            self.calls.append(messages)
+            return next(self._responses)
+
+        def get_default_model(self) -> str:
+            return "stub-model"
+
+    provider = _CaptureProvider()
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="stub-model",
+    )
+
+    sent = []
+    message_tool = loop.tools.get("message")
+    if isinstance(message_tool, MessageTool):
+        message_tool.set_send_callback(AsyncMock(side_effect=lambda msg: sent.append(msg)))
+
+    response = await loop.process_direct(
+        "[Cron job_id=job-456] run deployment checks",
+        session_key="cron:job-456",
+        channel="discord",
+        chat_id="user-1",
+    )
+
+    assert response == ""
+    assert sent and sent[0].content == "Deployment healthy. No action required."
+
+    job = CronJob(
+        id="job-456",
+        name="deployment-check",
+        payload=CronPayload(
+            message="Run deployment checks and report",
+            channel="discord",
+            to="user-1",
+        ),
+    )
+    _record_recent_cron_action(loop, job, response)
+
+    user_session = loop.sessions.get_or_create("discord:user-1")
+    recent = user_session.metadata.get("recent_cron_actions")
+    assert isinstance(recent, list) and len(recent) == 1
+    assert recent[0]["job_id"] == "job-456"
+    assert "Deployment healthy. No action required." in recent[0]["response_preview"]
+
+    await loop._process_message(
+        InboundMessage(
+            channel="discord",
+            sender_id="user-1",
+            chat_id="user-1",
+            content="Any updates?",
+        )
+    )
+
+    assert len(provider.calls) == 3
+    final_call = provider.calls[-1]
+    assert any(
+        msg.get("role") == "system"
+        and "Recent cron actions you performed:" in msg.get("content", "")
+        and "[Cron job-456]" in msg.get("content", "")
+        and "Deployment healthy. No action required." in msg.get("content", "")
+        for msg in final_call
+    )
 
 
 def test_retrieved_memory_guardrails_cap_and_truncate():

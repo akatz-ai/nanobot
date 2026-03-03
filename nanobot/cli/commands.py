@@ -1,6 +1,7 @@
 """CLI commands for nanobot."""
 
 import asyncio
+import json
 import os
 import signal
 from datetime import datetime
@@ -205,6 +206,106 @@ def _setup_secondary_env_vars(config: Config) -> None:
         p = getattr(config.providers, name, None)
         if p and hasattr(p, "api_key") and p.api_key:
             os.environ.setdefault(env_key, p.api_key)
+
+
+def _normalize_cron_preview(text: str, limit: int = 500) -> str:
+    """Collapse whitespace and cap preview length for bridge metadata."""
+    return " ".join(text.split())[:limit]
+
+
+def _extract_message_tool_content(tool_calls: object) -> str | None:
+    """Extract latest message-tool content from assistant tool calls."""
+    if not isinstance(tool_calls, list):
+        return None
+
+    for tool_call in reversed(tool_calls):
+        if not isinstance(tool_call, dict):
+            continue
+        function = tool_call.get("function")
+        if not isinstance(function, dict):
+            continue
+        if function.get("name") != "message":
+            continue
+
+        raw_args = function.get("arguments")
+        args: dict | None = None
+        if isinstance(raw_args, dict):
+            args = raw_args
+        elif isinstance(raw_args, str):
+            try:
+                parsed = json.loads(raw_args)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                args = parsed
+
+        if not isinstance(args, dict):
+            continue
+
+        content = args.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+    return None
+
+
+def _extract_cron_response_preview(cron_session: object, response: str | None) -> str:
+    """Build a useful bridge preview from response text or cron session history."""
+    if isinstance(response, str) and response.strip():
+        return _normalize_cron_preview(response)
+
+    messages = getattr(cron_session, "messages", None)
+    if isinstance(messages, list):
+        for msg in reversed(messages):
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            tool_content = _extract_message_tool_content(msg.get("tool_calls"))
+            if tool_content:
+                return _normalize_cron_preview(tool_content)
+
+        for msg in reversed(messages):
+            if not isinstance(msg, dict):
+                continue
+
+            role = msg.get("role")
+            if role == "assistant":
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip():
+                    return _normalize_cron_preview(content)
+
+            if role == "tool" and msg.get("name") == "message":
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip():
+                    return _normalize_cron_preview(content)
+
+    return "Cron callback completed."
+
+
+def _record_recent_cron_action(agent_loop: object, job: object, response: str | None) -> None:
+    """Persist a cron action summary into the user session for next-turn context."""
+    payload = getattr(job, "payload", None)
+    chat_id = getattr(payload, "to", None)
+    if not isinstance(chat_id, str) or not chat_id:
+        return
+
+    channel = getattr(payload, "channel", None) or "cli"
+    user_session_key = f"{channel}:{chat_id}"
+    user_session = agent_loop.sessions.get_or_create(user_session_key)
+    cron_session = agent_loop.sessions.get_or_create(f"cron:{getattr(job, 'id', '')}")
+
+    preview = _extract_cron_response_preview(cron_session, response)
+    message = getattr(payload, "message", "")
+    cron_summary = {
+        "job_id": getattr(job, "id", ""),
+        "message": str(message)[:200],
+        "response_preview": preview,
+        "timestamp": datetime.now().isoformat(),
+    }
+    recent_cron = user_session.metadata.get("recent_cron_actions", [])
+    if not isinstance(recent_cron, list):
+        recent_cron = []
+    recent_cron.append(cron_summary)
+    user_session.metadata["recent_cron_actions"] = recent_cron[-5:]
+    agent_loop.sessions.save(user_session)
 
 
 # ============================================================================
@@ -569,21 +670,7 @@ def gateway_worker(
             channel=job.payload.channel or "cli",
             chat_id=job.payload.to or "direct",
         )
-        if job.payload.to and response:
-            user_session_key = f"{job.payload.channel or 'cli'}:{job.payload.to}"
-            user_session = target.loop.sessions.get_or_create(user_session_key)
-            cron_summary = {
-                "job_id": job.id,
-                "message": job.payload.message[:200],
-                "response_preview": response[:500],
-                "timestamp": datetime.now().isoformat(),
-            }
-            recent_cron = user_session.metadata.get("recent_cron_actions", [])
-            if not isinstance(recent_cron, list):
-                recent_cron = []
-            recent_cron.append(cron_summary)
-            user_session.metadata["recent_cron_actions"] = recent_cron[-5:]
-            target.loop.sessions.save(user_session)
+        _record_recent_cron_action(target.loop, job, response)
         if job.payload.deliver and job.payload.to and response:
             from nanobot.bus.events import OutboundMessage
             await bus.publish_outbound(OutboundMessage(

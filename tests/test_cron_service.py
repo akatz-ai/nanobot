@@ -110,6 +110,88 @@ async def test_self_removal_does_not_cancel_running_callback(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_external_removal_does_not_cancel_running_callback(tmp_path) -> None:
+    service = CronService(tmp_path / "cron" / "jobs")
+    job = service.add_job(
+        name="remove-from-outside",
+        schedule=CronSchedule(kind="every", every_ms=1_000),
+        message="run once",
+    )
+    path = tmp_path / "cron" / "jobs" / f"{job.id}.yaml"
+
+    payload = _read_yaml(path)
+    payload["created_at"] = "2000-01-01T00:00:00Z"
+    _write_yaml(path, payload)
+
+    started = asyncio.Event()
+    allow_finish = asyncio.Event()
+    cancelled = False
+    continued = False
+
+    async def on_job(_current_job):
+        nonlocal cancelled, continued
+        started.set()
+        try:
+            await allow_finish.wait()
+            continued = True
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+
+    service.on_job = on_job
+    service._running = True
+
+    async def _run_timer() -> None:
+        service._timer_task = asyncio.current_task()
+        await service._on_timer()
+
+    timer_task = asyncio.create_task(_run_timer())
+    await started.wait()
+    assert service.remove_job(job.id)
+    allow_finish.set()
+    await timer_task
+    service.stop()
+
+    assert cancelled is False
+    assert continued is True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_execution_does_not_finalize_one_shot_job(tmp_path) -> None:
+    service = CronService(tmp_path / "cron" / "jobs")
+    job = service.add_job(
+        name="one-shot",
+        schedule=CronSchedule(kind="at", at_ms=1),
+        message="hello",
+    )
+    path = tmp_path / "cron" / "jobs" / f"{job.id}.yaml"
+
+    started = asyncio.Event()
+
+    async def on_job(_current_job):
+        started.set()
+        await asyncio.sleep(60)
+
+    service.on_job = on_job
+    service._running = True
+
+    async def _run_timer() -> None:
+        service._timer_task = asyncio.current_task()
+        await service._on_timer()
+
+    timer_task = asyncio.create_task(_run_timer())
+    await started.wait()
+    service.stop()
+    with pytest.raises(asyncio.CancelledError):
+        await timer_task
+
+    assert path.exists()
+    payload = _read_yaml(path)
+    assert payload["runs"] == 0
+    assert payload["last_run"] is None
+
+
+@pytest.mark.asyncio
 async def test_timeout_auto_deletes_before_execution(tmp_path) -> None:
     calls = 0
 

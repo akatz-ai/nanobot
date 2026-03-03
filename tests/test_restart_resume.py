@@ -381,3 +381,40 @@ async def test_normal_messages_process_while_resume_is_running(tmp_path: Path) -
         assert "stopped" in stop_out.content.lower()
     finally:
         await _shutdown_run(loop, run_task)
+
+
+@pytest.mark.asyncio
+async def test_processing_lock_not_pruned_while_waiters_exist(tmp_path: Path) -> None:
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=_ScriptedProvider([]),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    key = "discord:shared-thread"
+    lock = loop._get_processing_lock(key)
+
+    await lock.acquire()
+    waiter_entered = asyncio.Event()
+    waiter_released = asyncio.Event()
+
+    async def _waiter() -> None:
+        waiter_entered.set()
+        async with lock:
+            waiter_released.set()
+
+    waiter_task = asyncio.create_task(_waiter())
+    await waiter_entered.wait()
+    await asyncio.sleep(0)
+
+    lock.release()
+    loop._prune_processing_lock(key, lock)
+
+    # While a waiter is queued, the same lock instance must remain registered.
+    assert loop._get_processing_lock(key) is lock
+
+    await asyncio.wait_for(waiter_released.wait(), timeout=1.0)
+    await waiter_task
+
+    loop._prune_processing_lock(key, lock)
+    assert key not in loop._processing_locks

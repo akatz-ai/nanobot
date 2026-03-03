@@ -823,8 +823,15 @@ class AgentLoop:
             self._processing_locks[session_key] = lock
         return lock
 
+    @staticmethod
+    def _lock_has_waiters(lock: asyncio.Lock) -> bool:
+        # asyncio.Lock doesn't expose waiters publicly; this prevents pruning a
+        # lock while another same-session task is queued.
+        waiters = getattr(lock, "_waiters", None)
+        return bool(waiters)
+
     def _prune_processing_lock(self, session_key: str, lock: asyncio.Lock) -> None:
-        if not lock.locked():
+        if not lock.locked() and not self._lock_has_waiters(lock):
             self._processing_locks.pop(session_key, None)
 
     def _track_task(self, task: asyncio.Task, session_keys: set[str]) -> None:
@@ -1072,7 +1079,7 @@ class AgentLoop:
 
     def _prune_consolidation_lock(self, session_key: str, lock: asyncio.Lock) -> None:
         """Drop lock entry if no longer in use."""
-        if not lock.locked():
+        if not lock.locked() and not self._lock_has_waiters(lock):
             self._consolidation_locks.pop(session_key, None)
 
     async def _process_message(

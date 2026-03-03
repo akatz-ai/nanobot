@@ -163,6 +163,7 @@ class CronService:
 
         self.on_job = on_job
         self._timer_task: asyncio.Task | None = None
+        self._timer_callback_task: asyncio.Task | None = None
         self._running = False
         self._initialized = False
 
@@ -522,6 +523,15 @@ class CronService:
                 # a cron job mutates cron state). Defer re-arming until the
                 # callback exits to avoid cancelling the running callback task.
                 return
+            if (
+                self._timer_task is not current_task
+                and self._timer_callback_task is self._timer_task
+                and not allow_current_task
+            ):
+                # Another task mutated cron state while the timer callback is
+                # actively running. Defer re-arming so we don't cancel in-flight
+                # cron execution.
+                return
             if self._timer_task is not current_task:
                 self._timer_task.cancel()
             self._timer_task = None
@@ -549,17 +559,25 @@ class CronService:
         if not self._running:
             return
 
+        try:
+            self._timer_callback_task = asyncio.current_task()
+        except RuntimeError:
+            self._timer_callback_task = None
+
         now_ms = _now_ms()
         jobs = self.list_jobs(include_disabled=False)
 
-        for job in jobs:
-            if self._should_delete_without_run(job, now_ms):
-                self._delete_job_file(job.id)
-                continue
+        try:
+            for job in jobs:
+                if self._should_delete_without_run(job, now_ms):
+                    self._delete_job_file(job.id)
+                    continue
 
-            next_run = job.state.next_run_at_ms
-            if next_run is not None and now_ms >= next_run:
-                await self._execute_job(job, now_ms=now_ms)
+                next_run = job.state.next_run_at_ms
+                if next_run is not None and now_ms >= next_run:
+                    await self._execute_job(job, now_ms=now_ms)
+        finally:
+            self._timer_callback_task = None
 
         self._arm_timer(allow_current_task=True)
 
@@ -640,24 +658,32 @@ class CronService:
         started_ms = _now_ms()
         status = "ok"
         error: str | None = None
+        cancelled = False
 
         try:
             logger.info("Cron: executing job '{}' ({})", latest.name, latest.id)
             if self.on_job:
                 await self.on_job(latest)
             logger.info("Cron: job '{}' completed", latest.name)
+        except asyncio.CancelledError:
+            # Preserve job state when cancelled (e.g. during shutdown). This lets
+            # one-shot/max_runs jobs be retried instead of being marked complete.
+            cancelled = True
+            logger.info("Cron: job '{}' cancelled", latest.name)
+            raise
         except Exception as exc:
             status = "error"
             error = str(exc)
             logger.exception("Cron: job '{}' failed", latest.name)
         finally:
             try:
-                self._finalize_execution(
-                    latest.id,
-                    started_ms=started_ms,
-                    status=status,
-                    error=error,
-                )
+                if not cancelled:
+                    self._finalize_execution(
+                        latest.id,
+                        started_ms=started_ms,
+                        status=status,
+                        error=error,
+                    )
             finally:
                 self._release_lock(latest.id)
 

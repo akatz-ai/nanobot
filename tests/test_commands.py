@@ -370,7 +370,9 @@ async def test_cron_bridge_records_message_tool_turn_and_injects_next_user_turn(
     assert pending[0].source == "cron"
     assert pending[0].summary == "Cron job job-456: deployment-check"
     assert pending[0].source_meta.get("job_id") == "job-456"
-    assert pending[0].content == ""
+    # _record_cron_inbox_event recovers content from the cron session history
+    # when process_direct returns "" (suppress-duplicate-reply fired)
+    assert pending[0].content == "Deployment healthy. No action required."
     inbox.append(pending[0])
 
     await loop._process_message(

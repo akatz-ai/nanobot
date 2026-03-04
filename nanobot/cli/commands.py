@@ -226,6 +226,59 @@ def _append_inbox_event(agent_loop: object, session_key: str, event: object) -> 
     inbox.append(event)
 
 
+def _extract_cron_session_content(agent_loop: object, job_id: str) -> str:
+    """Extract the best response content from a cron session's history.
+
+    When the cron agent uses the message tool to send results to Discord,
+    process_direct() returns "" because the suppress-duplicate-reply logic
+    fires (the message tool already sent to the same channel/chat). This
+    function recovers the actual content by scanning the cron session history
+    for message tool sends and assistant responses.
+    """
+    sessions = getattr(agent_loop, "sessions", None)
+    if sessions is None:
+        return ""
+    cron_session = sessions.get_or_create(f"cron:{job_id}")
+    messages = getattr(cron_session, "messages", None)
+    if not isinstance(messages, list):
+        return ""
+
+    # Strategy 1: Find the last message tool call content (what was sent to Discord)
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        tool_calls = msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for tc in reversed(tool_calls):
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function")
+            if not isinstance(fn, dict) or fn.get("name") != "message":
+                continue
+            raw_args = fn.get("arguments")
+            if isinstance(raw_args, str):
+                import json
+                try:
+                    raw_args = json.loads(raw_args)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+            if isinstance(raw_args, dict):
+                content = raw_args.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+
+    # Strategy 2: Last assistant message with text content
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+
+    return ""
+
+
 def _record_cron_inbox_event(agent_loop: object, job: object, response: str | None) -> None:
     """Persist cron callback output to durable inbox for the origin session."""
     from nanobot.session.inbox import InboxEvent
@@ -239,10 +292,19 @@ def _record_cron_inbox_event(agent_loop: object, job: object, response: str | No
         chat_id=chat_id,
         origin_session_key=origin_session_key,
     )
+
+    # process_direct() returns "" when the agent used the message tool to send
+    # to the same channel (suppress-duplicate-reply). Recover actual content
+    # from the cron session history.
+    content = response or ""
+    if not content.strip():
+        job_id = getattr(job, "id", "")
+        content = _extract_cron_session_content(agent_loop, job_id)
+
     event = InboxEvent.create(
         source="cron",
         summary=f"Cron job {getattr(job, 'id', '')}: {getattr(job, 'name', '')}",
-        content=response or "",
+        content=content,
         occurred_at=datetime.now().isoformat(),
         source_meta={
             "job_id": getattr(job, "id", ""),

@@ -1,0 +1,28 @@
+{
+  "name": "nanobot-voice-agent",
+  "version": "0.1.0",
+  "description": "Discord voice sidecar for nanobot using OpenAI Realtime API",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node --env-file=.env dist/index.js",
+    "dev": "npm run build && node --env-file=.env dist/index.js"
+  },
+  "dependencies": {
+    "@discordjs/opus": "^0.10.0",
+    "@discordjs/voice": "^0.19.0",
+    "@snazzah/davey": "^0.1.10",
+    "discord.js": "^14.16.0",
+    "sodium-native": "^5.0.10",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

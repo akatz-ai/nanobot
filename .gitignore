@@ -1,5 +1,6 @@
 .assets
 .env
+node_modules/
 *.pyc
 dist/
 build/

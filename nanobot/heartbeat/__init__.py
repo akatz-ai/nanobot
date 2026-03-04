@@ -1,5 +1,5 @@
 """Heartbeat service for periodic agent wake-ups."""
 
-from nanobot.heartbeat.service import HeartbeatService
+from nanobot.heartbeat.service import HeartbeatAgent, HeartbeatService
 
-__all__ = ["HeartbeatService"]
+__all__ = ["HeartbeatAgent", "HeartbeatService"]

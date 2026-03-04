@@ -705,12 +705,18 @@ def gateway_worker(
         return response
     cron.on_job = on_cron_job
 
-    def _pick_heartbeat_target() -> tuple[str, str]:
-        """Pick a routable channel/chat target for heartbeat-triggered messages."""
+    def _pick_heartbeat_target_for_agent(agent_inst: object) -> tuple[str, str]:
+        """Pick a routable channel/chat target for heartbeat messages from a specific agent."""
         enabled = set(channels.enabled_channels)
-        default = router.default_agent
-        if default:
-            for item in default.loop.sessions.list_sessions():
+        # Prefer the agent's own Discord channels
+        profile = getattr(agent_inst, "profile", None)
+        discord_channels = getattr(profile, "discord_channels", None) or []
+        if discord_channels and "discord" in enabled:
+            return "discord", discord_channels[0]
+        # Fallback: scan the agent's recent sessions for a valid channel
+        loop = getattr(agent_inst, "loop", None)
+        if loop:
+            for item in loop.sessions.list_sessions():
                 key = item.get("key") or ""
                 if ":" not in key:
                     continue
@@ -721,69 +727,81 @@ def gateway_worker(
                     return channel, chat_id
         return "cli", "direct"
 
-    # Create heartbeat service
-    async def on_heartbeat_execute(tasks: str) -> str:
-        """Phase 2: execute heartbeat tasks through the full agent loop."""
-        default = router.default_agent
-        if not default:
-            return ""
-        channel, chat_id = _pick_heartbeat_target()
+    # Create heartbeat service — one timer, all agents
+    def _make_heartbeat_execute(agent_inst: object):
+        """Create a per-agent heartbeat execute callback."""
+        async def on_heartbeat_execute(tasks: str) -> str:
+            loop = getattr(agent_inst, "loop", None)
+            if not loop:
+                return ""
+            channel, chat_id = _pick_heartbeat_target_for_agent(agent_inst)
 
-        async def _silent(*_args, **_kwargs):
-            pass
+            async def _silent(*_args, **_kwargs):
+                pass
 
-        return await default.loop.process_direct(
-            tasks,
-            session_key="heartbeat",
-            channel=channel,
-            chat_id=chat_id,
-            on_progress=_silent,
-        )
+            return await loop.process_direct(
+                tasks,
+                session_key="heartbeat",
+                channel=channel,
+                chat_id=chat_id,
+                on_progress=_silent,
+            )
+        return on_heartbeat_execute
 
-    async def on_heartbeat_notify(response: str) -> None:
-        """Deliver heartbeat response to Discord AND queue into target inbox."""
-        from nanobot.bus.events import OutboundMessage
-        from nanobot.session.inbox import InboxEvent
+    def _make_heartbeat_notify(agent_inst: object):
+        """Create a per-agent heartbeat notify callback."""
+        async def on_heartbeat_notify(response: str) -> None:
+            from nanobot.bus.events import OutboundMessage
+            from nanobot.session.inbox import InboxEvent
 
-        if not response.strip():
-            return
-        channel, chat_id = _pick_heartbeat_target()
+            if not response.strip():
+                return
+            channel, chat_id = _pick_heartbeat_target_for_agent(agent_inst)
+            agent_id = getattr(agent_inst, "agent_id", "unknown")
 
-        # Deliver to user's channel so they see it in real-time
-        # TODO(phase2): heartbeat responses are often low-value; consider
-        # filtering or summarizing before outbound delivery.
-        if channel != "cli":
-            await bus.publish_outbound(OutboundMessage(
-                channel=channel, chat_id=chat_id, content=response,
-            ))
+            # Deliver to user's channel so they see it in real-time
+            if channel != "cli":
+                await bus.publish_outbound(OutboundMessage(
+                    channel=channel, chat_id=chat_id, content=response,
+                ))
 
-        # Also persist to inbox so agent has durable context on next turn
-        default = router.default_agent
-        if not default:
-            return
-        _append_inbox_event(
-            default.loop,
-            f"{channel}:{chat_id}",
-            InboxEvent.create(
-                source="heartbeat",
-                summary="Heartbeat execution update",
-                content=response,
-                occurred_at=datetime.now().isoformat(),
-                source_meta={"channel": channel, "chat_id": chat_id},
-            ),
-        )
+            # Also persist to inbox so agent has durable context on next turn
+            loop = getattr(agent_inst, "loop", None)
+            if not loop:
+                return
+            _append_inbox_event(
+                loop,
+                f"{channel}:{chat_id}",
+                InboxEvent.create(
+                    source="heartbeat",
+                    summary=f"Heartbeat execution update ({agent_id})",
+                    content=response,
+                    occurred_at=datetime.now().isoformat(),
+                    source_meta={
+                        "channel": channel,
+                        "chat_id": chat_id,
+                        "agent_id": agent_id,
+                    },
+                ),
+            )
+        return on_heartbeat_notify
 
     hb_cfg = config.gateway.heartbeat
-    default_agent = router.default_agent
     heartbeat = HeartbeatService(
-        workspace=config.workspace_path,
         provider=provider,
-        model=default_agent.loop.model if default_agent else config.agents.defaults.model,
-        on_execute=on_heartbeat_execute,
-        on_notify=on_heartbeat_notify,
+        model=config.agents.defaults.model,
         interval_s=hb_cfg.interval_s,
         enabled=hb_cfg.enabled,
     )
+
+    # Register all agents for heartbeat checks
+    for agent_id, agent_inst in router.agents.items():
+        heartbeat.register_agent(
+            agent_id=agent_id,
+            workspace=agent_inst.workspace,
+            on_execute=_make_heartbeat_execute(agent_inst),
+            on_notify=_make_heartbeat_notify(agent_inst),
+        )
 
     # Create usage dashboard if configured
     usage_dashboard: UsageDashboard | None = None

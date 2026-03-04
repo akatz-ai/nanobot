@@ -93,6 +93,8 @@ class DiscordChannel(BaseChannel):
         self._http: httpx.AsyncClient | None = None
         # Webhook registry: channel_id -> {webhook_url, display_name, avatar_url}
         self._webhooks: dict[str, dict[str, str | None]] = {}
+        # Set of our own webhook IDs (extracted from webhook URLs) for echo detection
+        self._own_webhook_ids: dict[str, str | None] = {}  # webhook_id -> display_name
 
     async def start(self) -> None:
         """Start the Discord gateway connection."""
@@ -374,8 +376,32 @@ class DiscordChannel(BaseChannel):
     async def _handle_message_create(self, payload: dict[str, Any]) -> None:
         """Handle incoming Discord messages."""
         author = payload.get("author") or {}
+        webhook_id = payload.get("webhook_id")
+        is_webhook = bool(webhook_id)
+        logger.info(
+            "MESSAGE_CREATE: author={} bot={} webhook_id={} channel={} content={}",
+            author.get("username", "?"), author.get("bot"), webhook_id,
+            payload.get("channel_id", "?"), (payload.get("content") or "")[:80],
+        )
         if author.get("bot"):
-            return
+            if not is_webhook:
+                return
+            # Webhook message from a bot — check if it's our own outbound echo
+            registered_name = self._own_webhook_ids.get(webhook_id)
+            if registered_name is not None:
+                author_name = author.get("username", "")
+                if author_name == registered_name:
+                    # This is our own agent's outbound message echoing back — ignore
+                    logger.debug(
+                        "Ignoring own webhook echo: webhook_id={} name={}",
+                        webhook_id, author_name,
+                    )
+                    return
+                # Username differs from registered name (e.g. "Alex (Voice)") — allow through
+                logger.info(
+                    "Webhook message from external source: webhook_id={} name={} (registered={})",
+                    webhook_id, author_name, registered_name,
+                )
 
         sender_id = str(author.get("id", ""))
         channel_id = str(payload.get("channel_id", ""))
@@ -384,7 +410,10 @@ class DiscordChannel(BaseChannel):
         if not sender_id or not channel_id:
             return
 
-        if not self.is_allowed(sender_id):
+        # Webhook messages bypass allow_from check — they originate from
+        # our own webhooks (e.g. voice agent) and the webhook author ID
+        # won't match any user in the allow list.
+        if not is_webhook and not self.is_allowed(sender_id):
             return
 
         content_parts = [content] if content else []
@@ -448,6 +477,7 @@ class DiscordChannel(BaseChannel):
                 "guild_id": payload.get("guild_id"),
                 "reply_to": reply_to,
             },
+            skip_auth=is_webhook,
         )
 
     async def _start_typing(self, channel_id: str) -> None:
@@ -556,7 +586,17 @@ class DiscordChannel(BaseChannel):
             "display_name": display_name,
             "avatar_url": avatar_url,
         }
-        logger.info("Registered webhook for channel {} (name={})", channel_id, display_name)
+        # Extract webhook ID from URL for echo detection
+        # URL format: .../webhooks/{id}/{token}
+        try:
+            parts = webhook_url.rstrip("/").split("/")
+            wh_idx = parts.index("webhooks")
+            wh_id = parts[wh_idx + 1]
+            self._own_webhook_ids[wh_id] = display_name
+            logger.info("Registered webhook for channel {} (name={}, wh_id={})", channel_id, display_name, wh_id)
+        except (ValueError, IndexError):
+            logger.warning("Could not extract webhook ID from URL: {}", webhook_url)
+            logger.info("Registered webhook for channel {} (name={})", channel_id, display_name)
 
     async def list_guild_channels(self, guild_id: str) -> list[dict[str, Any]]:
         """List all channels in a guild."""

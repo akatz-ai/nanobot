@@ -91,6 +91,7 @@ class BaseChannel(ABC):
         media: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         session_key: str | None = None,
+        skip_auth: bool = False,
     ) -> None:
         """
         Handle an incoming message from the chat platform.
@@ -104,8 +105,9 @@ class BaseChannel(ABC):
             media: Optional list of media URLs.
             metadata: Optional channel-specific metadata.
             session_key: Optional session key override (e.g. thread-scoped sessions).
+            skip_auth: If True, skip the is_allowed check (for pre-authorized messages like webhooks).
         """
-        if not self.is_allowed(sender_id):
+        if not skip_auth and not self.is_allowed(sender_id):
             logger.warning(
                 "Access denied for sender {} on channel {}. "
                 "Add them to allowFrom list in config to grant access.",

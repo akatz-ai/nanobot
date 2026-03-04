@@ -387,17 +387,20 @@ class DiscordChannel(BaseChannel):
             if not is_webhook:
                 return
             # Webhook message from a bot — check if it's our own outbound echo
-            registered_name = self._own_webhook_ids.get(webhook_id)
-            if registered_name is not None:
+            if webhook_id in self._own_webhook_ids:
+                registered_name = self._own_webhook_ids[webhook_id]
                 author_name = author.get("username", "")
-                if author_name == registered_name:
-                    # This is our own agent's outbound message echoing back — ignore
+                # If no display_name registered (None), the agent sends as the
+                # webhook's default name — always treat as own echo.
+                # If display_name is set, only treat as echo when names match;
+                # a different name (e.g. "Alex (Voice)") means external source.
+                if registered_name is None or author_name == registered_name:
                     logger.debug(
                         "Ignoring own webhook echo: webhook_id={} name={}",
                         webhook_id, author_name,
                     )
                     return
-                # Username differs from registered name (e.g. "Alex (Voice)") — allow through
+                # Username differs from registered name — allow through
                 logger.info(
                     "Webhook message from external source: webhook_id={} name={} (registered={})",
                     webhook_id, author_name, registered_name,

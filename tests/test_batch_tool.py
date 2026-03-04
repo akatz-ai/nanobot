@@ -14,9 +14,12 @@ def _make_tool(
     side_effect=None,
     return_value: str = "ok",
     timeout: int = 120,
+    tool_names: list[str] | None = None,
 ) -> tuple[BatchTool, AsyncMock]:
     execute = AsyncMock(side_effect=side_effect, return_value=return_value)
     registry = SimpleNamespace(execute=execute)
+    if tool_names is not None:
+        registry.tool_names = tool_names
     return BatchTool(registry=registry, timeout=timeout), execute
 
 
@@ -305,3 +308,131 @@ async def test_registry_hint_stripped_from_tool_errors() -> None:
 
     assert result == error_msg
     assert "[Analyze" not in result
+
+
+@pytest.mark.asyncio
+async def test_blocks_type_subclasses_escape_vector() -> None:
+    tool, _ = _make_tool()
+
+    result = await tool.execute(code="print(type.__subclasses__())")
+
+    assert result.startswith("Error:")
+    assert "__subclasses__" in result
+
+
+@pytest.mark.asyncio
+async def test_blocks_function_globals_escape_vector() -> None:
+    tool, _ = _make_tool()
+
+    result = await tool.execute(code="print(read_file.__globals__)")
+
+    assert result.startswith("Error:")
+    assert "__globals__" in result
+
+
+@pytest.mark.asyncio
+async def test_blocks_frame_builtins_escape_vector() -> None:
+    tool, _ = _make_tool()
+
+    result = await tool.execute(
+        code=(
+            "import asyncio\n"
+            "task = asyncio.current_task()\n"
+            "print(task.get_coro().cr_frame.f_builtins)"
+        )
+    )
+
+    assert result.startswith("Error:")
+    assert "cr_frame" in result or "f_builtins" in result
+
+
+@pytest.mark.asyncio
+async def test_detached_tasks_are_cancelled_after_script_finishes() -> None:
+    tool, execute = _make_tool(tool_names=["read_file"])
+
+    result = await tool.execute(
+        code=(
+            "import asyncio\n"
+            "async def leak():\n"
+            "    await asyncio.sleep(0.05)\n"
+            '    await read_file("leak.txt")\n'
+            "asyncio.create_task(leak())\n"
+            'print("done")'
+        )
+    )
+
+    await asyncio.sleep(0.15)
+    assert result == "done"
+    execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_wrapper_generated_from_registry_tool_name() -> None:
+    async def fake_execute(name: str, params: dict) -> str:
+        return f"{name}:{params['value']}"
+
+    tool, execute = _make_tool(side_effect=fake_execute, tool_names=["new_tool"])
+
+    result = await tool.execute(code='print(await new_tool(value="x"))')
+
+    assert result == "new_tool:x"
+    execute.assert_awaited_once_with("new_tool", {"value": "x"})
+
+
+@pytest.mark.asyncio
+async def test_call_tool_supports_non_identifier_tool_names() -> None:
+    async def fake_execute(name: str, params: dict) -> str:
+        return f"{name}:{params['value']}"
+
+    tool, execute = _make_tool(side_effect=fake_execute, tool_names=["weird-tool"])
+
+    result = await tool.execute(code='print(await call_tool("weird-tool", value="x"))')
+
+    assert result == "weird-tool:x"
+    execute.assert_awaited_once_with("weird-tool", {"value": "x"})
+
+
+@pytest.mark.asyncio
+async def test_blocks_dynamic_getattr_of_blocked_attribute() -> None:
+    tool, _ = _make_tool()
+
+    result = await tool.execute(
+        code=(
+            'name = "__glo" + "bals__"\n'
+            "print(getattr(read_file, name))"
+        )
+    )
+
+    assert "AttributeError" in result
+    assert "__globals__" in result
+
+
+@pytest.mark.asyncio
+async def test_loop_create_task_is_tracked_and_cancelled() -> None:
+    tool, execute = _make_tool(tool_names=["read_file"])
+
+    result = await tool.execute(
+        code=(
+            "import asyncio\n"
+            "async def leak():\n"
+            "    await asyncio.sleep(0.05)\n"
+            '    await read_file("leak.txt")\n'
+            "loop = asyncio.get_running_loop()\n"
+            "loop.create_task(leak())\n"
+            'print("done")'
+        )
+    )
+
+    await asyncio.sleep(0.15)
+    assert result == "done"
+    execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_wrappers_do_not_shadow_builtin_names() -> None:
+    tool, execute = _make_tool(tool_names=["len"])
+
+    result = await tool.execute(code='print(len(["a", "b", "c"]))')
+
+    assert result == "3"
+    execute.assert_not_awaited()

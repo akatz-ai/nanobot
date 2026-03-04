@@ -227,24 +227,42 @@ def _append_inbox_event(agent_loop: object, session_key: str, event: object) -> 
 
 
 def _extract_cron_session_content(agent_loop: object, job_id: str) -> str:
-    """Extract the best response content from a cron session's history.
+    """Extract the best response content from the *current turn* of a cron session.
 
     When the cron agent uses the message tool to send results to Discord,
     process_direct() returns "" because the suppress-duplicate-reply logic
     fires (the message tool already sent to the same channel/chat). This
     function recovers the actual content by scanning the cron session history
     for message tool sends and assistant responses.
+
+    Only messages from the current turn (after the last user message) are
+    considered, preventing stale content from previous cron firings leaking
+    through when a recurring job reuses the same session key.
     """
     sessions = getattr(agent_loop, "sessions", None)
     if sessions is None:
         return ""
     cron_session = sessions.get_or_create(f"cron:{job_id}")
     messages = getattr(cron_session, "messages", None)
-    if not isinstance(messages, list):
+    if not isinstance(messages, list) or not messages:
+        return ""
+
+    # Find the boundary of the current turn: the last user message index.
+    # Only scan assistant messages AFTER this point to avoid stale content
+    # from previous cron firings that reuse the same cron:{job_id} session.
+    turn_start = 0
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            turn_start = i + 1
+            break
+
+    current_turn = messages[turn_start:]
+    if not current_turn:
         return ""
 
     # Strategy 1: Find the last message tool call content (what was sent to Discord)
-    for msg in reversed(messages):
+    for msg in reversed(current_turn):
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
             continue
         tool_calls = msg.get("tool_calls")
@@ -268,8 +286,8 @@ def _extract_cron_session_content(agent_loop: object, job_id: str) -> str:
                 if isinstance(content, str) and content.strip():
                     return content.strip()
 
-    # Strategy 2: Last assistant message with text content
-    for msg in reversed(messages):
+    # Strategy 2: Last assistant message with text content in current turn
+    for msg in reversed(current_turn):
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
             continue
         content = msg.get("content")

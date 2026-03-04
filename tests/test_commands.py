@@ -395,6 +395,87 @@ async def test_cron_bridge_records_message_tool_turn_and_injects_next_user_turn(
     )
 
 
+def test_extract_cron_session_content_scopes_to_current_turn():
+    """_extract_cron_session_content only returns content from the current turn,
+    not stale content from a previous cron firing that reused the same session."""
+    from nanobot.cli.commands import _extract_cron_session_content
+
+    class FakeSession:
+        def __init__(self):
+            self.messages = []
+            self.key = "cron:recurring-job"
+            self.metadata = {}
+            self.last_consolidated = 0
+            self._compactions = []
+        def detect_resume_state(self):
+            return "clean"
+        def get_last_compaction(self):
+            return None
+
+    class FakeSessions:
+        def __init__(self, session):
+            self._session = session
+        def get_or_create(self, key):
+            return self._session
+
+    class FakeLoop:
+        pass
+
+    session = FakeSession()
+    loop = FakeLoop()
+    loop.sessions = FakeSessions(session)
+
+    # Simulate two cron firings in the same session:
+    # Turn 1 (old): user prompt -> assistant sends "Old stale result" via message tool
+    session.messages = [
+        {"role": "user", "content": "[Cron job_id=recurring-job] check status"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "tc1", "type": "function", "function": {
+                "name": "message",
+                "arguments": '{"content": "Old stale result from previous run", "chat_id": "123"}',
+            }},
+        ]},
+        {"role": "tool", "tool_call_id": "tc1", "name": "message", "content": "Message sent"},
+        {"role": "assistant", "content": "Done with old run."},
+        # Turn 2 (current): user prompt -> assistant sends "Fresh result" via message tool
+        {"role": "user", "content": "[Cron job_id=recurring-job] check status"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "tc2", "type": "function", "function": {
+                "name": "message",
+                "arguments": '{"content": "Fresh current result", "chat_id": "123"}',
+            }},
+        ]},
+        {"role": "tool", "tool_call_id": "tc2", "name": "message", "content": "Message sent"},
+        {"role": "assistant", "content": "Done with current run."},
+    ]
+
+    result = _extract_cron_session_content(loop, "recurring-job")
+    # Should return the message tool content from the CURRENT turn, not the old one
+    assert result == "Fresh current result"
+
+    # Edge case: current turn has no message tool, falls back to assistant text
+    session.messages = [
+        {"role": "user", "content": "[Cron] old run"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "tc1", "type": "function", "function": {
+                "name": "message",
+                "arguments": '{"content": "Old message tool content", "chat_id": "123"}',
+            }},
+        ]},
+        {"role": "tool", "tool_call_id": "tc1", "name": "message", "content": "Message sent"},
+        {"role": "user", "content": "[Cron] current run"},
+        {"role": "assistant", "content": "Direct response without message tool."},
+    ]
+
+    result = _extract_cron_session_content(loop, "recurring-job")
+    assert result == "Direct response without message tool."
+
+    # Edge case: empty session
+    session.messages = []
+    result = _extract_cron_session_content(loop, "recurring-job")
+    assert result == ""
+
+
 def test_retrieved_memory_guardrails_cap_and_truncate():
     lines = [f"- repeated fact line {i} " + ("x" * 200) for i in range(30)]
     memory_context = "\n".join(lines)

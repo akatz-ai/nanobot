@@ -7,6 +7,7 @@ import json
 import math
 import re
 import time
+from datetime import datetime
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -38,6 +39,7 @@ from nanobot.session.compaction import (
 )
 from nanobot.session.compaction_log import CompactionEvent, CompactionLogger
 from nanobot.session.context_log import TurnContextLogger
+from nanobot.session.inbox import InboxEvent
 from nanobot.session.usage_log import TokenUsageLogger
 from nanobot.session.manager import Session, SessionManager
 
@@ -254,7 +256,7 @@ class AgentLoop:
         """Get or create a TurnContextLogger for a session."""
         key = session.key
         if key not in self._context_loggers:
-            session_path = self.sessions._get_session_path(key)
+            session_path = self.sessions.get_session_path(key)
             self._context_loggers[key] = TurnContextLogger(session_path)
         return self._context_loggers[key]
 
@@ -262,7 +264,7 @@ class AgentLoop:
         """Get or create a TokenUsageLogger for a session."""
         key = session.key
         if key not in self._usage_loggers:
-            session_path = self.sessions._get_session_path(key)
+            session_path = self.sessions.get_session_path(key)
             self._usage_loggers[key] = TokenUsageLogger(session_path)
         return self._usage_loggers[key]
 
@@ -270,7 +272,7 @@ class AgentLoop:
         """Get or create a CompactionLogger for a session."""
         key = session.key
         if key not in self._compaction_loggers:
-            session_path = self.sessions._get_session_path(key)
+            session_path = self.sessions.get_session_path(key)
             self._compaction_loggers[key] = CompactionLogger(session_path)
         return self._compaction_loggers[key]
 
@@ -518,20 +520,24 @@ class AgentLoop:
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
     @staticmethod
-    def _build_recent_cron_context(recent_cron: list[Any]) -> str | None:
-        """Render bounded system context summarizing recent cron actions."""
-        lines: list[str] = []
-        for action in recent_cron:
-            if not isinstance(action, dict):
-                continue
-            job_id = str(action.get("job_id", "?"))
-            message = " ".join(str(action.get("message", "")).split())[:100]
-            response_preview = " ".join(str(action.get("response_preview", "")).split())[:200]
-            lines.append(f"- [Cron {job_id}] {message} → {response_preview}")
+    def _build_inbox_delivery(events: list[InboxEvent]) -> str:
+        """Render pending inbox events as a persisted assistant history message.
 
-        if not lines:
-            return None
-        return "Recent cron actions you performed:\n" + "\n".join(lines)
+        NOTE: Content is clipped to 8KB per event here even though inbox stores
+        up to 16KB. Phase 2 should add configurable delivery limits and optional
+        full-content retrieval via a tool call.
+        """
+        lines = ["[External Events]"]
+        for evt in events:
+            header = f"- [{evt.source} {evt.event_id}] {evt.summary}"
+            if evt.content:
+                content = evt.content[:8000]
+                if len(evt.content) > 8000:
+                    content += "\n... (truncated)"
+                lines.append(f"{header}\n{content}")
+            else:
+                lines.append(header)
+        return "\n\n".join(lines)
 
     @staticmethod
     def _error_signature(tool_name: str, args: dict, error: str) -> str:
@@ -1187,6 +1193,7 @@ class AgentLoop:
                 self._consolidating.discard(session.key)
                 self._prune_consolidation_lock(session.key, lock)
 
+            self.sessions.get_inbox(session.key).clear()
             session.clear()
             self._last_input_tokens.pop(session.key, None)
             session.metadata.pop("usage_snapshot", None)
@@ -1427,15 +1434,44 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
+        inbox = self.sessions.get_inbox(session.key)
+        pending_events = inbox.drain()
+
+        legacy_present = "recent_cron_actions" in session.metadata
+        legacy_cron = session.metadata.pop("recent_cron_actions", None)
+        if isinstance(legacy_cron, list) and legacy_cron:
+            for idx, action in enumerate(legacy_cron):
+                if not isinstance(action, dict):
+                    continue
+                raw_job_id = action.get("job_id", "unknown")
+                job_id = str(raw_job_id) if raw_job_id is not None else "unknown"
+                pending_events.append(
+                    InboxEvent(
+                        event_id=f"evt_legacy_{job_id}_{idx}",
+                        source="legacy_cron",
+                        summary=f"Cron job {job_id}",
+                        content=str(action.get("response_preview") or ""),
+                        occurred_at=str(action.get("timestamp") or ""),
+                        source_meta=action,
+                    )
+                )
+        if legacy_present:
+            self.sessions.save(session)
+
+        if pending_events:
+            delivered_text = self._build_inbox_delivery(pending_events)
+            session.checkpoint(
+                [
+                    {
+                        "role": "assistant",
+                        "content": delivered_text,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                ]
+            )
+
         memory_context = await self._retrieve_memory_context(session, msg.content)
         extra_system_messages: list[str] = []
-        recent_cron = session.metadata.get("recent_cron_actions", [])
-        if isinstance(recent_cron, list) and recent_cron:
-            cron_context = self._build_recent_cron_context(recent_cron)
-            if cron_context:
-                extra_system_messages.append(cron_context)
-            session.metadata.pop("recent_cron_actions", None)
-            self.sessions.save(session)
         history = session.get_history(
             max_messages=self._HISTORY_MAX_MESSAGES,
             context_window=_context_window,

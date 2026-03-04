@@ -27,6 +27,7 @@ class CronPayload:
     channel: str | None = None
     to: str | None = None
     agent_id: str | None = None
+    origin_session_key: str | None = None
 
 
 @dataclass

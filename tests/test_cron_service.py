@@ -41,6 +41,7 @@ def test_add_job_creates_yaml_file(tmp_path) -> None:
         channel="discord",
         to="123",
         agent_id="nanobot-dev",
+        origin_session_key="discord:123",
         timeout="20m",
         max_runs=5,
     )
@@ -54,9 +55,11 @@ def test_add_job_creates_yaml_file(tmp_path) -> None:
     assert payload["agent"] == "nanobot-dev"
     assert payload["channel"] == "discord"
     assert payload["chat_id"] == "123"
+    assert payload["origin_session_key"] == "discord:123"
     assert payload["timeout"] == "20m"
     assert payload["max_runs"] == 5
     assert payload["runs"] == 0
+    assert job.payload.origin_session_key == "discord:123"
 
 
 def test_remove_job_deletes_file_and_respects_agent_scope(tmp_path) -> None:

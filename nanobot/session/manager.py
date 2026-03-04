@@ -600,10 +600,20 @@ class SessionManager:
         self.legacy_sessions_dir = Path.home() / ".nanobot" / "sessions"
         self._cache: dict[str, Session] = {}
     
-    def _get_session_path(self, key: str) -> Path:
+    def get_session_path(self, key: str) -> Path:
         """Get the file path for a session."""
         safe_key = safe_filename(key.replace(":", "_"))
         return self.sessions_dir / f"{safe_key}.jsonl"
+
+    def _get_session_path(self, key: str) -> Path:
+        """Backward-compatible alias for get_session_path()."""
+        return self.get_session_path(key)
+
+    def get_inbox(self, key: str):
+        """Get durable sidecar inbox for the given session key."""
+        from nanobot.session.inbox import SessionInbox
+
+        return SessionInbox(self.get_session_path(key))
 
     def _get_legacy_session_path(self, key: str) -> Path:
         """Legacy global session path (~/.nanobot/sessions/)."""

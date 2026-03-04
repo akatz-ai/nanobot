@@ -154,6 +154,7 @@ class CronTool(Tool):
                 to=chat_id,
                 delete_after_run=schedule.kind == "at",
                 agent_id=self._agent_id,
+                origin_session_key=f"{channel}:{chat_id}",
                 timeout=timeout,
                 max_runs=max_runs,
             )

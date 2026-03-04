@@ -336,6 +336,7 @@ class CronService:
                 channel=payload.get("channel"),
                 to=payload.get("chat_id") or payload.get("to"),
                 agent_id=payload.get("agent") or payload.get("agent_id"),
+                origin_session_key=payload.get("origin_session_key"),
             ),
             state=state,
             created_at_ms=created_at_ms,
@@ -724,6 +725,7 @@ class CronService:
         to: str | None = None,
         delete_after_run: bool = False,
         agent_id: str | None = None,
+        origin_session_key: str | None = None,
         timeout: str | int | None = None,
         max_runs: int | None = None,
     ) -> CronJob:
@@ -755,6 +757,8 @@ class CronService:
             "last_run": None,
             "enabled": True,
         }
+        if origin_session_key:
+            payload["origin_session_key"] = origin_session_key
 
         if schedule.kind == "cron" and schedule.tz:
             payload["tz"] = schedule.tz

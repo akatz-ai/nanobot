@@ -16,7 +16,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.tools.message import MessageTool
-from nanobot.cli.commands import app, _record_recent_cron_action
+from nanobot.cli.commands import app, _record_cron_inbox_event
 from nanobot.config.schema import Config
 from nanobot.cron.types import CronJob, CronPayload
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
@@ -28,6 +28,7 @@ from nanobot.providers.openai_codex_provider import (
     _strip_model_prefix,
 )
 from nanobot.providers.registry import find_by_model
+from nanobot.session.inbox import SessionInbox
 from nanobot.session.manager import Session
 from nanobot.agent.tools.web import WebSearchTool
 
@@ -215,7 +216,7 @@ def test_context_base_system_prompt_is_stable_across_turns(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_process_message_injects_recent_cron_actions_once(tmp_path: Path):
+async def test_process_message_migrates_recent_cron_actions_once(tmp_path: Path):
     class _CaptureProvider(LLMProvider):
         def __init__(self):
             super().__init__(api_key=None, api_base=None)
@@ -274,21 +275,21 @@ async def test_process_message_injects_recent_cron_actions_once(tmp_path: Path):
 
     assert len(provider.calls) == 2
     first_call = provider.calls[0]
-    second_call = provider.calls[1]
     assert any(
-        msg.get("role") == "system"
-        and "Recent cron actions you performed:" in msg.get("content", "")
-        and "[Cron job-123]" in msg.get("content", "")
+        msg.get("role") == "assistant"
+        and "[External Events]" in msg.get("content", "")
+        and "[legacy_cron evt_legacy_job-123_0]" in msg.get("content", "")
         for msg in first_call
-    )
-    assert not any(
-        msg.get("role") == "system"
-        and "Recent cron actions you performed:" in msg.get("content", "")
-        for msg in second_call
     )
 
     updated = loop.sessions.get_or_create("discord:user-1")
     assert "recent_cron_actions" not in updated.metadata
+    injected = [
+        m
+        for m in updated.messages
+        if m.get("role") == "assistant" and "[External Events]" in str(m.get("content", ""))
+    ]
+    assert len(injected) == 1
 
 
 @pytest.mark.asyncio
@@ -361,13 +362,16 @@ async def test_cron_bridge_records_message_tool_turn_and_injects_next_user_turn(
             to="user-1",
         ),
     )
-    _record_recent_cron_action(loop, job, response)
+    _record_cron_inbox_event(loop, job, response)
 
-    user_session = loop.sessions.get_or_create("discord:user-1")
-    recent = user_session.metadata.get("recent_cron_actions")
-    assert isinstance(recent, list) and len(recent) == 1
-    assert recent[0]["job_id"] == "job-456"
-    assert "Deployment healthy. No action required." in recent[0]["response_preview"]
+    inbox = SessionInbox(loop.sessions.get_session_path("discord:user-1"))
+    pending = inbox.drain()
+    assert len(pending) == 1
+    assert pending[0].source == "cron"
+    assert pending[0].summary == "Cron job job-456: deployment-check"
+    assert pending[0].source_meta.get("job_id") == "job-456"
+    assert pending[0].content == ""
+    inbox.append(pending[0])
 
     await loop._process_message(
         InboundMessage(
@@ -381,10 +385,10 @@ async def test_cron_bridge_records_message_tool_turn_and_injects_next_user_turn(
     assert len(provider.calls) == 3
     final_call = provider.calls[-1]
     assert any(
-        msg.get("role") == "system"
-        and "Recent cron actions you performed:" in msg.get("content", "")
-        and "[Cron job-456]" in msg.get("content", "")
-        and "Deployment healthy. No action required." in msg.get("content", "")
+        msg.get("role") == "assistant"
+        and "[External Events]" in msg.get("content", "")
+        and "[cron " in msg.get("content", "")
+        and "Cron job job-456: deployment-check" in msg.get("content", "")
         for msg in final_call
     )
 

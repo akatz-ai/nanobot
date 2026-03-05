@@ -994,8 +994,18 @@ function buildMessageEl(msg, globalIdx, ctxByMsgIdx, ctxEntries, ctxCursorRef) {
     }
   }
 
-  // Content
-  const content = msg.content || '';
+  // Content — handle multimodal (array) content
+  let content = msg.content || '';
+  if (Array.isArray(content)) {
+    content = content.map(part => {
+      if (typeof part === 'string') return part;
+      if (part && part.type === 'text') return part.text || '';
+      if (part && part.type === 'image_url') return '[🖼️ image]';
+      return JSON.stringify(part);
+    }).join('\n');
+  } else if (typeof content !== 'string') {
+    content = String(content);
+  }
   if (role === 'tool' && msg.tool_call_id) {
     msgEl.appendChild(html('div', { className: 'text-xs text-amber-300/60 font-mono mb-1' }, `tool_call_id: ${msg.tool_call_id}`));
     const pre = html('div', { className: 'font-mono text-xs text-slate-300 whitespace-pre-wrap break-all max-h-40 overflow-y-auto bg-bg-900/50 rounded p-2' }, truncate(content, 2000));

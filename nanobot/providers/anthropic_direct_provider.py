@@ -68,13 +68,16 @@ class AnthropicDirectProvider(LLMProvider):
 
     @staticmethod
     def _sanitize_tool_pairs(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Drop orphaned tool results/calls that would cause API errors.
+        """Drop orphaned tool results/calls and fix non-adjacent pairs.
 
-        This is a lightweight safety net at the provider level.  The primary
-        sanitization lives in ``SessionManager``, but messages built from
-        other paths (e.g. system messages, cron) also benefit from this.
+        Anthropic requires each tool_use block to have its tool_result in the
+        immediately following message.  This method:
+        1. Drops orphaned tool results (no matching call) and orphaned calls
+           (no matching result).
+        2. Relocates non-adjacent tool_results to be immediately after their
+           corresponding tool_use assistant message.
         """
-        # Collect all tool_call IDs offered by assistant messages.
+        # --- Pass 1: collect offered / answered IDs ---
         offered: set[str] = set()
         for m in messages:
             if m.get("role") == "assistant":
@@ -83,7 +86,6 @@ class AnthropicDirectProvider(LLMProvider):
                     if tc_id:
                         offered.add(tc_id)
 
-        # Collect IDs that have both an offer and a result.
         answered: set[str] = set()
         for m in messages:
             if m.get("role") == "tool":
@@ -91,6 +93,7 @@ class AnthropicDirectProvider(LLMProvider):
                 if tc_id and tc_id in offered:
                     answered.add(tc_id)
 
+        # --- Pass 2: drop orphans ---
         cleaned: list[dict[str, Any]] = []
         for m in messages:
             if m.get("role") == "tool":
@@ -115,6 +118,68 @@ class AnthropicDirectProvider(LLMProvider):
                     if not m.get("content") and not m.get("tool_calls"):
                         continue
             cleaned.append(m)
+
+        # --- Pass 3: fix non-adjacent tool_call / tool_result pairs ---
+        # Build index of tool_result positions by tool_call_id.
+        result_by_id: dict[str, int] = {}
+        for i, m in enumerate(cleaned):
+            if m.get("role") == "tool" and m.get("tool_call_id"):
+                result_by_id[m["tool_call_id"]] = i
+
+        moved = 0
+        i = 0
+        while i < len(cleaned):
+            m = cleaned[i]
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                tc_ids = [
+                    tc.get("id") or (tc.get("function") or {}).get("id")
+                    for tc in m["tool_calls"]
+                ]
+                # Check that all results are immediately after this message
+                expected_pos = i + 1
+                needs_reorder = False
+                for tc_id in tc_ids:
+                    if tc_id and tc_id in result_by_id:
+                        if result_by_id[tc_id] != expected_pos:
+                            needs_reorder = True
+                            break
+                        expected_pos += 1
+
+                if needs_reorder:
+                    # Pull all matching results and insert them right after
+                    results_to_move = []
+                    for tc_id in tc_ids:
+                        if tc_id and tc_id in result_by_id:
+                            idx = result_by_id[tc_id]
+                            if idx > i:
+                                results_to_move.append((idx, tc_id))
+
+                    if results_to_move:
+                        # Remove from highest index first to preserve ordering
+                        results_to_move.sort(key=lambda x: x[0], reverse=True)
+                        extracted = []
+                        for idx, tc_id in results_to_move:
+                            extracted.append(cleaned.pop(idx))
+                        extracted.reverse()  # restore original order
+
+                        # Insert after the assistant message
+                        for j, result_msg in enumerate(extracted):
+                            cleaned.insert(i + 1 + j, result_msg)
+                            moved += 1
+
+                        # Rebuild index since positions shifted
+                        result_by_id.clear()
+                        for k, msg in enumerate(cleaned):
+                            if msg.get("role") == "tool" and msg.get("tool_call_id"):
+                                result_by_id[msg["tool_call_id"]] = k
+            i += 1
+
+        if moved:
+            logger.warning(
+                "Provider: reordered {} non-adjacent tool result(s) to fix adjacency",
+                moved,
+            )
+
         return cleaned
 
     @staticmethod

@@ -5,13 +5,13 @@ title: Voice Realtime Reliability and Latency
 status: active
 priority: 1
 created_at: '2026-03-04T20:32:20Z'
-updated_at: '2026-03-04T20:32:24Z'
+updated_at: '2026-03-04T20:44:17Z'
 ---
 
 ## Tasks
-- [ ] voice-realtime-reliability.0 Add end-to-end voice/realtime observability baseline (connect/startup/audio/timing/drop counters)
-- [ ] voice-realtime-reliability.1 Fix startup capture race: subscribe receiver before/while session connects and avoid missing first utterance {deps=[voice-realtime-reliability.0]}
-- [ ] voice-realtime-reliability.2 Harden receiver lifecycle: persistent owner subscription strategy and correct listener cleanup on stop/restart {deps=[voice-realtime-reliability.1]}
+- [x] voice-realtime-reliability.0 Add end-to-end voice/realtime observability baseline (connect/startup/audio/timing/drop counters) {claim_by=codex@nanobot claim_at=2026-03-04T20:40:28Z}
+- [x] voice-realtime-reliability.1 Fix startup capture race: subscribe receiver before/while session connects and avoid missing first utterance {deps=[voice-realtime-reliability.0]}
+- [x] voice-realtime-reliability.2 Harden receiver lifecycle: persistent owner subscription strategy and correct listener cleanup on stop/restart {deps=[voice-realtime-reliability.1]}
 - [ ] voice-realtime-reliability.3 Rework idle/reconnect behavior to reduce first-turn latency after idle (keep-warm + bounded reconnect/backoff) {deps=[voice-realtime-reliability.2]}
 - [ ] voice-realtime-reliability.4 Tune and externalize VAD/noise settings for driving/walking environments (profiled defaults) {deps=[voice-realtime-reliability.3]}
 - [ ] voice-realtime-reliability.5 Implement barge-in interruption: cancel/truncate assistant response when user speech starts {deps=[voice-realtime-reliability.4]}

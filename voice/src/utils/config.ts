@@ -89,10 +89,11 @@ function normalizeAgentName(name: string): string {
 }
 
 const AGENT_ALIASES: Record<string, string[]> = {
-  general: ["general"],
+  general: ["general", "devius"],
   recon: ["recon", "researcher"],
-  "comfygit-dev": ["comfygit-dev"],
-  sysadmin: ["sysadmin", "nanobot-dev"],
+  "comfygit-dev": ["comfygit-dev", "comfygit"],
+  forge: ["forge", "nanobot-dev", "sysadmin"],
+  atlas: ["atlas", "assistant"],
 };
 
 export function listAgentChannelMappings(config: NanobotConfig): ResolvedAgent[] {

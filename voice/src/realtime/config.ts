@@ -9,7 +9,7 @@ export interface RealtimeToolDefinition {
   };
 }
 
-const AGENT_ENUM = ["general", "recon", "comfygit-dev", "sysadmin"];
+const AGENT_ENUM = ["general", "devius", "recon", "researcher", "comfygit-dev", "forge", "nanobot-dev", "atlas", "assistant"];
 
 export const VOICE_AGENT_INSTRUCTIONS = `
 You are the voice interface for Alex's AI agent system in Discord.

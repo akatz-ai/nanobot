@@ -6,6 +6,7 @@ import { RealtimeCloseInfo, RealtimeSession } from "./realtime/session.js";
 import { ToolExecutor } from "./tools/index.js";
 import { loadEnvConfig } from "./utils/config.js";
 import { Logger, parseLogLevel } from "./utils/logger.js";
+import { VoiceRuntimeTelemetry } from "./utils/telemetry.js";
 import { OwnerVoiceConnectionController } from "./voice/connection.js";
 import { DiscordVoicePlayer } from "./voice/player.js";
 import { DiscordVoiceReceiver } from "./voice/receiver.js";
@@ -19,7 +20,10 @@ interface ActiveRuntime {
   idleTimer: NodeJS.Timeout | null;
   reconnectPromise: Promise<void> | null;
   pendingAudio: Buffer[];
+  telemetry: VoiceRuntimeTelemetry;
 }
+
+const MAX_PENDING_AUDIO_CHUNKS = 600;
 
 async function main(): Promise<void> {
   const env = loadEnvConfig();
@@ -60,11 +64,13 @@ async function main(): Promise<void> {
     runtime.session.close();
     runtime.player.stop();
     runtime.pendingAudio.length = 0;
+    runtime.telemetry.stop();
   };
 
   const startRuntime = async (connection: VoiceConnection): Promise<void> => {
     await stopRuntime("replace_existing_runtime");
     logger.info("Starting active runtime");
+    const telemetry = new VoiceRuntimeTelemetry(logger);
 
     const session = new RealtimeSession({
       apiKey: env.openAiApiKey,
@@ -72,7 +78,30 @@ async function main(): Promise<void> {
       voice: env.openAiRealtimeVoice,
       logger,
     });
-    const player = new DiscordVoicePlayer(connection, logger);
+    session.on("open", () => {
+      telemetry.recordConnectOpen();
+    });
+    session.on("connect_error", (error) => {
+      telemetry.recordConnectFailure(String(error));
+    });
+    session.on("error", () => {
+      telemetry.recordRealtimeError();
+    });
+    session.on("input_audio_skipped", (payload) => {
+      const info = payload as { reason?: string };
+      if (info.reason === "not_open") {
+        telemetry.recordInputDropped("not_open");
+      }
+    });
+
+    const player = new DiscordVoicePlayer(connection, logger, {
+      onPlaybackStart: () => {
+        telemetry.recordPlaybackStart();
+      },
+      onPlaybackChunk: (bytes) => {
+        telemetry.recordPlaybackChunk(bytes);
+      },
+    });
     const pendingAudio: Buffer[] = [];
 
     const runtime: ActiveRuntime = {
@@ -84,6 +113,7 @@ async function main(): Promise<void> {
       idleTimer: null,
       reconnectPromise: null,
       pendingAudio,
+      telemetry,
     };
 
     const resetIdleTimer = (): void => {
@@ -95,6 +125,7 @@ async function main(): Promise<void> {
       }
       runtime.idleTimer = setTimeout(() => {
         logger.info("Idle timeout reached, closing realtime session");
+        runtime.telemetry.recordIdleTimeoutClose();
         session.close();
       }, env.idleTimeoutMs);
       runtime.idleTimer.unref();
@@ -104,7 +135,13 @@ async function main(): Promise<void> {
       while (runtime.pendingAudio.length > 0 && session.isOpen()) {
         const chunk = runtime.pendingAudio.shift();
         if (chunk) {
-          session.appendInputAudio(chunk);
+          const sent = session.appendInputAudio(chunk);
+          if (sent) {
+            runtime.telemetry.recordInputSent(chunk.length, "flush");
+          } else {
+            runtime.telemetry.recordInputDropped("not_open");
+          }
+          runtime.telemetry.recordQueueDepth(runtime.pendingAudio.length);
         }
       }
     };
@@ -116,6 +153,7 @@ async function main(): Promise<void> {
       if (runtime.reconnectPromise) {
         return runtime.reconnectPromise;
       }
+      runtime.telemetry.recordConnectStart("ensure_session_connected");
       runtime.reconnectPromise = session
         .connect()
         .then(() => {
@@ -135,16 +173,24 @@ async function main(): Promise<void> {
       ownerUserId: env.discordOwnerUserId,
       logger,
       onPcm24kAudio: (pcm24Mono) => {
+        runtime.telemetry.recordInputReceived(pcm24Mono.length);
         resetIdleTimer();
         if (session.isOpen()) {
-          session.appendInputAudio(pcm24Mono);
+          const sent = session.appendInputAudio(pcm24Mono);
+          if (sent) {
+            runtime.telemetry.recordInputSent(pcm24Mono.length, "live");
+          } else {
+            runtime.telemetry.recordInputDropped("not_open");
+          }
           return;
         }
 
-        if (runtime.pendingAudio.length > 120) {
+        if (runtime.pendingAudio.length >= MAX_PENDING_AUDIO_CHUNKS) {
           runtime.pendingAudio.shift();
+          runtime.telemetry.recordInputDropped("queue_full");
         }
         runtime.pendingAudio.push(pcm24Mono);
+        runtime.telemetry.recordInputQueued(runtime.pendingAudio.length);
         void ensureSessionConnected();
       },
     });
@@ -155,8 +201,30 @@ async function main(): Promise<void> {
       player,
       tools,
       logger,
+      onSpeechStarted: () => {
+        runtime.telemetry.recordSpeechStarted();
+      },
+      onSpeechStopped: () => {
+        runtime.telemetry.recordSpeechStopped();
+      },
+      onResponseCreated: () => {
+        runtime.telemetry.recordResponseCreated();
+      },
+      onResponseDone: () => {
+        runtime.telemetry.recordResponseDone();
+      },
+      onResponseAudioDelta: (pcmBytes) => {
+        runtime.telemetry.recordResponseAudioDelta(pcmBytes);
+      },
+      onToolCall: () => {
+        runtime.telemetry.recordToolCall();
+      },
+      onRealtimeError: () => {
+        runtime.telemetry.recordRealtimeError();
+      },
     });
     runtime.onSessionClose = (info) => {
+      runtime.telemetry.recordSessionClose(info.expected, info.code, info.reason);
       if (!info.expected && !shuttingDown) {
         logger.warn("Realtime session closed unexpectedly, reconnecting", {
           code: info.code,
@@ -171,8 +239,8 @@ async function main(): Promise<void> {
 
     active = runtime;
 
-    await ensureSessionConnected();
     receiver.start();
+    await ensureSessionConnected();
     resetIdleTimer();
   };
 

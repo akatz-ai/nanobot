@@ -20,9 +20,18 @@ export class DiscordVoiceReceiver {
   private stopped = true;
   private packetCount = 0;
   private subscribing = false;
+  private readonly onSpeakingStartBound: (userId: string) => void;
 
   constructor(private readonly options: ReceiverOptions) {
     this.logger = options.logger.child("receiver");
+    this.onSpeakingStartBound = (userId) => {
+      if (this.stopped || userId !== this.options.ownerUserId) {
+        return;
+      }
+      if (!this.stream && !this.subscribing) {
+        this.subscribe();
+      }
+    };
   }
 
   start(): void {
@@ -33,23 +42,19 @@ export class DiscordVoiceReceiver {
 
     // Listen for speaking events to trigger subscription
     const receiver = this.options.connection.receiver;
-    receiver.speaking.on("start", (userId) => {
-      if (this.stopped || userId !== this.options.ownerUserId) {
-        return;
-      }
-      // Only subscribe if we don't already have an active stream
-      if (!this.stream && !this.subscribing) {
-        this.subscribe();
-      }
-    });
+    receiver.speaking.on("start", this.onSpeakingStartBound);
 
     this.logger.info("Receiver started, listening for owner speaking events", {
       ownerUserId: this.options.ownerUserId,
     });
+
+    // Subscribe immediately so speech that starts during realtime connect is captured.
+    this.subscribe();
   }
 
   stop(): void {
     this.stopped = true;
+    this.options.connection.receiver.speaking.off("start", this.onSpeakingStartBound);
     if (this.stream) {
       this.stream.removeAllListeners();
       this.stream.destroy();
@@ -61,12 +66,14 @@ export class DiscordVoiceReceiver {
     if (this.stopped || this.subscribing) {
       return;
     }
+    if (this.stream) {
+      return;
+    }
     this.subscribing = true;
 
     this.stream = this.options.connection.receiver.subscribe(this.options.ownerUserId, {
       end: {
-        behavior: EndBehaviorType.AfterSilence,
-        duration: 5000, // Keep stream alive for 5s of silence
+        behavior: EndBehaviorType.Manual,
       },
     });
 
@@ -94,9 +101,13 @@ export class DiscordVoiceReceiver {
     });
 
     this.stream.on("close", () => {
-      this.logger.info("Owner voice stream ended (silence timeout), will re-subscribe on next speech");
+      this.logger.info("Owner voice stream closed");
       this.stream = null;
-      // Don't re-subscribe here — wait for next speaking.start event
+      if (!this.stopped) {
+        setTimeout(() => {
+          this.subscribe();
+        }, 100).unref();
+      }
     });
   }
 }

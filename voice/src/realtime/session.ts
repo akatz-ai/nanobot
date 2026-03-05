@@ -39,6 +39,7 @@ export class RealtimeSession extends EventEmitter {
 
     const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(this.options.model)}`;
     this.manualClose = false;
+    this.emit("connect_start");
 
     this.connectPromise = new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(url, {
@@ -63,6 +64,7 @@ export class RealtimeSession extends EventEmitter {
       ws.once("error", (error) => {
         if (!settled) {
           settled = true;
+          this.emit("connect_error", error);
           reject(error);
         }
       });
@@ -119,15 +121,22 @@ export class RealtimeSession extends EventEmitter {
     this.ws = null;
   }
 
-  appendInputAudio(pcm24Mono: Buffer): void {
-    if (!this.isOpen() || pcm24Mono.length === 0) {
-      return;
+  appendInputAudio(pcm24Mono: Buffer): boolean {
+    if (pcm24Mono.length === 0) {
+      this.emit("input_audio_skipped", { reason: "empty", bytes: 0 });
+      return false;
+    }
+    if (!this.isOpen()) {
+      this.emit("input_audio_skipped", { reason: "not_open", bytes: pcm24Mono.length });
+      return false;
     }
 
     this.send({
       type: "input_audio_buffer.append",
       audio: encodeBase64Pcm(pcm24Mono),
     });
+    this.emit("input_audio_sent", { bytes: pcm24Mono.length });
+    return true;
   }
 
   sendToolResult(callId: string, output: unknown): void {

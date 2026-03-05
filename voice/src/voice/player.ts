@@ -11,6 +11,12 @@ import { PassThrough } from "node:stream";
 import { upsample24kMonoTo48kMono, monoToStereo } from "../utils/audio.js";
 import { Logger } from "../utils/logger.js";
 
+interface DiscordVoicePlayerHooks {
+  onPlaybackStart?: () => void;
+  onPlaybackChunk?: (bytes: number) => void;
+  onPlaybackFinalize?: (totalChunks: number) => void;
+}
+
 export class DiscordVoicePlayer {
   private readonly audioPlayer: AudioPlayer;
   private pcmStream: PassThrough;
@@ -19,8 +25,13 @@ export class DiscordVoicePlayer {
   private readonly logger: Logger;
   private chunkCount = 0;
   private resourceActive = false;
+  private inPlayingState = false;
 
-  constructor(connection: VoiceConnection, logger: Logger) {
+  constructor(
+    connection: VoiceConnection,
+    logger: Logger,
+    private readonly hooks?: DiscordVoicePlayerHooks,
+  ) {
     this.logger = logger.child("player");
     this.connection = connection;
     this.audioPlayer = createAudioPlayer({
@@ -31,6 +42,11 @@ export class DiscordVoicePlayer {
 
     this.audioPlayer.on("stateChange", (oldState, newState) => {
       this.logger.info("Audio player state change", { from: oldState.status, to: newState.status });
+      const nowPlaying = newState.status === "playing";
+      if (!this.inPlayingState && nowPlaying) {
+        this.hooks?.onPlaybackStart?.();
+      }
+      this.inPlayingState = nowPlaying;
     });
 
     this.audioPlayer.on("error", (error) => {
@@ -58,6 +74,7 @@ export class DiscordVoicePlayer {
     const pcm48Mono = upsample24kMonoTo48kMono(pcm24Mono);
     const pcm48Stereo = monoToStereo(pcm48Mono);
     this.pcmStream.write(pcm48Stereo);
+    this.hooks?.onPlaybackChunk?.(pcm48Stereo.length);
 
     this.chunkCount++;
     if (this.chunkCount === 1 || this.chunkCount % 50 === 0) {
@@ -70,6 +87,7 @@ export class DiscordVoicePlayer {
       return;
     }
     this.logger.info("Finalizing response audio", { totalChunks: this.chunkCount });
+    this.hooks?.onPlaybackFinalize?.(this.chunkCount);
     this.pcmStream.end();
     this.resourceActive = false;
     this.chunkCount = 0;

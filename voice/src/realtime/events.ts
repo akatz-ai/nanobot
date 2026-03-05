@@ -9,6 +9,13 @@ interface RealtimeEventRouterOptions {
   player: DiscordVoicePlayer;
   tools: ToolExecutor;
   logger: Logger;
+  onSpeechStarted?: () => void;
+  onSpeechStopped?: () => void;
+  onResponseCreated?: () => void;
+  onResponseDone?: () => void;
+  onResponseAudioDelta?: (pcmBytes: number) => void;
+  onToolCall?: (toolName: string, callId: string) => void;
+  onRealtimeError?: () => void;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -92,11 +99,13 @@ export function attachRealtimeEventRouter(options: RealtimeEventRouterOptions): 
     }
 
     if (type === "input_audio_buffer.speech_started") {
+      options.onSpeechStarted?.();
       logger.info("Speech detected — user is speaking");
       return;
     }
 
     if (type === "input_audio_buffer.speech_stopped") {
+      options.onSpeechStopped?.();
       logger.info("Speech ended — processing");
       return;
     }
@@ -107,11 +116,13 @@ export function attachRealtimeEventRouter(options: RealtimeEventRouterOptions): 
     }
 
     if (type === "response.created") {
+      options.onResponseCreated?.();
       logger.info("Response generation started");
       return;
     }
 
     if (type === "error") {
+      options.onRealtimeError?.();
       logger.error("Realtime API error event", { event });
       return;
     }
@@ -123,12 +134,16 @@ export function attachRealtimeEventRouter(options: RealtimeEventRouterOptions): 
         return;
       }
       const pcm = decodeBase64Pcm(delta);
+      options.onResponseAudioDelta?.(pcm.length);
       logger.info("Audio delta received", { pcmBytes: pcm.length, b64Len: delta.length });
       options.player.pushPcm24kMono(pcm);
       return;
     }
 
     if (type === "response.audio.done" || type === "response.output_audio.done" || type === "response.done") {
+      if (type === "response.done") {
+        options.onResponseDone?.();
+      }
       options.player.finalizeResponse();
       if (type === "response.done") {
         const response = asObject(event.response);
@@ -167,6 +182,7 @@ export function attachRealtimeEventRouter(options: RealtimeEventRouterOptions): 
       tool: call.name,
       callId: call.callId,
     });
+    options.onToolCall?.(call.name, call.callId);
 
     const result = await options.tools.execute(call.name, parseArguments(call.rawArguments));
     options.session.sendToolResult(call.callId, result);

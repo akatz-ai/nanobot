@@ -665,6 +665,10 @@ function buildContextPanel(ctxEntry) {
     const m = CTX_LABEL_META[l] || CTX_LABEL_META.other;
     chips.push(`${m.icon} ${m.name}`);
   }
+  if (ctxEntry.tool_pruning && ctxEntry.tool_pruning.messages_pruned > 0) {
+    const tp = ctxEntry.tool_pruning;
+    chips.push(`✂️ ${tp.messages_pruned} pruned (~${(tp.tokens_saved / 1000).toFixed(1)}k saved)`);
+  }
   const summaryText = chips.length ? chips.join(' · ') : 'System prompt only';
 
   const summaryBar = html('div', {
@@ -759,7 +763,7 @@ function buildContextPanel(ctxEntry) {
 
   // Resume notice
   if (ctxEntry.resume_notice) {
-    const rSection = html('div', { className: 'px-3 py-2' });
+    const rSection = html('div', { className: 'px-3 py-2 border-b border-surface-700/50' });
     rSection.appendChild(html('div', { className: 'flex items-center gap-2' }, [
       html('span', { className: 'text-xs text-amber-400' }, '⚡'),
       html('span', { className: 'text-[10px] font-semibold text-amber-300 uppercase tracking-wider' }, 'Resume Notice'),
@@ -768,6 +772,27 @@ function buildContextPanel(ctxEntry) {
       className: 'text-xs text-amber-200/70 mt-1 whitespace-pre-wrap',
     }, ctxEntry.resume_notice));
     details.appendChild(rSection);
+  }
+
+  // Tool pruning stats
+  if (ctxEntry.tool_pruning) {
+    const tp = ctxEntry.tool_pruning;
+    const pruneSection = html('div', { className: 'px-3 py-2' });
+    const hasPruning = tp.messages_pruned > 0;
+    const iconColor = hasPruning ? 'text-orange-400' : 'text-slate-500';
+    const labelColor = hasPruning ? 'text-orange-300' : 'text-slate-500';
+    const statusText = hasPruning
+      ? `${tp.messages_pruned} pruned · ~${(tp.tokens_saved / 1000).toFixed(1)}k tokens saved`
+      : 'No pruning needed';
+    const detailText = `${tp.total_tool_messages} tool msgs total · ${tp.messages_protected} protected`;
+
+    pruneSection.appendChild(html('div', { className: 'flex items-center gap-2 flex-wrap' }, [
+      html('span', { className: `text-xs ${iconColor}` }, '✂️'),
+      html('span', { className: `text-[10px] font-semibold ${labelColor} uppercase tracking-wider` }, 'Tool Pruning'),
+      html('span', { className: `text-[10px] ${hasPruning ? 'text-orange-200/80' : 'text-slate-600'}` }, statusText),
+      html('span', { className: 'text-[10px] text-slate-600' }, `· ${detailText}`),
+    ]));
+    details.appendChild(pruneSection);
   }
 
   panel.appendChild(details);

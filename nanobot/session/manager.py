@@ -503,8 +503,13 @@ class Session:
         prune_minimum_tokens: int | None = None,
         context_window: int = 200_000,
         protected_tools: set[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Return prompt-window messages for LLM input, aligned to a user turn."""
+    ) -> tuple[list[dict[str, Any]], PruneResult | None]:
+        """Return prompt-window messages for LLM input, aligned to a user turn.
+
+        Returns:
+            Tuple of (messages, prune_result).  ``prune_result`` is ``None``
+            when pruning is disabled or not applicable.
+        """
         compaction = self.get_last_compaction()
         if compaction:
             prompt_window = self.messages[compaction.first_kept_index:]
@@ -531,6 +536,7 @@ class Session:
         # matching tool_call in a preceding assistant message.
         out = _sanitize_tool_pairs(out)
 
+        prune_result: PruneResult | None = None
         if prune_tool_results and out:
             effective_protect = (
                 prune_protect_tokens
@@ -559,7 +565,7 @@ class Session:
                 )
         if compaction:
             out = [{"role": "system", "content": compaction.summary}] + out
-        return out
+        return out, prune_result
 
     def detect_resume_state(self) -> str:
         """Inspect raw messages and classify restart state."""

@@ -292,7 +292,7 @@ class AgentLoop:
                 retrieval_cfg = self._memory_graph_config.get("retrieval") or {}
             peer_key = retrieval_cfg["peer_key"] if "peer_key" in retrieval_cfg else session.key
             context_window = self._get_context_window_size()
-            recent_turns = session.get_history(
+            recent_turns, _ = session.get_history(
                 max_messages=6,
                 context_window=context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
@@ -453,7 +453,7 @@ class AgentLoop:
     def _refresh_estimated_token_snapshot(self, session: Session) -> None:
         """Refresh token snapshot from visible prompt window after compaction."""
         context_window = self._get_context_window_size()
-        visible_history = session.get_history(
+        visible_history, _ = session.get_history(
             max_messages=self._HISTORY_MAX_MESSAGES,
             context_window=context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
@@ -917,7 +917,7 @@ class AgentLoop:
                 message_tool.start_turn()
 
         context_window = self._get_context_window_size()
-        history = session.get_history(
+        history, prune_result = session.get_history(
             max_messages=self._HISTORY_MAX_MESSAGES,
             context_window=context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
@@ -935,6 +935,7 @@ class AgentLoop:
             memory_context=None,
             resume_notice=self._RESUME_SYSTEM_MESSAGE,
             user_message_index=len(session.messages),
+            prune_result=prune_result,
         )
         self._get_usage_logger(session).new_turn()
         self.subagents.set_skill_index(self.context.get_last_skills_summary())
@@ -1109,7 +1110,7 @@ class AgentLoop:
             self._set_tool_context(channel, chat_id, metadata.get("message_id"))
             memory_context = await self._retrieve_memory_context(session, msg.content)
             context_window = self._get_context_window_size()
-            history = session.get_history(
+            history, prune_result = session.get_history(
                 max_messages=self._HISTORY_MAX_MESSAGES,
                 context_window=context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
@@ -1128,6 +1129,7 @@ class AgentLoop:
                 memory_context=memory_context,
                 resume_notice=resume_notice,
                 user_message_index=len(session.messages),
+                prune_result=prune_result,
             )
             self._get_usage_logger(session).new_turn()
             self.subagents.set_skill_index(self.context.get_last_skills_summary())
@@ -1218,12 +1220,12 @@ class AgentLoop:
             else:
                 _token_count = int(self._last_input_tokens.get(session.key, 0) or 0)
 
-            baseline_messages = session.get_history(
+            baseline_messages, _ = session.get_history(
                 max_messages=self._HISTORY_MAX_MESSAGES,
                 context_window=_context_window,
                 prune_tool_results=False,
             )
-            pressure_messages = session.get_history(
+            pressure_messages, _ = session.get_history(
                 max_messages=self._HISTORY_MAX_MESSAGES,
                 context_window=_context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
@@ -1472,7 +1474,7 @@ class AgentLoop:
 
         memory_context = await self._retrieve_memory_context(session, msg.content)
         extra_system_messages: list[str] = []
-        history = session.get_history(
+        history, prune_result = session.get_history(
             max_messages=self._HISTORY_MAX_MESSAGES,
             context_window=_context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
@@ -1493,6 +1495,7 @@ class AgentLoop:
             memory_context=memory_context,
             resume_notice=resume_notice,
             user_message_index=len(session.messages),
+            prune_result=prune_result,
         )
         self._get_usage_logger(session).new_turn()
         self.subagents.set_skill_index(self.context.get_last_skills_summary())

@@ -727,13 +727,13 @@ async def compact_session(
 ) -> CompactionEntry | None:
     """Run structured compaction and persist a CompactionEntry when successful."""
     last_input_tokens = _usage_snapshot_tokens(session)
-    baseline_messages = session.get_history(
+    baseline_messages, _ = session.get_history(
         max_messages=max(1, len(session.messages)),
         prune_tool_results=False,
         context_window=context_window,
     )
     baseline_tokens = sum(estimate_message_tokens(msg) for msg in baseline_messages)
-    pressure_messages = session.get_history(
+    pressure_messages, _ = session.get_history(
         max_messages=max(1, len(session.messages)),
         context_window=context_window,
     )

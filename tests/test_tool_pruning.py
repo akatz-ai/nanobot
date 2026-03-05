@@ -59,7 +59,7 @@ def _is_pruned_tool(msg: dict[str, Any]) -> bool:
 def test_basic_pruning_prunes_older_tool_results() -> None:
     session = _build_session(["exec", "exec", "exec", "exec", "exec"])
 
-    history = session.get_history(
+    history, _ = session.get_history(
         max_messages=500,
         context_window=50_000,
         prune_protect_tokens=2_000,
@@ -79,7 +79,7 @@ def test_protected_tools_never_pruned() -> None:
         ["exec", "memory_recall", "exec", "exec", "exec"],
     )
 
-    history = session.get_history(
+    history, _ = session.get_history(
         max_messages=500,
         context_window=50_000,
         prune_protect_tokens=0,
@@ -97,7 +97,7 @@ def test_protected_tools_never_pruned() -> None:
 def test_turn_protection_preserves_last_two_user_turns() -> None:
     session = _build_session(["exec", "exec", "exec", "exec"])
 
-    history = session.get_history(
+    history, _ = session.get_history(
         max_messages=500,
         context_window=50_000,
         prune_protect_tokens=0,
@@ -114,7 +114,7 @@ def test_turn_protection_preserves_last_two_user_turns() -> None:
 def test_minimum_threshold_blocks_small_prunes() -> None:
     session = _build_session(["exec", "exec", "exec", "exec", "exec"], output_chars=1_500)
 
-    history = session.get_history(
+    history, _ = session.get_history(
         max_messages=500,
         context_window=50_000,
         prune_protect_tokens=0,
@@ -127,11 +127,11 @@ def test_minimum_threshold_blocks_small_prunes() -> None:
 def test_context_window_scaling_changes_default_thresholds() -> None:
     session = _build_session(["exec", "exec", "exec", "exec", "exec"], output_chars=18_000)
 
-    small_window = session.get_history(
+    small_window, _ = session.get_history(
         max_messages=500,
         context_window=50_000,
     )
-    large_window = session.get_history(
+    large_window, _ = session.get_history(
         max_messages=500,
         context_window=300_000,
     )
@@ -147,12 +147,12 @@ def test_context_window_scaling_changes_default_thresholds() -> None:
 async def test_pruned_view_affects_compaction_decision() -> None:
     session = _build_session(["exec", "exec", "exec", "exec", "exec"], output_chars=18_000)
 
-    raw_history = session.get_history(
+    raw_history, _ = session.get_history(
         max_messages=500,
         context_window=40_000,
         prune_tool_results=False,
     )
-    pruned_history = session.get_history(
+    pruned_history, _ = session.get_history(
         max_messages=500,
         context_window=40_000,
     )
@@ -208,7 +208,7 @@ def test_get_history_is_non_destructive() -> None:
     session = _build_session(["exec", "exec", "exec", "exec", "exec"], output_chars=18_000)
     before = copy.deepcopy(session.messages)
 
-    _ = session.get_history(
+    _, _ = session.get_history(
         max_messages=500,
         context_window=50_000,
         prune_protect_tokens=0,
@@ -225,7 +225,7 @@ def test_pruning_noop_without_tool_messages() -> None:
     session.add_message("user", "again")
     session.add_message("assistant", "done")
 
-    history = session.get_history(
+    history, _ = session.get_history(
         max_messages=50,
         context_window=50_000,
         prune_protect_tokens=0,
@@ -250,7 +250,7 @@ def test_compaction_summary_system_message_is_not_affected() -> None:
         file_ops={"read_files": [], "modified_files": []},
     )
 
-    history = session.get_history(
+    history, _ = session.get_history(
         max_messages=500,
         context_window=50_000,
         prune_protect_tokens=0,
@@ -265,7 +265,7 @@ def test_compaction_summary_system_message_is_not_affected() -> None:
 def test_all_eligible_old_tool_messages_can_be_pruned() -> None:
     session = _build_session(["exec", "exec", "exec", "exec", "exec"], output_chars=12_000)
 
-    history = session.get_history(
+    history, _ = session.get_history(
         max_messages=500,
         context_window=50_000,
         prune_protect_tokens=0,

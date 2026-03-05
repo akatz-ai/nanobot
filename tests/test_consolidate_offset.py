@@ -110,7 +110,7 @@ class TestSessionImmutableHistory:
             session.add_message("user", f"msg{i}")
             session.add_message("assistant", f"resp{i}")
 
-        history = session.get_history(max_messages=6)
+        history, _ = session.get_history(max_messages=6)
         assert len(history) == 6
         assert history[0]["content"] == "msg7"
         assert history[-1]["content"] == "resp9"
@@ -118,15 +118,15 @@ class TestSessionImmutableHistory:
     def test_get_history_with_all_messages(self) -> None:
         """Test get_history with max_messages larger than actual."""
         session = create_session_with_messages("test:all", 5)
-        history = session.get_history(max_messages=100)
+        history, _ = session.get_history(max_messages=100)
         assert len(history) == 5
         assert history[0]["content"] == "msg0"
 
     def test_get_history_stable_for_same_session(self) -> None:
         """Test that get_history returns same content for same max_messages."""
         session = create_session_with_messages("test:stable", 20)
-        history1 = session.get_history(max_messages=10)
-        history2 = session.get_history(max_messages=10)
+        history1, _ = session.get_history(max_messages=10)
+        history2, _ = session.get_history(max_messages=10)
         assert history1 == history2
 
     def test_messages_list_never_modified(self) -> None:
@@ -134,11 +134,11 @@ class TestSessionImmutableHistory:
         session = create_session_with_messages("test:immutable", 5)
         original_len = len(session.messages)
 
-        session.get_history(max_messages=2)
+        session.get_history(max_messages=2)  # return value unused
         assert len(session.messages) == original_len
 
         for _ in range(10):
-            session.get_history(max_messages=3)
+            session.get_history(max_messages=3)  # return value unused
         assert len(session.messages) == original_len
 
 
@@ -165,7 +165,7 @@ class TestSessionPersistence:
         temp_manager.save(session1)
 
         session2 = temp_manager.get_or_create("test:reload")
-        history = session2.get_history(max_messages=10)
+        history, _ = session2.get_history(max_messages=10)
         assert len(history) == 10
         assert history[0]["content"] == "msg20"
         assert history[-1]["content"] == "msg29"
@@ -524,7 +524,7 @@ class TestCacheImmutability:
         original_messages = [m.copy() for m in session.messages]
 
         for _ in range(5):
-            history = session.get_history(max_messages=10)
+            history, _ = session.get_history(max_messages=10)
             assert len(history) == 10
 
         assert len(session.messages) == 40
@@ -1036,3 +1036,5 @@ class TestConsolidationDeduplicationGuard:
         assert response is not None
         assert "new session started" in response.content.lower()
         assert session.key not in loop._consolidation_locks
+
+

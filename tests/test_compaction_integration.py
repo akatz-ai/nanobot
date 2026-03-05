@@ -95,7 +95,7 @@ async def test_full_structured_compaction_flow(tmp_path: Path) -> None:
     assert extraction_calls and extraction_calls[0] is not None
     assert session.last_consolidated > 0
 
-    history = session.get_history(max_messages=200)
+    history, _ = session.get_history(max_messages=200)
     assert history[0]["role"] == "system"
     assert "## Goal" in history[0]["content"]
 
@@ -164,7 +164,7 @@ async def test_iterative_structured_compaction_uses_previous_summary(tmp_path: P
     second_prompt = summary_calls[1].kwargs["messages"][1]["content"]
     assert "<previous_summary>" in second_prompt
 
-    history = session.get_history(max_messages=200)
+    history, _ = session.get_history(max_messages=200)
     assert history[0]["role"] == "system"
     assert "## Goal" in history[0]["content"]
 
@@ -386,7 +386,7 @@ def test_backward_compat_old_sessions_without_compactions(tmp_path: Path) -> Non
     )
 
     loaded = manager.get_or_create(key)
-    history = loaded.get_history(max_messages=10)
+    history, _ = loaded.get_history(max_messages=10)
     assert loaded.compactions == []
     assert [m["content"] for m in history] == ["hello", "world"]
 
@@ -508,8 +508,8 @@ async def test_process_message_pruning_uses_fresh_snapshot_ceiling(
 
         def _fake_get_history(*args, **kwargs):
             if kwargs.get("prune_tool_results") is False:
-                return baseline_history
-            return pressure_history
+                return baseline_history, None
+            return pressure_history, None
 
         monkeypatch.setattr(session, "get_history", _fake_get_history)
         compact_mock = AsyncMock(return_value=None)
@@ -554,8 +554,8 @@ async def test_process_message_ignores_stale_snapshot_ceiling(
 
         def _fake_get_history(*args, **kwargs):
             if kwargs.get("prune_tool_results") is False:
-                return baseline_history
-            return pressure_history
+                return baseline_history, None
+            return pressure_history, None
 
         monkeypatch.setattr(session, "get_history", _fake_get_history)
         compact_mock = AsyncMock(return_value=None)
@@ -597,8 +597,8 @@ async def test_compact_session_pruning_uses_fresh_snapshot_ceiling(
 
     def _fake_get_history(*args, **kwargs):
         if kwargs.get("prune_tool_results") is False:
-            return baseline_history
-        return pressure_history
+            return baseline_history, None
+        return pressure_history, None
 
     monkeypatch.setattr(session, "get_history", _fake_get_history)
 
@@ -641,8 +641,8 @@ async def test_compact_session_ignores_stale_snapshot_ceiling(
 
     def _fake_get_history(*args, **kwargs):
         if kwargs.get("prune_tool_results") is False:
-            return baseline_history
-        return pressure_history
+            return baseline_history, None
+        return pressure_history, None
 
     monkeypatch.setattr(session, "get_history", _fake_get_history)
 

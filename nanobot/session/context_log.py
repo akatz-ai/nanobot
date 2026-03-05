@@ -14,9 +14,12 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from nanobot.session.manager import PruneResult
 
 
 class TurnContextLogger:
@@ -72,6 +75,7 @@ class TurnContextLogger:
         memory_context: str | None,
         resume_notice: str | None,
         user_message_index: int | None = None,
+        prune_result: PruneResult | None = None,
     ) -> None:
         """Record the context for one turn.
 
@@ -82,6 +86,7 @@ class TurnContextLogger:
             resume_notice: Resume notice if any.
             user_message_index: Index of the triggering user message in the
                 session's message list (for cross-referencing).
+            prune_result: Tool pruning stats from ``Session.get_history()``.
         """
         try:
             self._write_entry(
@@ -89,6 +94,7 @@ class TurnContextLogger:
                 memory_context=memory_context,
                 resume_notice=resume_notice,
                 user_message_index=user_message_index,
+                prune_result=prune_result,
             )
         except Exception:
             logger.opt(exception=True).warning(
@@ -102,6 +108,7 @@ class TurnContextLogger:
         memory_context: str | None,
         resume_notice: str | None,
         user_message_index: int | None,
+        prune_result: PruneResult | None = None,
     ) -> None:
         # Extract system messages and the base system prompt
         system_messages: list[dict[str, Any]] = []
@@ -160,6 +167,15 @@ class TurnContextLogger:
         # Include full system prompt only when it changes
         if prompt_changed and system_prompt is not None:
             entry["system_prompt_full"] = system_prompt
+
+        # Include tool pruning stats when pruning was applied
+        if prune_result is not None:
+            entry["tool_pruning"] = {
+                "messages_pruned": prune_result.messages_pruned,
+                "tokens_saved": prune_result.tokens_saved,
+                "messages_protected": prune_result.messages_protected,
+                "total_tool_messages": prune_result.total_tool_messages,
+            }
 
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with open(self._path, "a", encoding="utf-8") as f:

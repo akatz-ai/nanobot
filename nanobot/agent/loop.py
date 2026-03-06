@@ -7,8 +7,9 @@ import json
 import math
 import re
 import time
-from datetime import datetime
 from contextlib import AsyncExitStack
+from contextvars import ContextVar
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -22,9 +23,16 @@ from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.session_search import SessionSearchTool
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
+from nanobot.session.evidence import (
+    EvidenceIndex,
+    build_evidence_content,
+    _evidence_threshold_content,
+    should_index_tool,
+)
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
@@ -185,6 +193,11 @@ class AgentLoop:
         # Token-based compaction: track last known input_tokens per session
         self._last_input_tokens: dict[str, int] = {}
         self._compaction_token_threshold = self._resolve_compaction_threshold()
+        self._evidence_indexes: dict[str, EvidenceIndex] = {}
+        self._current_session_key_ctx: ContextVar[str | None] = ContextVar(
+            "agent_loop_current_session_key",
+            default=None,
+        )
         self._register_default_tools()
         self._register_memory_graph_tools()
 
@@ -206,6 +219,7 @@ class AgentLoop:
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service, agent_id=self.agent_id))
+        self.tools.register(SessionSearchTool(get_evidence_index=self._get_current_evidence_index))
 
     def _register_memory_graph_tools(self) -> None:
         """Register optional memory graph tools from adapter package."""
@@ -275,6 +289,70 @@ class AgentLoop:
             session_path = self.sessions.get_session_path(key)
             self._compaction_loggers[key] = CompactionLogger(session_path)
         return self._compaction_loggers[key]
+
+    def _get_evidence_index(self, session: Session) -> EvidenceIndex:
+        """Get or create an EvidenceIndex for a session (lazy)."""
+        key = session.key
+        if key not in self._evidence_indexes:
+            session_path = self.sessions.get_session_path(key)
+            sqlite_path = session_path.with_suffix(".evidence.sqlite")
+            self._evidence_indexes[key] = EvidenceIndex(sqlite_path)
+        return self._evidence_indexes[key]
+
+    def _close_evidence_index(self, session_key: str, *, delete_files: bool = False) -> None:
+        """Close a cached evidence index and optionally remove its sidecar files."""
+        index = self._evidence_indexes.pop(session_key, None)
+        if index is not None:
+            index.close()
+
+        if not delete_files:
+            return
+
+        sqlite_path = self.sessions.get_session_path(session_key).with_suffix(".evidence.sqlite")
+        for candidate in (
+            sqlite_path,
+            sqlite_path.with_name(f"{sqlite_path.name}-wal"),
+            sqlite_path.with_name(f"{sqlite_path.name}-shm"),
+        ):
+            try:
+                candidate.unlink(missing_ok=True)
+            except Exception:
+                logger.warning("Failed to remove evidence sidecar {}", candidate)
+
+    def _get_current_evidence_index(self) -> EvidenceIndex | None:
+        """Return the evidence index for the currently active session (for tool callback)."""
+        session_key = self._current_session_key_ctx.get()
+        if session_key and session_key in self._evidence_indexes:
+            return self._evidence_indexes[session_key]
+        return None
+
+    def _index_tool_result(
+        self,
+        session: Session,
+        tool_name: str,
+        result: str,
+        message_index: int,
+        arguments: dict[str, Any] | None = None,
+    ) -> None:
+        """Index a tool result in the session evidence index if applicable."""
+        content, metadata = build_evidence_content(tool_name, result, arguments)
+        threshold_content = _evidence_threshold_content(tool_name, result, arguments)
+        if not should_index_tool(tool_name, threshold_content):
+            return
+        try:
+            index = self._get_evidence_index(session)
+            ts = None
+            if message_index < len(session.messages):
+                ts = session.messages[message_index].get("timestamp")
+            index.add(
+                message_index=message_index,
+                tool_name=tool_name,
+                content=content,
+                timestamp=ts,
+                metadata=metadata,
+            )
+        except Exception:
+            logger.warning("Evidence indexing failed for tool={} msg_idx={}", tool_name, message_index)
 
     async def _retrieve_memory_context(
         self,
@@ -558,6 +636,9 @@ class AgentLoop:
         checkpoint_start: int | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
+        session_key_token = None
+        if session is not None:
+            session_key_token = self._current_session_key_ctx.set(session.key)
         messages = initial_messages
         iteration = 0
         final_content = None
@@ -572,245 +653,259 @@ class AgentLoop:
         _consecutive_errors: int = 0
         _MAX_CONSECUTIVE_ERRORS = 5  # Raised from 3 — less aggressive
 
-        if session is not None and checkpoint_start is not None:
-            start_index = max(0, checkpoint_start)
-            if start_index < len(messages):
-                session.checkpoint(messages[start_index:])
-            checkpoint_cursor = len(messages)
+        try:
+            if session is not None and checkpoint_start is not None:
+                start_index = max(0, checkpoint_start)
+                if start_index < len(messages):
+                    session.checkpoint(messages[start_index:])
+                checkpoint_cursor = len(messages)
 
-        while iteration < self.max_iterations:
-            iteration += 1
+            while iteration < self.max_iterations:
+                iteration += 1
 
-            _api_start = time.monotonic()
-            logger.debug("Calling provider.chat() — iteration {}/{}, {} messages", iteration, self.max_iterations, len(messages))
-            chat_kwargs: dict[str, Any] = {
-                "messages": messages,
-                "tools": self.tools.get_definitions(),
-                "model": self.model,
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
-            }
-            if self.reasoning_effort:
-                chat_kwargs["reasoning_effort"] = self.reasoning_effort
-            response = await self.provider.chat(**chat_kwargs)
-            _api_elapsed = time.monotonic() - _api_start
-            logger.debug("provider.chat() returned in {:.1f}s — finish_reason={}, tool_calls={}", _api_elapsed, response.finish_reason, len(response.tool_calls) if response.tool_calls else 0)
+                _api_start = time.monotonic()
+                logger.debug("Calling provider.chat() — iteration {}/{}, {} messages", iteration, self.max_iterations, len(messages))
+                chat_kwargs: dict[str, Any] = {
+                    "messages": messages,
+                    "tools": self.tools.get_definitions(),
+                    "model": self.model,
+                    "temperature": self.temperature,
+                    "max_tokens": self.max_tokens,
+                }
+                if self.reasoning_effort:
+                    chat_kwargs["reasoning_effort"] = self.reasoning_effort
+                response = await self.provider.chat(**chat_kwargs)
+                _api_elapsed = time.monotonic() - _api_start
+                logger.debug("provider.chat() returned in {:.1f}s — finish_reason={}, tool_calls={}", _api_elapsed, response.finish_reason, len(response.tool_calls) if response.tool_calls else 0)
 
-            # Track token usage for compaction decisions + sidecar log
-            if response.usage and session is not None:
-                input_tokens = response.usage.get("prompt_tokens", 0)
-                output_tokens = response.usage.get("completion_tokens", 0)
-                cache_read = response.usage.get("cache_read_input_tokens", 0)
-                cache_creation = response.usage.get("cache_creation_input_tokens", 0)
-                # Anthropic's input_tokens only reports non-cached tokens.
-                # Total context = input_tokens + cache_read + cache_creation.
-                total_input = input_tokens + cache_read + cache_creation
-                if total_input:
-                    self._last_input_tokens[session.key] = total_input
-                    session.metadata["usage_snapshot"] = {
-                        "total_input_tokens": int(total_input),
-                        "message_index": len(session.messages),
-                    }
-                    context_window = self._get_context_window_size()
-                    utilization = round(total_input / context_window * 100, 1) if context_window else 0
-                    logger.info(
-                        "Token usage: total_in={} (raw={} cache_read={} cache_create={}) out={} | {:.1f}% of {}k window",
-                        total_input,
-                        input_tokens,
-                        cache_read,
-                        cache_creation,
-                        output_tokens,
-                        utilization,
-                        context_window // 1000,
-                    )
-                    # Write to sidecar usage log
-                    usage_logger = self._get_usage_logger(session)
-                    usage_logger.log_usage(
-                        usage=response.usage,
-                        iteration=iteration,
-                        context_window=context_window,
-                        model=self.model,
-                        finish_reason=response.finish_reason,
-                    )
-
-            # --- Layer 1: Truncation guard ---
-            # When output hits max_tokens, tool call JSON may be truncated,
-            # producing malformed calls with missing required parameters.
-            # Detect this and tell the model to break its output into smaller pieces.
-            if response.finish_reason == "length" and response.has_tool_calls:
-                logger.warning(
-                    "Output truncated (max_tokens={}) with {} tool call(s) — "
-                    "discarding likely-malformed calls",
-                    self.max_tokens,
-                    len(response.tool_calls),
-                )
-                truncation_notice = (
-                    "Your response was truncated because it exceeded the output token limit "
-                    f"({self.max_tokens} tokens). Your tool call was NOT executed because "
-                    "its parameters were likely incomplete.\n\n"
-                    "Break your work into smaller pieces:\n"
-                    "- For write_file: write the file in sections using multiple calls, "
-                    "or use exec with heredoc (cat << 'EOF' > file)\n"
-                    "- For long outputs: summarize or split across multiple responses"
-                )
-                # Add the truncated assistant message (so context is preserved)
-                tool_call_dicts = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": json.dumps(tc.arguments, ensure_ascii=False)
+                # Track token usage for compaction decisions + sidecar log
+                if response.usage and session is not None:
+                    input_tokens = response.usage.get("prompt_tokens", 0)
+                    output_tokens = response.usage.get("completion_tokens", 0)
+                    cache_read = response.usage.get("cache_read_input_tokens", 0)
+                    cache_creation = response.usage.get("cache_creation_input_tokens", 0)
+                    # Anthropic's input_tokens only reports non-cached tokens.
+                    # Total context = input_tokens + cache_read + cache_creation.
+                    total_input = input_tokens + cache_read + cache_creation
+                    if total_input:
+                        self._last_input_tokens[session.key] = total_input
+                        session.metadata["usage_snapshot"] = {
+                            "total_input_tokens": int(total_input),
+                            "message_index": len(session.messages),
                         }
-                    }
-                    for tc in response.tool_calls
-                ]
-                messages = self.context.add_assistant_message(
-                    messages, response.content, tool_call_dicts,
-                    reasoning_content=response.reasoning_content,
-                    thinking_blocks=response.thinking_blocks,
-                )
-                # Add synthetic tool results with the truncation notice
-                for tc in response.tool_calls:
-                    messages = self.context.add_tool_result(
-                        messages, tc.id, tc.name, truncation_notice
+                        context_window = self._get_context_window_size()
+                        utilization = round(total_input / context_window * 100, 1) if context_window else 0
+                        logger.info(
+                            "Token usage: total_in={} (raw={} cache_read={} cache_create={}) out={} | {:.1f}% of {}k window",
+                            total_input,
+                            input_tokens,
+                            cache_read,
+                            cache_creation,
+                            output_tokens,
+                            utilization,
+                            context_window // 1000,
+                        )
+                        # Write to sidecar usage log
+                        usage_logger = self._get_usage_logger(session)
+                        usage_logger.log_usage(
+                            usage=response.usage,
+                            iteration=iteration,
+                            context_window=context_window,
+                            model=self.model,
+                            finish_reason=response.finish_reason,
+                        )
+
+                # --- Layer 1: Truncation guard ---
+                # When output hits max_tokens, tool call JSON may be truncated,
+                # producing malformed calls with missing required parameters.
+                # Detect this and tell the model to break its output into smaller pieces.
+                if response.finish_reason == "length" and response.has_tool_calls:
+                    logger.warning(
+                        "Output truncated (max_tokens={}) with {} tool call(s) — "
+                        "discarding likely-malformed calls",
+                        self.max_tokens,
+                        len(response.tool_calls),
                     )
-                if session is not None and checkpoint_cursor < len(messages):
-                    session.checkpoint(messages[checkpoint_cursor:])
-                    checkpoint_cursor = len(messages)
-                continue
-
-            if response.has_tool_calls:
-                if on_progress:
-                    clean = self._strip_think(response.content)
-                    if clean:
-                        await on_progress(clean)
-                    await on_progress(self._tool_hint(response.tool_calls), tool_hint=True)
-
-                tool_call_dicts = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": json.dumps(tc.arguments, ensure_ascii=False)
+                    truncation_notice = (
+                        "Your response was truncated because it exceeded the output token limit "
+                        f"({self.max_tokens} tokens). Your tool call was NOT executed because "
+                        "its parameters were likely incomplete.\n\n"
+                        "Break your work into smaller pieces:\n"
+                        "- For write_file: write the file in sections using multiple calls, "
+                        "or use exec with heredoc (cat << 'EOF' > file)\n"
+                        "- For long outputs: summarize or split across multiple responses"
+                    )
+                    # Add the truncated assistant message (so context is preserved)
+                    tool_call_dicts = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments, ensure_ascii=False)
+                            }
                         }
-                    }
-                    for tc in response.tool_calls
-                ]
-                messages = self.context.add_assistant_message(
-                    messages, response.content, tool_call_dicts,
-                    reasoning_content=response.reasoning_content,
-                    thinking_blocks=response.thinking_blocks,
-                )
-                if session is not None and checkpoint_cursor < len(messages):
-                    session.checkpoint(messages[checkpoint_cursor:])
-                    checkpoint_cursor = len(messages)
+                        for tc in response.tool_calls
+                    ]
+                    messages = self.context.add_assistant_message(
+                        messages, response.content, tool_call_dicts,
+                        reasoning_content=response.reasoning_content,
+                        thinking_blocks=response.thinking_blocks,
+                    )
+                    # Add synthetic tool results with the truncation notice
+                    for tc in response.tool_calls:
+                        messages = self.context.add_tool_result(
+                            messages, tc.id, tc.name, truncation_notice
+                        )
+                    if session is not None and checkpoint_cursor < len(messages):
+                        session.checkpoint(messages[checkpoint_cursor:])
+                        checkpoint_cursor = len(messages)
+                    continue
 
-                # --- Layer 2: Repetitive error circuit breaker ---
-                _turn_had_error = False
-                for tool_call in response.tool_calls:
-                    tools_used.append(tool_call.name)
-                    args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                    logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                if response.has_tool_calls:
+                    if on_progress:
+                        clean = self._strip_think(response.content)
+                        if clean:
+                            await on_progress(clean)
+                        await on_progress(self._tool_hint(response.tool_calls), tool_hint=True)
 
-                    # Track consecutive identical errors
-                    if isinstance(result, str) and "Error" in result:
-                        sig = self._error_signature(tool_call.name, tool_call.arguments, result)
-                        if sig == _last_error_sig:
-                            _consecutive_errors += 1
-                        else:
-                            _last_error_sig = sig
-                            _consecutive_errors = 1
-                        _turn_had_error = True
-                    else:
-                        # Successful tool call resets the counter
-                        _last_error_sig = None
-                        _consecutive_errors = 0
-
-                    messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
+                    tool_call_dicts = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments, ensure_ascii=False)
+                            }
+                        }
+                        for tc in response.tool_calls
+                    ]
+                    messages = self.context.add_assistant_message(
+                        messages, response.content, tool_call_dicts,
+                        reasoning_content=response.reasoning_content,
+                        thinking_blocks=response.thinking_blocks,
                     )
                     if session is not None and checkpoint_cursor < len(messages):
                         session.checkpoint(messages[checkpoint_cursor:])
                         checkpoint_cursor = len(messages)
 
-                logger.debug("All {} tool call(s) processed, continuing loop", len(response.tool_calls))
+                    # --- Layer 2: Repetitive error circuit breaker ---
+                    _turn_had_error = False
+                    for tool_call in response.tool_calls:
+                        tools_used.append(tool_call.name)
+                        args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
+                        logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
+                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
 
-                # Check circuit breaker after processing all tool calls in this iteration
-                if _consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
-                    logger.warning(
-                        "Circuit breaker: {} consecutive identical errors for {}",
-                        _consecutive_errors,
-                        _last_error_sig,
-                    )
-                    final_content = (
-                        f"I'm stuck in a loop — the same tool call has failed "
-                        f"{_consecutive_errors} times with the same error. "
-                        "I'll stop here to avoid wasting resources. "
-                        "Try rephrasing your request or breaking it into smaller steps."
-                    )
-                    break
-            else:
-                clean = self._strip_think(response.content)
-                # Don't persist error responses to session history — they can
-                # poison the context and cause permanent 400 loops (#1303).
-                if response.finish_reason == "error":
-                    logger.error("LLM returned error: {}", (clean or "")[:200])
-                    final_content = clean or "Sorry, I encountered an error calling the AI model."
-                    break
-                if response.finish_reason == "length":
-                    if clean:
-                        _accumulated_content.append(clean)
-                    if _length_continuations < 2:
-                        _length_continuations += 1
-                        logger.warning(
-                            "Response truncated (finish_reason=length, continuation {}/2)",
-                            _length_continuations,
+                        # Track consecutive identical errors
+                        if isinstance(result, str) and "Error" in result:
+                            sig = self._error_signature(tool_call.name, tool_call.arguments, result)
+                            if sig == _last_error_sig:
+                                _consecutive_errors += 1
+                            else:
+                                _last_error_sig = sig
+                                _consecutive_errors = 1
+                            _turn_had_error = True
+                        else:
+                            # Successful tool call resets the counter
+                            _last_error_sig = None
+                            _consecutive_errors = 0
+
+                        messages = self.context.add_tool_result(
+                            messages, tool_call.id, tool_call.name, result
                         )
-                        messages = self.context.add_assistant_message(
-                            messages,
-                            clean,
-                            reasoning_content=response.reasoning_content,
-                            thinking_blocks=response.thinking_blocks,
-                        )
-                        messages.append({"role": "user", "content": "Continue from where you left off."})
                         if session is not None and checkpoint_cursor < len(messages):
                             session.checkpoint(messages[checkpoint_cursor:])
                             checkpoint_cursor = len(messages)
-                        continue
-                    logger.warning(
-                        "Response truncated after {} continuation(s); returning accumulated partial output",
-                        _length_continuations,
-                    )
 
-                if _accumulated_content:
-                    if response.finish_reason != "length" and clean:
-                        _accumulated_content.append(clean)
-                    merged = "\n".join(part for part in _accumulated_content if part)
-                    final_content = merged or clean
+                        # Index tool result in evidence index
+                        if session is not None and isinstance(result, str):
+                            self._index_tool_result(
+                                session,
+                                tool_call.name,
+                                result,
+                                message_index=len(session.messages) - 1,
+                                arguments=tool_call.arguments,
+                            )
+
+                    logger.debug("All {} tool call(s) processed, continuing loop", len(response.tool_calls))
+
+                    # Check circuit breaker after processing all tool calls in this iteration
+                    if _consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                        logger.warning(
+                            "Circuit breaker: {} consecutive identical errors for {}",
+                            _consecutive_errors,
+                            _last_error_sig,
+                        )
+                        final_content = (
+                            f"I'm stuck in a loop — the same tool call has failed "
+                            f"{_consecutive_errors} times with the same error. "
+                            "I'll stop here to avoid wasting resources. "
+                            "Try rephrasing your request or breaking it into smaller steps."
+                        )
+                        break
                 else:
-                    final_content = clean
-                messages = self.context.add_assistant_message(
-                    messages,
-                    clean,
-                    reasoning_content=response.reasoning_content,
-                    thinking_blocks=response.thinking_blocks,
+                    clean = self._strip_think(response.content)
+                    # Don't persist error responses to session history — they can
+                    # poison the context and cause permanent 400 loops (#1303).
+                    if response.finish_reason == "error":
+                        logger.error("LLM returned error: {}", (clean or "")[:200])
+                        final_content = clean or "Sorry, I encountered an error calling the AI model."
+                        break
+                    if response.finish_reason == "length":
+                        if clean:
+                            _accumulated_content.append(clean)
+                        if _length_continuations < 2:
+                            _length_continuations += 1
+                            logger.warning(
+                                "Response truncated (finish_reason=length, continuation {}/2)",
+                                _length_continuations,
+                            )
+                            messages = self.context.add_assistant_message(
+                                messages,
+                                clean,
+                                reasoning_content=response.reasoning_content,
+                                thinking_blocks=response.thinking_blocks,
+                            )
+                            messages.append({"role": "user", "content": "Continue from where you left off."})
+                            if session is not None and checkpoint_cursor < len(messages):
+                                session.checkpoint(messages[checkpoint_cursor:])
+                                checkpoint_cursor = len(messages)
+                            continue
+                        logger.warning(
+                            "Response truncated after {} continuation(s); returning accumulated partial output",
+                            _length_continuations,
+                        )
+
+                    if _accumulated_content:
+                        if response.finish_reason != "length" and clean:
+                            _accumulated_content.append(clean)
+                        merged = "\n".join(part for part in _accumulated_content if part)
+                        final_content = merged or clean
+                    else:
+                        final_content = clean
+                    messages = self.context.add_assistant_message(
+                        messages,
+                        clean,
+                        reasoning_content=response.reasoning_content,
+                        thinking_blocks=response.thinking_blocks,
+                    )
+                    if session is not None and checkpoint_cursor < len(messages):
+                        session.checkpoint(messages[checkpoint_cursor:])
+                        checkpoint_cursor = len(messages)
+                    break
+
+            if final_content is None and iteration >= self.max_iterations:
+                logger.warning("Max iterations ({}) reached", self.max_iterations)
+                final_content = (
+                    f"I reached the maximum number of tool call iterations ({self.max_iterations}) "
+                    "without completing the task. You can try breaking the task into smaller steps."
                 )
-                if session is not None and checkpoint_cursor < len(messages):
-                    session.checkpoint(messages[checkpoint_cursor:])
-                    checkpoint_cursor = len(messages)
-                break
 
-        if final_content is None and iteration >= self.max_iterations:
-            logger.warning("Max iterations ({}) reached", self.max_iterations)
-            final_content = (
-                f"I reached the maximum number of tool call iterations ({self.max_iterations}) "
-                "without completing the task. You can try breaking the task into smaller steps."
-            )
-
-        return final_content, tools_used, messages
+            return final_content, tools_used, messages
+        finally:
+            if session_key_token is not None:
+                self._current_session_key_ctx.reset(session_key_token)
 
     @classmethod
     def _resume_notice_for_state(cls, state: str) -> str | None:
@@ -1077,6 +1172,8 @@ class AgentLoop:
         saved = self.sessions.save_all()
         if saved:
             logger.info("Flushed {} session(s) to disk", saved)
+        for session_key in list(self._evidence_indexes):
+            self._close_evidence_index(session_key)
         logger.info("Agent loop stopping")
 
     def _get_consolidation_lock(self, session_key: str) -> asyncio.Lock:
@@ -1199,6 +1296,7 @@ class AgentLoop:
             session.clear()
             self._last_input_tokens.pop(session.key, None)
             session.metadata.pop("usage_snapshot", None)
+            self._close_evidence_index(session.key, delete_files=False)
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,

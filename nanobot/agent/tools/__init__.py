@@ -2,5 +2,6 @@
 
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.session_search import SessionSearchTool
 
-__all__ = ["Tool", "ToolRegistry"]
+__all__ = ["Tool", "ToolRegistry", "SessionSearchTool"]

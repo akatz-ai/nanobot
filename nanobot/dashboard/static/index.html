@@ -792,6 +792,10 @@ function navigate(view, params = {}) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 window.navigate = navigate;
+function rerender(params = {}) {
+  Object.assign(state, params);
+  renderRoute(++state.renderToken);
+}
 function statMini(label, value) {
   return html('div', { className: 'stat-card', style: 'padding:14px;' }, [
     html('div', { className: 'stat-label' }, label),
@@ -834,7 +838,7 @@ async function renderOverview(token) {
     updateInstanceBadge(`nanobot ${overviewData.nanobot_version}`);
     container.innerHTML = '';
     container.appendChild(renderPageHeader('Overview', 'Your instance at a glance', [
-      html('button', { className: 'btn btn-ghost btn-sm', onClick: () => renderOverview(state.renderToken) }, '↻ Refresh'),
+      html('button', { className: 'btn btn-ghost btn-sm', onClick: () => rerender() }, '↻ Refresh'),
     ]));
     const statGrid = html('div', { className: 'stat-grid' });
     [
@@ -913,7 +917,7 @@ async function renderAgents(token) {
     const agents = data.agents || [];
     updateNavBadges(agents.length, null);
     container.innerHTML = '';
-    container.appendChild(renderPageHeader('Agents', 'Manage agents, inspect context, memory, sessions, and identity.', [html('button', { className: 'btn btn-secondary btn-sm', onClick: () => renderAgents(state.renderToken) }, '↻ Refresh')]));
+    container.appendChild(renderPageHeader('Agents', 'Manage agents, inspect context, memory, sessions, and identity.', [html('button', { className: 'btn btn-secondary btn-sm', onClick: () => rerender() }, '↻ Refresh')]));
     if (!agents.length) {
       container.appendChild(renderEmpty('◎', 'No configured agents', 'Add agent profiles to config.json and their workspaces will appear here.'));
       return;
@@ -1031,9 +1035,9 @@ async function renderLogs(token) {
     const data = await api(`/api/logs?lines=${encodeURIComponent(state.logLines)}&level=${encodeURIComponent(state.logLevel)}`);
     if (token !== state.renderToken || state.view !== 'logs') return;
     container.innerHTML = '';
-    const levelSelect = html('select', { value: state.logLevel, onChange: (event) => { state.logLevel = event.target.value; renderLogs(state.renderToken); } }, [html('option', { value: 'all' }, 'All Levels'), html('option', { value: 'debug' }, 'Debug'), html('option', { value: 'info' }, 'Info'), html('option', { value: 'warning' }, 'Warning'), html('option', { value: 'error' }, 'Error')]);
-    const lineSelect = html('select', { value: String(state.logLines), onChange: (event) => { state.logLines = Number(event.target.value); renderLogs(state.renderToken); } }, [50, 100, 250, 500].map((n) => html('option', { value: String(n) }, `${n} lines`)));
-    container.appendChild(renderPageHeader('Logs', 'Tail of ~/.nanobot/logs/gateway.log.', [lineSelect, levelSelect, html('button', { className: 'btn btn-ghost btn-sm', onClick: () => renderLogs(state.renderToken) }, '↻ Refresh')]));
+    const levelSelect = html('select', { value: state.logLevel, onChange: (event) => rerender({ logLevel: event.target.value }) }, [html('option', { value: 'all' }, 'All Levels'), html('option', { value: 'debug' }, 'Debug'), html('option', { value: 'info' }, 'Info'), html('option', { value: 'warning' }, 'Warning'), html('option', { value: 'error' }, 'Error')]);
+    const lineSelect = html('select', { value: String(state.logLines), onChange: (event) => rerender({ logLines: Number(event.target.value) }) }, [50, 100, 250, 500].map((n) => html('option', { value: String(n) }, `${n} lines`)));
+    container.appendChild(renderPageHeader('Logs', 'Tail of ~/.nanobot/logs/gateway.log.', [lineSelect, levelSelect, html('button', { className: 'btn btn-ghost btn-sm', onClick: () => rerender() }, '↻ Refresh')]));
     const terminal = html('div', { className: 'terminal', style: 'max-height:620px;font-size:11.5px;' });
     const entries = data.entries || [];
     if (!entries.length) terminal.appendChild(html('div', { className: 'muted' }, 'No log lines matched the current filter.'));

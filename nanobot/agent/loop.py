@@ -7,10 +7,12 @@ import json
 import math
 import re
 import time
+from collections import Counter
 from contextlib import AsyncExitStack
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
@@ -47,6 +49,7 @@ from nanobot.session.compaction import (
 )
 from nanobot.session.compaction_log import CompactionEvent, CompactionLogger
 from nanobot.session.context_log import TurnContextLogger
+from nanobot.session.extraction_log import ExtractionEvent, ExtractionLogger
 from nanobot.session.inbox import InboxEvent
 from nanobot.session.usage_log import TokenUsageLogger
 from nanobot.session.manager import Session, SessionManager
@@ -186,6 +189,7 @@ class AgentLoop:
         self._context_loggers: dict[str, TurnContextLogger] = {}
         self._usage_loggers: dict[str, TokenUsageLogger] = {}
         self._compaction_loggers: dict[str, CompactionLogger] = {}
+        self._extraction_loggers: dict[str, ExtractionLogger] = {}
         self._memory_module = None
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._processing_locks: dict[str, asyncio.Lock] = {}
@@ -288,6 +292,182 @@ class AgentLoop:
             session_path = self.sessions.get_session_path(key)
             self._compaction_loggers[key] = CompactionLogger(session_path)
         return self._compaction_loggers[key]
+
+    def _get_extraction_logger(self, session: Session) -> ExtractionLogger:
+        """Get or create an ExtractionLogger for a session."""
+        key = session.key
+        if key not in self._extraction_loggers:
+            session_path = self.sessions.get_session_path(key)
+            self._extraction_loggers[key] = ExtractionLogger(session_path)
+        return self._extraction_loggers[key]
+
+    @staticmethod
+    def _usage_value(usage: dict[str, Any] | None, key: str) -> int | None:
+        if not isinstance(usage, dict):
+            return None
+        value = usage.get(key)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _summarize_extracted_items(items: list[dict[str, Any]]) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+        actions = Counter()
+        types = Counter()
+        scopes = Counter()
+        for item in items:
+            action = str(item.get("action", "")).strip().lower()
+            if action:
+                actions[action] += 1
+            memory_type = str(
+                item.get("type", item.get("memory_type", item.get("entry_type", "")))
+            ).strip().lower()
+            if memory_type:
+                types[memory_type] += 1
+            scope = str(item.get("scope", "")).strip().lower()
+            if scope:
+                scopes[scope] += 1
+        return dict(actions), dict(types), dict(scopes)
+
+    def _history_file_for_log(self, history_file: Any) -> str | None:
+        if not history_file:
+            return None
+        try:
+            path = Path(history_file)
+        except TypeError:
+            return None
+        try:
+            return str(path.relative_to(self.workspace))
+        except ValueError:
+            return str(path)
+
+    def _record_extraction_event(
+        self,
+        *,
+        session: Session,
+        batch_start: int,
+        batch_end: int,
+        last_consolidated_before: int,
+        batch_duration_ms: int,
+        result: Any,
+        reason: str,
+        compaction_event_id: str | None,
+    ) -> None:
+        extracted_items = getattr(result, "extracted_items", None)
+        if not isinstance(extracted_items, list):
+            extracted_items = []
+        indexed_items = getattr(result, "indexed_items", None)
+        if not isinstance(indexed_items, list):
+            indexed_items = []
+
+        item_actions, item_types, item_scopes = self._summarize_extracted_items(extracted_items)
+        usage = getattr(result, "llm_usage", None)
+        retry_usage = getattr(result, "retry_llm_usage", None)
+        finish_reason = str(getattr(result, "finish_reason", "unknown") or "unknown")
+        error = getattr(result, "error", None)
+
+        event = ExtractionEvent(
+            session_key=session.key,
+            agent_id=self.agent_id or "",
+        )
+        event.set_trigger(
+            reason=reason,
+            compaction_event_id=compaction_event_id,
+            total_session_messages=len(session.messages),
+            last_consolidated_before=last_consolidated_before,
+        )
+        context_overlap_count = int(getattr(result, "context_overlap_count", 0) or 0)
+        event.set_message_window(
+            start_index=batch_start,
+            end_index=batch_end,
+            user_turns=int(getattr(result, "user_turns_in_window", 0) or 0),
+            context_overlap_start=max(0, batch_start - context_overlap_count),
+            context_overlap_count=context_overlap_count,
+        )
+        existing_memories = getattr(result, "existing_memories_recalled", None)
+        event.set_existing_memories(
+            query_text_chars=int(getattr(result, "existing_memories_query_text_chars", 0) or 0),
+            results_requested=int(getattr(result, "existing_memories_results_requested", 0) or 0),
+            results_returned=len(existing_memories) if isinstance(existing_memories, list) else 0,
+            recall_duration_ms=int(
+                getattr(result, "existing_memories_recall_duration_ms", 0) or 0
+            ),
+            memories=existing_memories if isinstance(existing_memories, list) else [],
+        )
+        event.set_prompt_stats(
+            system_prompt_chars=int(getattr(result, "prompt_system_chars", 0) or 0),
+            transcript_chars=int(getattr(result, "transcript_chars", 0) or 0),
+            context_section_chars=int(getattr(result, "prompt_context_section_chars", 0) or 0),
+            extraction_section_chars=int(
+                getattr(result, "prompt_extraction_section_chars", 0) or 0
+            ),
+            existing_memories_section_chars=int(
+                getattr(result, "prompt_existing_memories_chars", 0) or 0
+            ),
+            max_tokens_budget=int(getattr(result, "max_tokens_budget", 0) or 0),
+            full_prompt_hash=str(getattr(result, "prompt_full_hash", "") or ""),
+        )
+        event.set_llm_call(
+            model=str(
+                getattr(self._memory_module.consolidator, "model", "")
+                if self._memory_module and getattr(self._memory_module, "consolidator", None)
+                else ""
+            ),
+            temperature=0.0,
+            duration_ms=int(getattr(result, "llm_duration_ms", 0) or 0),
+            input_tokens=self._usage_value(usage, "prompt_tokens"),
+            output_tokens=self._usage_value(usage, "completion_tokens"),
+            cache_read_tokens=self._usage_value(usage, "cache_read_input_tokens"),
+            cache_creation_tokens=self._usage_value(usage, "cache_creation_input_tokens"),
+            retry_needed=bool(getattr(result, "retry_needed", False)),
+            retry_input_tokens=self._usage_value(retry_usage, "prompt_tokens"),
+            retry_output_tokens=self._usage_value(retry_usage, "completion_tokens"),
+            finish_reason=finish_reason,
+            error=str(error) if finish_reason == "error" and error else None,
+        )
+        event.set_extraction_raw(
+            response_chars=int(getattr(result, "llm_response_chars", 0) or 0),
+            response_preview=str(getattr(result, "llm_response_preview", "") or ""),
+            parse_ok=bool(getattr(result, "success", False)),
+            parse_error=None if bool(getattr(result, "success", False)) else (str(error) if error else None),
+            items_before_cap=int(getattr(result, "items_before_cap", 0) or 0),
+            items_after_cap=len(extracted_items),
+            items_by_action=item_actions,
+            items_by_type=item_types,
+            items_by_scope=item_scopes,
+        )
+        event.set_extracted_items(extracted_items)
+        event.set_graph_indexing(
+            duration_ms=int(getattr(result, "indexing_duration_ms", 0) or 0),
+            memories_added=int(getattr(result, "memories_added", 0) or 0),
+            memories_updated=int(getattr(result, "memories_updated", 0) or 0),
+            memories_superseded=int(getattr(result, "memories_superseded", 0) or 0),
+            edges_created=int(getattr(result, "edges_created", 0) or 0),
+            items_skipped=int(getattr(result, "items_skipped", 0) or 0),
+            indexed_items=indexed_items,
+        )
+        event.set_file_ops(
+            history_file=self._history_file_for_log(getattr(result, "history_file", None)),
+            history_entries_written=len(getattr(result, "entries", []) or []),
+            memory_md_rewrite_triggered=bool(
+                getattr(result, "memory_md_rewrite_triggered", False)
+            ),
+            memory_md_before_chars=int(getattr(result, "memory_md_before_chars", 0) or 0),
+            memory_md_after_chars=int(getattr(result, "memory_md_after_chars", 0) or 0),
+            memory_md_duration_ms=int(getattr(result, "memory_md_duration_ms", 0) or 0),
+        )
+        event.finalize(
+            success=bool(getattr(result, "success", False)),
+            error=str(error) if error else None,
+            total_duration_ms=batch_duration_ms,
+            total_items_extracted=len(extracted_items),
+            total_items_indexed=len(indexed_items),
+            new_last_consolidated=batch_end,
+        )
+        self._get_extraction_logger(session).write(event)
 
     def _get_evidence_index(self, session: Session) -> EvidenceIndex:
         """Get or create an EvidenceIndex for a session (lazy)."""
@@ -1899,6 +2079,13 @@ class AgentLoop:
                         accumulated_entries: list[Any] = []
                         _ce = getattr(self, "_active_compaction_event", None)
                         for batch_index, (batch_start, batch_end) in enumerate(planned_batches):
+                            last_consolidated_before = session.last_consolidated
+                            extraction_reason = (
+                                "compaction"
+                                if _ce is not None or explicit_range is None
+                                else "manual"
+                            )
+                            compaction_event_id = None
                             logger.info(
                                 "Hybrid consolidation batch {}/{} for {}: messages[{}:{}]",
                                 batch_index + 1,
@@ -1909,8 +2096,10 @@ class AgentLoop:
                             )
 
                             result = None
+                            last_candidate = None
                             last_error: str | None = None
                             _batch_ms = 0
+                            _batch_total_t0 = time.monotonic()
                             for attempt in range(2):
                                 _batch_t0 = time.monotonic()
                                 try:
@@ -1922,6 +2111,7 @@ class AgentLoop:
                                         agent_id=self.agent_id,
                                         skip_memory_rewrite=True,
                                     )
+                                    last_candidate = candidate
                                     _batch_ms = int((time.monotonic() - _batch_t0) * 1000)
                                     if hasattr(candidate, "success") and not bool(
                                         getattr(candidate, "success")
@@ -1960,6 +2150,7 @@ class AgentLoop:
                                         batch_start,
                                         batch_end,
                                     )
+                            _batch_total_ms = int((time.monotonic() - _batch_total_t0) * 1000)
 
                             if result is None:
                                 skipped_batches += 1
@@ -1981,8 +2172,23 @@ class AgentLoop:
                                         items_extracted=0,
                                         success=False,
                                         error=skip_error,
-                                        duration_ms=_batch_ms,
+                                        duration_ms=_batch_total_ms,
                                     )
+                                failed_result = last_candidate
+                                if failed_result is not None and not hasattr(failed_result, "error"):
+                                    setattr(failed_result, "error", skip_error)
+                                elif failed_result is None:
+                                    failed_result = SimpleNamespace(success=False, error=skip_error)
+                                self._record_extraction_event(
+                                    session=session,
+                                    batch_start=batch_start,
+                                    batch_end=batch_end,
+                                    last_consolidated_before=last_consolidated_before,
+                                    batch_duration_ms=_batch_total_ms,
+                                    result=failed_result,
+                                    reason=extraction_reason,
+                                    compaction_event_id=compaction_event_id,
+                                )
                                 session.last_consolidated = batch_end
                                 self.sessions.save(session)
                                 continue
@@ -2007,8 +2213,18 @@ class AgentLoop:
                                     items_extracted=_batch_items,
                                     success=bool(getattr(result, "success", True)),
                                     error=getattr(result, "error", None),
-                                    duration_ms=_batch_ms,
+                                    duration_ms=_batch_total_ms,
                                 )
+                            self._record_extraction_event(
+                                session=session,
+                                batch_start=batch_start,
+                                batch_end=batch_end,
+                                last_consolidated_before=last_consolidated_before,
+                                batch_duration_ms=_batch_total_ms,
+                                result=result,
+                                reason=extraction_reason,
+                                compaction_event_id=compaction_event_id,
+                            )
 
                             session.last_consolidated = batch_end
                             # Persist per-batch checkpoint so failures are resumable.

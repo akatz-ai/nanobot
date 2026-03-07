@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
+import sys
 import time
-from datetime import datetime, timezone
+import tomllib
+from collections import deque
+from datetime import date, datetime, timezone
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +19,11 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import yaml
+
+from nanobot.session.context_log import load_context_log
+from nanobot.session.extraction_log import load_extraction_log
+from nanobot.session.usage_log import get_session_summary
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -22,6 +33,38 @@ app = FastAPI(title="Nanobot Memory Dashboard", version="1.0.0")
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/dashboard/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+PROCESS_STARTED_AT = datetime.now(timezone.utc)
+PROCESS_START_MONOTONIC = time.monotonic()
+
+_SESSION_SIDEcar_SUFFIXES = (
+    ".context",
+    ".compaction",
+    ".usage",
+    ".extraction",
+    ".inbox",
+)
+_DEFAULT_CONTEXT_WINDOW = 200_000
+_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "claude-opus-4-6": 200_000,
+    "claude-sonnet-4-6": 200_000,
+    "claude-haiku-3-5": 200_000,
+    "claude-3-5-sonnet": 200_000,
+    "claude-3-5-haiku": 200_000,
+    "claude-3-opus": 200_000,
+    "claude-3-sonnet": 200_000,
+    "claude-3-haiku": 200_000,
+    "gpt-4o": 128_000,
+    "gpt-4-turbo": 128_000,
+    "gpt-4": 8_192,
+    "gpt-3.5-turbo": 16_385,
+}
+_LOG_LINE_RE = re.compile(
+    r"^(?P<timestamp>\S+\s+\S+)\s+\|\s+"
+    r"(?P<level>[A-Z]+)\s+\|\s+"
+    r"(?P<source>[^|]+)\|\s+"
+    r"(?P<message>.*)$"
+)
 
 # ---------------------------------------------------------------------------
 # Config / workspace helpers
@@ -84,13 +127,195 @@ def _estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+def _profile_value(profile: dict[str, Any], camel: str, snake: str) -> Any:
+    if camel in profile:
+        return profile.get(camel)
+    return profile.get(snake)
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_iso8601(value: Any) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _message_timestamp(msg: dict[str, Any]) -> datetime | None:
+    for key in ("timestamp", "_timestamp", "occurred_at"):
+        ts = _parse_iso8601(msg.get(key))
+        if ts is not None:
+            return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _is_base_session_file(path: Path) -> bool:
+    if path.suffix != ".jsonl":
+        return False
+    stem = path.stem
+    return not any(stem.endswith(suffix) for suffix in _SESSION_SIDEcar_SUFFIXES)
+
+
+def _resolved_agent_model(profile: dict[str, Any], defaults: dict[str, Any]) -> str | None:
+    return _profile_value(profile, "model", "model") or _profile_value(defaults, "model", "model")
+
+
+def _resolved_agent_display_name(name: str, profile: dict[str, Any]) -> str:
+    return _profile_value(profile, "displayName", "display_name") or name
+
+
+def _context_window_for_model(
+    model: str | None,
+    usage_summary: dict[str, Any] | None = None,
+) -> int:
+    usage_window = _coerce_int((usage_summary or {}).get("context_window"), 0)
+    if usage_window > 0:
+        return usage_window
+
+    model_lower = (model or "").lower()
+    for key, size in _MODEL_CONTEXT_WINDOWS.items():
+        if key in model_lower:
+            return size
+    return _DEFAULT_CONTEXT_WINDOW
+
+
+def _session_metadata_blob(meta: dict[str, Any]) -> dict[str, Any]:
+    value = meta.get("metadata")
+    return value if isinstance(value, dict) else {}
+
+
+def _session_usage_snapshot(meta: dict[str, Any]) -> dict[str, Any]:
+    value = _session_metadata_blob(meta).get("usage_snapshot")
+    return value if isinstance(value, dict) else {}
+
+
+def _uptime_seconds() -> int:
+    return int(max(0, time.monotonic() - PROCESS_START_MONOTONIC))
+
+
+def _format_uptime(total_seconds: int) -> str:
+    days, rem = divmod(max(total_seconds, 0), 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h {minutes}m"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _nanobot_version() -> str:
+    for package_name in ("nanobot-ai", "nanobot"):
+        try:
+            return importlib_metadata.version(package_name)
+        except importlib_metadata.PackageNotFoundError:
+            continue
+
+    pyproject = _project_root() / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            with open(pyproject, "rb") as handle:
+                data = tomllib.load(handle)
+            return str(data.get("project", {}).get("version", "unknown"))
+        except Exception:
+            pass
+    return "unknown"
+
+
+def _sanitize_config_value(key: str, value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _sanitize_config_value(k, v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_config_value(key, item) for item in value]
+    if isinstance(value, str) and any(token in key.lower() for token in ("token", "secret", "password", "key")):
+        if not value:
+            return value
+        if len(value) <= 8:
+            return "*" * len(value)
+        return value[:4] + "…" + value[-4:]
+    return value
+
+
+def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    if not text.startswith("---\n"):
+        return {}, text
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        return {}, text
+    frontmatter_text = text[4:end]
+    body = text[end + 5:]
+    try:
+        data = yaml.safe_load(frontmatter_text) or {}
+    except Exception:
+        data = {}
+    return data if isinstance(data, dict) else {}, body
+
+
+def _first_paragraph(markdown: str) -> str:
+    paragraphs: list[str] = []
+    current: list[str] = []
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if current:
+                paragraph = " ".join(current).strip()
+                if paragraph:
+                    paragraphs.append(paragraph)
+                current = []
+            continue
+        if line.startswith("#"):
+            continue
+        current.append(line)
+    if current:
+        paragraph = " ".join(current).strip()
+        if paragraph:
+            paragraphs.append(paragraph)
+    return paragraphs[0] if paragraphs else ""
+
+
+def _read_skill_info(skill_path: Path, location: str, agent: str | None = None) -> dict[str, Any]:
+    text = skill_path.read_text(errors="replace")
+    frontmatter, body = _split_frontmatter(text)
+    name = str(frontmatter.get("name") or skill_path.parent.name)
+    description = str(frontmatter.get("description") or _first_paragraph(body) or "")
+    return {
+        "name": name,
+        "description": description,
+        "location": location,
+        "always": bool(frontmatter.get("always", False)),
+        "available": True,
+        "path": str(skill_path),
+        "agent": agent,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Session helpers
 # ---------------------------------------------------------------------------
 
 def _parse_session(path: Path) -> tuple[dict, list[dict]]:
+    metadata, messages, _ = _parse_session_with_compactions(path)
+    return metadata, messages
+
+
+def _parse_session_with_compactions(path: Path) -> tuple[dict, list[dict], list[dict[str, Any]]]:
     metadata: dict = {}
     messages: list[dict] = []
+    compactions: list[dict[str, Any]] = []
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -103,17 +328,360 @@ def _parse_session(path: Path) -> tuple[dict, list[dict]]:
             if data.get("_type") == "metadata":
                 metadata = data
             elif data.get("_type") == "compaction":
-                continue  # compaction entries handled separately
+                compactions.append(data)
             else:
                 messages.append(data)
-    return metadata, messages
+    compactions.sort(key=lambda entry: (
+        _coerce_int(entry.get("first_kept_index"), -1),
+        entry.get("timestamp", ""),
+    ))
+    return metadata, messages, compactions
 
 
 def _session_files(agent_dir: Path) -> list[Path]:
     sd = agent_dir / "sessions"
     if not sd.exists():
         return []
-    return sorted(sd.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return sorted(
+        (path for path in sd.glob("*.jsonl") if _is_base_session_file(path)),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+
+def _primary_session_path(name: str, profile: dict[str, Any]) -> Path | None:
+    adir = _workspace() / "agents" / name
+    if not adir.exists():
+        return None
+    session_dir = adir / "sessions"
+    if not session_dir.exists():
+        return None
+
+    channel_ids = [
+        str(channel_id)
+        for channel_id in (_profile_value(profile, "discordChannels", "discord_channels") or [])
+        if channel_id
+    ]
+    for channel_id in channel_ids:
+        direct = session_dir / f"discord_{channel_id}.jsonl"
+        if direct.exists():
+            return direct
+
+    for session_path in _session_files(adir):
+        meta, _messages, _compactions = _parse_session_with_compactions(session_path)
+        key = str(meta.get("key") or "")
+        for channel_id in channel_ids:
+            if channel_id in session_path.stem or channel_id in key:
+                return session_path
+
+    for session_path in _session_files(adir):
+        meta, _messages, _compactions = _parse_session_with_compactions(session_path)
+        key = str(meta.get("key") or "")
+        if key.startswith("discord:") or session_path.stem.startswith("discord_"):
+            return session_path
+
+    sessions = _session_files(adir)
+    return sessions[0] if sessions else None
+
+
+def _session_public_key(path: Path, metadata: dict[str, Any]) -> str:
+    return str(metadata.get("key") or path.stem)
+
+
+def _session_channel_id(path: Path, metadata: dict[str, Any]) -> str | None:
+    key = _session_public_key(path, metadata)
+    if key.startswith("discord:"):
+        return key.split(":", 1)[1]
+    if path.stem.startswith("discord_"):
+        return path.stem[len("discord_"):]
+    return None
+
+
+def _load_primary_session_bundle(name: str, profile: dict[str, Any]) -> dict[str, Any] | None:
+    path = _primary_session_path(name, profile)
+    if path is None:
+        return None
+
+    metadata, messages, compactions = _parse_session_with_compactions(path)
+    usage_summary = get_session_summary(path)
+    return {
+        "path": path,
+        "metadata": metadata,
+        "messages": messages,
+        "compactions": compactions,
+        "usage_summary": usage_summary,
+        "key": _session_public_key(path, metadata),
+        "channel_id": _session_channel_id(path, metadata),
+    }
+
+
+def _compaction_state_for_message_index(
+    compaction_events: list[dict[str, Any]],
+    user_message_index: int,
+) -> dict[str, Any] | None:
+    candidates = []
+    for event in compaction_events:
+        post_context = event.get("post_context")
+        if not isinstance(post_context, dict):
+            continue
+        first_kept = _coerce_int(post_context.get("first_kept_index"), -1)
+        if 0 <= first_kept <= user_message_index:
+            candidates.append(event)
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda event: _coerce_int(
+            (event.get("post_context") or {}).get("first_kept_index"),
+            -1,
+        ),
+    )
+
+
+def _build_context_turn_payload(
+    turn: dict[str, Any],
+    previous_turn: dict[str, Any] | None,
+    first_kept_index: int,
+    messages_in_window: int,
+    total_session_messages: int,
+) -> dict[str, Any]:
+    payload = dict(turn)
+    payload["first_kept_index"] = first_kept_index
+    payload["messages_in_window"] = messages_in_window
+    payload["session_message_count"] = total_session_messages
+    payload["system_prompt_changed_since_previous"] = (
+        previous_turn is not None
+        and previous_turn.get("system_prompt_hash") != turn.get("system_prompt_hash")
+    )
+    payload["previous_system_prompt_hash"] = (
+        previous_turn.get("system_prompt_hash") if previous_turn else None
+    )
+    return payload
+
+
+def _build_live_context_response(
+    *,
+    agent_name: str,
+    profile: dict[str, Any],
+    requested_turn_index: int | None = None,
+) -> dict[str, Any]:
+    session_bundle = _load_primary_session_bundle(agent_name, profile)
+    if session_bundle is None:
+        raise HTTPException(status_code=404, detail=f"No primary session found for '{agent_name}'")
+
+    session_path = session_bundle["path"]
+    metadata = session_bundle["metadata"]
+    messages = session_bundle["messages"]
+    usage_summary = session_bundle["usage_summary"] or {}
+    turns = load_context_log(session_path)
+    compaction_events = agent_session_compaction_sync(session_path)
+
+    if requested_turn_index is None:
+        selected_turn = turns[-1] if turns else None
+    else:
+        selected_turn = next(
+            (entry for entry in turns if _coerce_int(entry.get("turn_index"), -1) == requested_turn_index),
+            None,
+        )
+        if selected_turn is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Turn {requested_turn_index} not found for '{agent_name}'",
+            )
+
+    latest_turn = turns[-1] if turns else None
+    total_session_messages = len(messages)
+    model = _resolved_agent_model(profile, _load_config().get("agents", {}).get("defaults", {}))
+    context_window = _context_window_for_model(model, usage_summary)
+    usage_snapshot = _session_usage_snapshot(metadata)
+    current_tokens = _coerce_int(
+        usage_snapshot.get("total_input_tokens"),
+        _coerce_int(usage_summary.get("total_input_tokens"), 0),
+    )
+    utilization_pct = round(current_tokens / context_window * 100, 1) if context_window else 0.0
+
+    fallback_last_consolidated = _coerce_int(metadata.get("last_consolidated"), 0)
+    first_kept_index = fallback_last_consolidated
+    last_consolidated = fallback_last_consolidated
+    visible_messages = messages
+    turn_payload = None
+
+    if selected_turn is not None:
+        selected_turn_index = _coerce_int(selected_turn.get("turn_index"), 0)
+        previous_turn = next(
+            (
+                entry for entry in turns
+                if _coerce_int(entry.get("turn_index"), -1) == selected_turn_index - 1
+            ),
+            None,
+        )
+        user_message_index = _coerce_int(selected_turn.get("user_message_index"), len(messages) - 1)
+        compaction_state = _compaction_state_for_message_index(compaction_events, user_message_index)
+        if compaction_state:
+            post_context = compaction_state.get("post_context") or {}
+            first_kept_index = _coerce_int(post_context.get("first_kept_index"), first_kept_index)
+            last_consolidated = _coerce_int(
+                post_context.get("new_last_consolidated"),
+                last_consolidated,
+            )
+        else:
+            first_kept_index = 0 if requested_turn_index is not None else fallback_last_consolidated
+            last_consolidated = min(user_message_index, fallback_last_consolidated)
+
+        end_index = total_session_messages if requested_turn_index is None else min(total_session_messages, user_message_index + 1)
+        start_index = max(0, min(first_kept_index, end_index))
+        visible_messages = messages[start_index:end_index]
+        turn_payload = _build_context_turn_payload(
+            selected_turn,
+            previous_turn,
+            start_index,
+            len(visible_messages),
+            total_session_messages,
+        )
+    else:
+        start_index = max(0, first_kept_index)
+        visible_messages = messages[start_index:]
+
+    response = {
+        "agent": agent_name,
+        "session_key": session_bundle["key"],
+        "session_file": session_path.name,
+        "context_window": context_window,
+        "current_tokens": current_tokens,
+        "utilization_pct": utilization_pct,
+        "total_messages": total_session_messages,
+        "first_kept_index": max(0, first_kept_index),
+        "messages_in_window": len(visible_messages),
+        "last_consolidated": max(0, last_consolidated),
+        "turns_available": len(turns),
+        "messages": visible_messages,
+        "turn": turn_payload,
+        "latest_turn": (
+            turn_payload if requested_turn_index is None else (
+                _build_context_turn_payload(
+                    latest_turn,
+                    turns[-2] if len(turns) > 1 else None,
+                    max(0, first_kept_index),
+                    len(messages[max(0, first_kept_index):]),
+                    total_session_messages,
+                ) if latest_turn else None
+            )
+        ),
+    }
+    return response
+
+
+def _recent_activity_entry(agent: str, msg: dict[str, Any]) -> dict[str, Any] | None:
+    ts = _message_timestamp(msg)
+    if ts is None:
+        return None
+    role = str(msg.get("role") or msg.get("_type") or "message")
+    content = msg.get("content")
+    if isinstance(content, list):
+        preview = " ".join(
+            part.get("text", "")
+            if isinstance(part, dict) and part.get("type") == "text"
+            else "[image]"
+            if isinstance(part, dict) and part.get("type") == "image_url"
+            else str(part)
+            for part in content
+        )
+    elif content is None:
+        preview = ""
+    else:
+        preview = str(content)
+
+    return {
+        "agent": agent,
+        "timestamp": ts.isoformat(),
+        "role": role,
+        "preview": preview[:240],
+    }
+
+
+def _build_agent_record(
+    name: str,
+    profile: dict[str, Any],
+    defaults: dict[str, Any],
+    workspace: Path,
+) -> dict[str, Any]:
+    agent_dir = workspace / "agents" / name
+    sessions = _session_files(agent_dir)
+    total_msgs = 0
+    for session_path in sessions:
+        try:
+            _meta, session_messages = _parse_session(session_path)
+            total_msgs += len(session_messages)
+        except Exception:
+            pass
+
+    mem_file = agent_dir / "memory" / "MEMORY.md"
+    mem_text = _read_text(mem_file) or ""
+    hist_dir = agent_dir / "memory" / "history"
+    hist_count = len(list(hist_dir.glob("*.md"))) if hist_dir.exists() else 0
+    display_name = _resolved_agent_display_name(name, profile)
+    model = _resolved_agent_model(profile, defaults)
+    primary_bundle = _load_primary_session_bundle(name, profile)
+    primary_key = None
+    primary_channel_id = None
+    last_active = None
+    context_tokens = 0
+    context_window = _context_window_for_model(model)
+    context_pct = 0.0
+
+    if primary_bundle is not None:
+        primary_meta = primary_bundle["metadata"]
+        primary_usage = primary_bundle["usage_summary"] or {}
+        usage_snapshot = _session_usage_snapshot(primary_meta)
+        primary_key = primary_bundle["key"]
+        primary_channel_id = primary_bundle["channel_id"]
+        last_active = primary_meta.get("updated_at")
+        context_tokens = _coerce_int(
+            usage_snapshot.get("total_input_tokens"),
+            _coerce_int(primary_usage.get("total_input_tokens"), 0),
+        )
+        context_window = _context_window_for_model(model, primary_usage)
+        context_pct = round(context_tokens / context_window * 100, 1) if context_window else 0.0
+
+    return {
+        "name": name,
+        "displayName": display_name,
+        "model": model,
+        "configuredModel": _profile_value(profile, "model", "model"),
+        "systemIdentity": (_profile_value(profile, "systemIdentity", "system_identity") or "")[:80],
+        "sessionCount": len(sessions),
+        "messageCount": total_msgs,
+        "memoryChars": len(mem_text),
+        "memoryTokens": _estimate_tokens(mem_text),
+        "historyFileCount": hist_count,
+        "discordChannels": _profile_value(profile, "discordChannels", "discord_channels") or [],
+        "primaryChannelId": primary_channel_id,
+        "primarySession": primary_key,
+        "contextTokens": context_tokens,
+        "contextWindow": context_window,
+        "contextPct": context_pct,
+        "lastActive": last_active,
+    }
+
+
+def agent_session_compaction_sync(session_path: Path) -> list[dict[str, Any]]:
+    compaction_path = session_path.with_suffix(".compaction.jsonl")
+    if not compaction_path.exists():
+        return []
+
+    events: list[dict[str, Any]] = []
+    with open(compaction_path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    events.sort(key=lambda event: event.get("timestamp", ""))
+    return events
 
 
 # ---------------------------------------------------------------------------
@@ -220,40 +788,220 @@ async def list_agents():
     cfg = _load_config()
     profiles = cfg.get("agents", {}).get("profiles", {})
     ws = _workspace()
+    defaults = cfg.get("agents", {}).get("defaults", {})
     agents = []
     for name, profile in profiles.items():
-        adir = ws / "agents" / name
-        # Session stats
-        sessions = _session_files(adir)
-        total_msgs = 0
-        for sp in sessions:
-            try:
-                _, msgs = _parse_session(sp)
-                total_msgs += len(msgs)
-            except Exception:
-                pass
-
-        # Memory stats
-        mem_file = adir / "memory" / "MEMORY.md"
-        mem_text = _read_text(mem_file) or ""
-        mem_chars = len(mem_text)
-
-        # History
-        hist_dir = adir / "memory" / "history"
-        hist_count = len(list(hist_dir.glob("*.md"))) if hist_dir.exists() else 0
-
-        agents.append({
-            "name": name,
-            "model": profile.get("model"),
-            "systemIdentity": (profile.get("systemIdentity") or "")[:80],
-            "sessionCount": len(sessions),
-            "messageCount": total_msgs,
-            "memoryChars": mem_chars,
-            "memoryTokens": _estimate_tokens(mem_text),
-            "historyFileCount": hist_count,
-            "discordChannels": profile.get("discordChannels", []),
-        })
+        agents.append(_build_agent_record(name, profile, defaults, ws))
     return {"agents": agents}
+
+
+@app.get("/api/agents/{name}/context/live")
+async def agent_context_live(name: str):
+    cfg = _load_config()
+    profile = cfg.get("agents", {}).get("profiles", {}).get(name)
+    if not isinstance(profile, dict):
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    return _build_live_context_response(agent_name=name, profile=profile)
+
+
+@app.get("/api/agents/{name}/context/turn/{turn_index}")
+async def agent_context_turn(name: str, turn_index: int):
+    cfg = _load_config()
+    profile = cfg.get("agents", {}).get("profiles", {}).get(name)
+    if not isinstance(profile, dict):
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    return _build_live_context_response(
+        agent_name=name,
+        profile=profile,
+        requested_turn_index=turn_index,
+    )
+
+
+@app.get("/api/agents/{name}/extractions")
+async def agent_extractions(name: str):
+    cfg = _load_config()
+    profile = cfg.get("agents", {}).get("profiles", {}).get(name)
+    if not isinstance(profile, dict):
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    session_bundle = _load_primary_session_bundle(name, profile)
+    if session_bundle is None:
+        return {"events": [], "count": 0}
+    events = load_extraction_log(session_bundle["path"])
+    events.sort(key=lambda event: event.get("timestamp", ""), reverse=True)
+    return {"events": events, "count": len(events)}
+
+
+@app.get("/api/overview")
+async def overview():
+    cfg = _load_config()
+    profiles = cfg.get("agents", {}).get("profiles", {})
+    defaults = cfg.get("agents", {}).get("defaults", {})
+    ws = _workspace()
+    agents = [
+        _build_agent_record(name, profile, defaults, ws)
+        for name, profile in profiles.items()
+    ]
+
+    now = datetime.now(timezone.utc)
+    recent_cutoff = now.timestamp() - 86400
+    total_messages_today = 0
+    recent_activity: list[dict[str, Any]] = []
+    for name, profile in profiles.items():
+        session_bundle = _load_primary_session_bundle(name, profile)
+        if session_bundle is None:
+            continue
+        messages = session_bundle["messages"]
+        total_messages_today += sum(
+            1
+            for msg in messages
+            if (
+                (ts := _message_timestamp(msg)) is not None
+                and ts.timestamp() >= recent_cutoff
+            )
+        )
+        for msg in messages[-20:]:
+            activity = _recent_activity_entry(name, msg)
+            if activity is not None:
+                recent_activity.append(activity)
+
+    recent_activity.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
+    disk = shutil.disk_usage(ws)
+    graph = await graph_stats()
+    return {
+        "agent_count": len(agents),
+        "total_messages_today": total_messages_today,
+        "max_context_pct": round(max((agent.get("contextPct", 0) for agent in agents), default=0.0), 1),
+        "uptime": _format_uptime(_uptime_seconds()),
+        "uptime_seconds": _uptime_seconds(),
+        "started_at": PROCESS_STARTED_AT.isoformat(),
+        "nanobot_version": _nanobot_version(),
+        "python_version": sys.version,
+        "disk": {
+            "total": disk.total,
+            "used": disk.used,
+            "free": disk.free,
+        },
+        "graph": graph,
+        "recent_activity": recent_activity[:12],
+    }
+
+
+@app.get("/api/skills")
+async def skills():
+    cfg = _load_config()
+    profiles = cfg.get("agents", {}).get("profiles", {})
+    workspace = _workspace()
+    global_skills_dir = workspace / "skills"
+    builtin_skills_dir = _project_root() / "nanobot" / "skills"
+
+    global_skills = [
+        _read_skill_info(path, "global")
+        for path in sorted(global_skills_dir.glob("*/SKILL.md"))
+    ]
+    builtin_skills = [
+        _read_skill_info(path, "builtin")
+        for path in sorted(builtin_skills_dir.glob("*/SKILL.md"))
+    ]
+
+    per_agent: dict[str, Any] = {}
+    for agent_name in sorted(profiles.keys()):
+        local_paths = sorted((workspace / "agents" / agent_name / "skills").glob("*/SKILL.md"))
+        local_skills = [
+            _read_skill_info(path, "local", agent=agent_name)
+            for path in local_paths
+        ]
+        total = len({skill["name"] for skill in global_skills + builtin_skills + local_skills})
+        per_agent[agent_name] = {
+            "local": local_skills,
+            "total": total,
+        }
+
+    return {
+        "global": global_skills,
+        "builtin": builtin_skills,
+        "per_agent": per_agent,
+    }
+
+
+@app.get("/api/channels")
+async def channels():
+    cfg = _load_config()
+    profiles = cfg.get("agents", {}).get("profiles", {})
+    discord_cfg = cfg.get("channels", {}).get("discord", {})
+    rows = []
+    for agent_name, profile in profiles.items():
+        display_name = _resolved_agent_display_name(agent_name, profile)
+        model = _resolved_agent_model(profile, cfg.get("agents", {}).get("defaults", {}))
+        for channel_id in _profile_value(profile, "discordChannels", "discord_channels") or []:
+            rows.append({
+                "id": str(channel_id),
+                "name": None,
+                "label": display_name,
+                "agent": agent_name,
+                "displayName": display_name,
+                "model": model,
+                "webhook": bool(_profile_value(profile, "discordWebhookUrl", "discord_webhook_url")),
+                "status": "live" if discord_cfg.get("enabled") else "disabled",
+            })
+
+    return {
+        "discord": {
+            "enabled": bool(discord_cfg.get("enabled")),
+            "guild_id": discord_cfg.get("guildId") or discord_cfg.get("guild_id"),
+            "usage_dashboard": _sanitize_config_value(
+                "usage_dashboard",
+                discord_cfg.get("usageDashboard") or discord_cfg.get("usage_dashboard") or {},
+            ),
+            "system_status": _sanitize_config_value(
+                "system_status",
+                discord_cfg.get("systemStatus") or discord_cfg.get("system_status") or {},
+            ),
+            "channels": rows,
+        }
+    }
+
+
+@app.get("/api/logs")
+async def get_logs(
+    lines: int = Query(100, ge=1, le=500),
+    level: str = Query("all"),
+):
+    log_path = Path.home() / ".nanobot" / "logs" / "gateway.log"
+    if not log_path.exists():
+        return {"entries": [], "count": 0, "path": str(log_path)}
+
+    requested_level = level.lower()
+    tail = deque(maxlen=lines * 5 if requested_level != "all" else lines)
+    with open(log_path, encoding="utf-8", errors="replace") as handle:
+        for raw_line in handle:
+            tail.append(raw_line.rstrip("\n"))
+
+    entries = []
+    for raw_line in reversed(tail):
+        match = _LOG_LINE_RE.match(raw_line)
+        parsed = {
+            "raw": raw_line,
+            "timestamp": match.group("timestamp") if match else None,
+            "level": (match.group("level") if match else "UNKNOWN"),
+            "source": (match.group("source").strip() if match else None),
+            "message": (match.group("message") if match else raw_line),
+        }
+        if requested_level != "all" and parsed["level"].lower() != requested_level:
+            continue
+        entries.append(parsed)
+        if len(entries) >= lines:
+            break
+
+    return {
+        "entries": list(reversed(entries)),
+        "count": len(entries),
+        "path": str(log_path),
+    }
+
+
+@app.get("/api/config")
+async def config():
+    return {"config": _sanitize_config_value("config", _load_config())}
 
 
 @app.get("/api/agents/{name}/memory")
@@ -313,6 +1061,9 @@ async def agent_identity(name: str):
 @app.get("/api/agents/{name}/sessions")
 async def agent_sessions(name: str):
     adir = _agent_dir(name)
+    cfg = _load_config()
+    profile = cfg.get("agents", {}).get("profiles", {}).get(name, {})
+    primary_path = _primary_session_path(name, profile) if isinstance(profile, dict) else None
     sessions = []
     for sp in _session_files(adir):
         try:
@@ -325,6 +1076,8 @@ async def agent_sessions(name: str):
                 "createdAt": meta.get("created_at"),
                 "updatedAt": meta.get("updated_at"),
                 "size": sp.stat().st_size,
+                "isPrimary": primary_path == sp,
+                "isCron": sp.stem.startswith("cron_") or str(meta.get("key", "")).startswith("cron:"),
             })
         except Exception:
             sessions.append({
@@ -332,6 +1085,8 @@ async def agent_sessions(name: str):
                 "file": sp.name,
                 "messageCount": 0,
                 "error": "Failed to parse",
+                "isPrimary": primary_path == sp,
+                "isCron": sp.stem.startswith("cron_"),
             })
     return {"sessions": sessions}
 
@@ -453,22 +1208,7 @@ async def agent_session_detail(
 async def agent_session_compaction(name: str, key: str):
     """Return the compaction event log for a session."""
     path = _resolve_session_path(name, key)
-    compaction_path = path.with_suffix(".compaction.jsonl")
-    if not compaction_path.exists():
-        return {"events": [], "count": 0}
-
-    events: list[dict] = []
-    with open(compaction_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-
-    events.sort(key=lambda e: e.get("timestamp", ""))
+    events = agent_session_compaction_sync(path)
     return {"events": events, "count": len(events)}
 
 
@@ -479,21 +1219,12 @@ async def agent_compaction_all(name: str):
     all_events: list[dict] = []
 
     for sp in _session_files(adir):
-        compaction_path = sp.with_suffix(".compaction.jsonl")
-        if not compaction_path.exists():
-            continue
         session_key = sp.stem
-        with open(compaction_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                    event["_session_file"] = sp.name
-                    all_events.append(event)
-                except json.JSONDecodeError:
-                    continue
+        for event in agent_session_compaction_sync(sp):
+            event = dict(event)
+            event["_session_file"] = sp.name
+            event["_session_key"] = session_key
+            all_events.append(event)
 
     all_events.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
     return {"events": all_events, "count": len(all_events)}
@@ -502,22 +1233,7 @@ async def agent_compaction_all(name: str):
 async def agent_session_context(name: str, key: str):
     """Return the per-turn context log for a session."""
     path = _resolve_session_path(name, key)
-    context_path = path.with_suffix(".context.jsonl")
-    if not context_path.exists():
-        return {"entries": [], "count": 0}
-
-    entries: list[dict] = []
-    with open(context_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-
-    entries.sort(key=lambda e: e.get("turn_index", 0))
+    entries = load_context_log(path)
     return {"entries": entries, "count": len(entries)}
 
 

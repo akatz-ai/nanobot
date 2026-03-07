@@ -1671,6 +1671,23 @@ class AgentLoop:
                                 session.key,
                             )
 
+                        memory_compact_result = None
+                        try:
+                            memory_compact_result = await self.context.memory.compact_memory_md(
+                                provider=self.provider,
+                                model=self.background_model,
+                            )
+                            if memory_compact_result and memory_compact_result.get("success"):
+                                logger.info(
+                                    "MEMORY.md compacted: {} -> {} tokens",
+                                    memory_compact_result["before_tokens"],
+                                    memory_compact_result["after_tokens"],
+                                )
+                            elif memory_compact_result:
+                                logger.warning("MEMORY.md compaction attempted but did not produce an update")
+                        except Exception:
+                            logger.exception("MEMORY.md compaction failed (non-fatal)")
+
                         self._refresh_estimated_token_snapshot(session)
                         self.sessions.save(session)
 
@@ -1690,6 +1707,8 @@ class AgentLoop:
                             is_iterative_update=bool(entry.previous_summary),
                             cut_point_type=str(plan_meta.get("cut_point_type", "clean")),
                         )
+                        if memory_compact_result:
+                            _compaction_event.data["memory_md_compaction"] = memory_compact_result
                         _compaction_event.finalize(
                             success=True,
                             error=None if extraction_ok else "memory extraction failed",

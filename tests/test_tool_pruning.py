@@ -236,7 +236,7 @@ def test_pruning_noop_without_tool_messages() -> None:
     assert not any(_is_pruned_tool(msg) for msg in history)
 
 
-def test_compaction_summary_system_message_is_not_affected() -> None:
+def test_compaction_summary_stays_out_of_history_pruning() -> None:
     session = _build_session(["exec", "exec", "exec", "exec", "exec"], output_chars=18_000)
     summary = (
         "## Goal\nKeep summary\n\n"
@@ -257,9 +257,11 @@ def test_compaction_summary_system_message_is_not_affected() -> None:
         prune_minimum_tokens=100,
     )
 
-    assert history[0]["role"] == "system"
-    assert history[0]["content"] == summary
-    assert any(_is_pruned_tool(msg) for msg in _tool_messages(history[1:]))
+    assert not any(
+        msg.get("role") == "system" and msg.get("content") == summary
+        for msg in history
+    )
+    assert any(_is_pruned_tool(msg) for msg in _tool_messages(history))
 
 
 def test_all_eligible_old_tool_messages_can_be_pruned() -> None:

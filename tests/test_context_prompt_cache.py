@@ -39,8 +39,8 @@ def test_system_prompt_stays_stable_when_clock_changes(tmp_path, monkeypatch) ->
     assert prompt1 == prompt2
 
 
-def test_runtime_context_is_separate_system_message(tmp_path) -> None:
-    """Runtime metadata should be a separate system message containing session info."""
+def test_turn_context_is_prepended_to_user_message(tmp_path) -> None:
+    """Runtime metadata should be inline on the user message, not a system message."""
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
 
@@ -53,17 +53,14 @@ def test_runtime_context_is_separate_system_message(tmp_path) -> None:
 
     # First message is the main system prompt (no session metadata baked in)
     assert messages[0]["role"] == "system"
-    assert "## Current Session" not in messages[0]["content"]
+    assert "[Current Session]" not in messages[0]["content"]
 
-    # Find the runtime context system message
-    session_msgs = [m for m in messages if m["role"] == "system" and "## Current Session" in m.get("content", "")]
-    assert len(session_msgs) == 1
-    runtime_content = session_msgs[0]["content"]
-    assert ContextBuilder._RUNTIME_CONTEXT_TAG in runtime_content
-    assert "Current Time:" in runtime_content
-    assert "Channel: cli" in runtime_content
-    assert "Chat ID: direct" in runtime_content
+    system_contents = [m.get("content", "") for m in messages if m["role"] == "system"]
+    assert not any("[Current Session]" in content for content in system_contents)
 
-    # Last message should be the user's actual input
+    # Last message should contain the prepended turn context and actual input
     assert messages[-1]["role"] == "user"
-    assert messages[-1]["content"] == "Return exactly: OK"
+    assert "[Current Session]" in messages[-1]["content"]
+    assert "Channel: cli | Chat ID: direct" in messages[-1]["content"]
+    assert "Time:" in messages[-1]["content"]
+    assert messages[-1]["content"].endswith("Return exactly: OK")

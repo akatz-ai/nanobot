@@ -96,8 +96,10 @@ async def test_full_structured_compaction_flow(tmp_path: Path) -> None:
     assert session.last_consolidated > 0
 
     history, _ = session.get_history(max_messages=200)
-    assert history[0]["role"] == "system"
-    assert "## Goal" in history[0]["content"]
+    assert not any(
+        msg.get("role") == "system" and "## Goal" in msg.get("content", "")
+        for msg in history
+    )
 
     loop.sessions.save(session)
     loop.sessions.invalidate(session.key)
@@ -165,8 +167,10 @@ async def test_iterative_structured_compaction_uses_previous_summary(tmp_path: P
     assert "<previous_summary>" in second_prompt
 
     history, _ = session.get_history(max_messages=200)
-    assert history[0]["role"] == "system"
-    assert "## Goal" in history[0]["content"]
+    assert not any(
+        msg.get("role") == "system" and "## Goal" in msg.get("content", "")
+        for msg in history
+    )
 
 
 @pytest.mark.asyncio

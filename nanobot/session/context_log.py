@@ -33,6 +33,8 @@ class TurnContextLogger:
       - system_prompt_length: char count
       - system_messages: list of all injected system messages (role=system)
         with their content (or a truncated version for the base prompt)
+      - latest_user_turn_context: the inline per-turn context prepended to the
+        most recent user message, if present
       - memory_context: the raw retrieved memory string (or null)
       - resume_notice: the resume notice string (or null)
     """
@@ -67,6 +69,41 @@ class TurnContextLogger:
     @staticmethod
     def _hash(text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _content_to_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    if item:
+                        parts.append(item)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+            return "\n".join(parts)
+        return str(content or "")
+
+    @classmethod
+    def _extract_latest_user_turn_context(
+        cls, built_messages: list[dict[str, Any]]
+    ) -> tuple[str | None, str | None]:
+        for msg in reversed(built_messages):
+            if msg.get("role") != "user":
+                continue
+            text = cls._content_to_text(msg.get("content"))
+            if not text.startswith("[Current Session]\n"):
+                return None, text or None
+            prefix, separator, body = text.partition("\n---\n\n")
+            if not separator:
+                return text, None
+            return prefix, body
+        return None, None
 
     def log_turn(
         self,
@@ -113,17 +150,23 @@ class TurnContextLogger:
         # Extract system messages and the base system prompt
         system_messages: list[dict[str, Any]] = []
         system_prompt: str | None = None
+        static_prefix_end = next(
+            (idx for idx, msg in enumerate(built_messages) if msg.get("role") != "system"),
+            len(built_messages),
+        )
 
         for i, msg in enumerate(built_messages):
             if msg.get("role") != "system":
                 continue
             content = msg.get("content", "")
+            segment = "static_prefix" if i < static_prefix_end else "dynamic_system"
             if i == 0:
                 # First system message is the base prompt
                 system_prompt = content
                 system_messages.append({
                     "index": i,
                     "label": "system_prompt",
+                    "segment": segment,
                     "length": len(content),
                     "char_count": len(content),
                     "hash": self._hash(content),
@@ -134,6 +177,7 @@ class TurnContextLogger:
                 system_messages.append({
                     "index": i,
                     "label": label,
+                    "segment": segment,
                     "content": content,
                     "length": len(content),
                     "char_count": len(content),
@@ -145,6 +189,9 @@ class TurnContextLogger:
             sm.get("label") == "compaction_summary"
             for sm in system_messages
         )
+        latest_user_turn_context, latest_user_message_body = self._extract_latest_user_turn_context(
+            built_messages
+        )
 
         entry: dict[str, Any] = {
             "turn_index": self._turn_counter,
@@ -154,12 +201,20 @@ class TurnContextLogger:
             "system_prompt_length": len(system_prompt) if system_prompt else 0,
             "system_prompt_changed": prompt_changed,
             "system_messages": system_messages,
+            "static_prefix_system_count": sum(
+                1 for item in system_messages if item.get("segment") == "static_prefix"
+            ),
+            "dynamic_system_count": sum(
+                1 for item in system_messages if item.get("segment") == "dynamic_system"
+            ),
+            "latest_user_turn_context": latest_user_turn_context,
+            "latest_user_message_body": latest_user_message_body,
             "memory_context_raw": memory_context,
             "resume_notice": resume_notice,
             "compaction_summary_injected": compaction_summary_injected,
             "total_messages": len(built_messages),
             "total_chars": sum(
-                len(m.get("content", "") if isinstance(m.get("content"), str) else str(m.get("content", "")))
+                len(self._content_to_text(m.get("content")))
                 for m in built_messages
             ),
         }

@@ -633,12 +633,18 @@ class AgentLoop:
 
     @staticmethod
     def _drop_oldest_history_message(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Drop one oldest history entry, preserving compaction summary until needed."""
+        """Drop one oldest history entry."""
         if not history:
             return history
-        if history[0].get("role") == "system" and len(history) > 1:
-            return [history[0], *history[2:]]
         return history[1:]
+
+    @staticmethod
+    def _latest_compaction_system_messages(session: Session) -> list[str]:
+        """Return the latest compaction summary as explicit system input."""
+        entry = session.get_last_compaction()
+        if entry and entry.summary:
+            return [entry.summary]
+        return []
 
     def _build_messages_with_prompt_budget(
         self,
@@ -1201,6 +1207,7 @@ class AgentLoop:
             context_window=context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
         )
+        extra_system_messages = self._latest_compaction_system_messages(session)
         initial_messages = self._build_messages_with_prompt_budget(
             history=history,
             current_message=None,
@@ -1208,6 +1215,7 @@ class AgentLoop:
             channel=channel,
             chat_id=chat_id,
             resume_notice=self._RESUME_SYSTEM_MESSAGE,
+            extra_system_messages=extra_system_messages,
         )
         self._get_context_logger(session).log_turn(
             built_messages=initial_messages,
@@ -1396,6 +1404,7 @@ class AgentLoop:
                 context_window=context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
+            extra_system_messages = self._latest_compaction_system_messages(session)
             initial_messages = self._build_messages_with_prompt_budget(
                 history=history,
                 current_message=msg.content,
@@ -1404,6 +1413,7 @@ class AgentLoop:
                 chat_id=chat_id,
                 memory_context=memory_context,
                 resume_notice=resume_notice,
+                extra_system_messages=extra_system_messages,
             )
             self._get_context_logger(session).log_turn(
                 built_messages=initial_messages,
@@ -1757,7 +1767,7 @@ class AgentLoop:
             )
 
         memory_context = await self._retrieve_memory_context(session, msg.content)
-        extra_system_messages: list[str] = []
+        extra_system_messages = self._latest_compaction_system_messages(session)
         history, prune_result = session.get_history(
             max_messages=max(1, len(session.messages)),
             context_window=_context_window,

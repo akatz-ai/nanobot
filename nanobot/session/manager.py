@@ -503,18 +503,28 @@ class Session:
             Tuple of (messages, prune_result).  ``prune_result`` is ``None``
             when pruning is disabled or not applicable.
         """
-        compaction = self.get_last_compaction()
-        if compaction:
-            prompt_window = self.messages[compaction.first_kept_index:]
+        last_compaction = self.get_last_compaction()
+        if last_compaction:
+            prompt_window = self.messages[last_compaction.first_kept_index:]
         else:
             prompt_window = self.messages
         sliced = prompt_window[-max_messages:]
 
-        # Drop leading non-user messages to avoid orphaned tool_result blocks
-        if compaction is None:
+        # Drop leading assistant/tool messages to avoid orphaned tool_result blocks,
+        # but preserve any legacy leading system messages in older sessions.
+        if last_compaction is None:
+            leading_system: list[dict[str, Any]] = []
+            start_index = 0
             for i, m in enumerate(sliced):
+                if m.get("role") == "system":
+                    leading_system.append(m)
+                    start_index = i + 1
+                    continue
+                start_index = i
+                break
+            for i, m in enumerate(sliced[start_index:], start=start_index):
                 if m.get("role") == "user":
-                    sliced = sliced[i:]
+                    sliced = leading_system + sliced[i:]
                     break
 
         out: list[dict[str, Any]] = []
@@ -556,8 +566,6 @@ class Session:
                     prune_result.messages_protected,
                     prune_result.total_tool_messages,
                 )
-        if compaction:
-            out = [{"role": "system", "content": compaction.summary}] + out
         return out, prune_result
 
     def detect_resume_state(self) -> str:

@@ -664,9 +664,10 @@ def should_compact(
     context_window: int = 200_000,
     reserve_tokens: int = 16_384,
     last_input_tokens: int | None = None,
+    threshold_ratio: float = 0.75,
 ) -> bool:
     """Decide whether compaction should run based on token pressure."""
-    threshold = (context_window - reserve_tokens) * 0.7
+    threshold = (context_window - reserve_tokens) * threshold_ratio
     if last_input_tokens is not None:
         return float(last_input_tokens) > float(threshold)
 
@@ -724,6 +725,7 @@ async def compact_session(
     context_window: int = 200_000,
     reserve_tokens: int = 16_384,
     keep_recent_tokens: int = 20_000,
+    threshold_ratio: float = 0.75,
 ) -> CompactionEntry | None:
     """Run structured compaction and persist a CompactionEntry when successful."""
     last_input_tokens = _usage_snapshot_tokens(session)
@@ -750,6 +752,7 @@ async def compact_session(
         context_window=context_window,
         reserve_tokens=reserve_tokens,
         last_input_tokens=decision_tokens,
+        threshold_ratio=threshold_ratio,
     ):
         return None
 

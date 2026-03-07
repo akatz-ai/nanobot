@@ -223,7 +223,9 @@ class TestSessionPersistence:
         temp_manager.invalidate("test:bad_metadata")
         loaded = temp_manager.get_or_create("test:bad_metadata")
 
-        assert loaded.last_consolidated == 0
+        # V3 extraction migration: last_consolidated advances from 0 → 1
+        # to skip historical backlog on sessions that never had extraction.
+        assert loaded.last_consolidated == 1
         assert [m["content"] for m in loaded.messages] == ["hello"]
 
     def test_save_uses_atomic_replace(self, temp_manager, monkeypatch: pytest.MonkeyPatch):
@@ -307,7 +309,9 @@ class TestSessionPersistence:
         )
         temp_manager.invalidate("test:bad_last_consolidated")
         loaded = temp_manager.get_or_create("test:bad_last_consolidated")
-        assert loaded.last_consolidated == 0
+        # V3 extraction migration: invalid last_consolidated parses as 0,
+        # then migration advances to len(messages)=2 to skip backlog.
+        assert loaded.last_consolidated == 2
 
     def test_load_clamps_last_consolidated_to_message_count(self, temp_manager):
         """Out-of-range last_consolidated should be clamped to current message length."""

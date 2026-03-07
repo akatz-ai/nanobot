@@ -504,7 +504,7 @@ async def test_process_message_pruning_uses_fresh_snapshot_ceiling(
         }
 
         baseline_history = [{"role": "user", "content": "x" * 45_000}]
-        pressure_history = [{"role": "user", "content": "y" * 30_000}]
+        pressure_history = [{"role": "user", "content": "y" * 35_000}]
 
         def _fake_get_history(*args, **kwargs):
             if kwargs.get("prune_tool_results") is False:
@@ -550,7 +550,7 @@ async def test_process_message_ignores_stale_snapshot_ceiling(
         loop._last_input_tokens.pop(session.key, None)
 
         baseline_history = [{"role": "user", "content": "x" * 45_000}]
-        pressure_history = [{"role": "user", "content": "y" * 30_000}]
+        pressure_history = [{"role": "user", "content": "y" * 35_000}]
 
         def _fake_get_history(*args, **kwargs):
             if kwargs.get("prune_tool_results") is False:
@@ -593,7 +593,7 @@ async def test_compact_session_pruning_uses_fresh_snapshot_ceiling(
     }
 
     baseline_history = [{"role": "user", "content": "x" * 45_000}]
-    pressure_history = [{"role": "user", "content": "y" * 30_000}]
+    pressure_history = [{"role": "user", "content": "y" * 35_000}]
 
     def _fake_get_history(*args, **kwargs):
         if kwargs.get("prune_tool_results") is False:
@@ -637,7 +637,7 @@ async def test_compact_session_ignores_stale_snapshot_ceiling(
     }
 
     baseline_history = [{"role": "user", "content": "x" * 45_000}]
-    pressure_history = [{"role": "user", "content": "y" * 30_000}]
+    pressure_history = [{"role": "user", "content": "y" * 35_000}]
 
     def _fake_get_history(*args, **kwargs):
         if kwargs.get("prune_tool_results") is False:

@@ -487,13 +487,6 @@ class Session:
                 "Invalid last_consolidated="
                 f"{self.last_consolidated} for message_count={len(self.messages)}"
             )
-        compaction = self.get_last_compaction()
-        if compaction and self.last_consolidated > compaction.first_kept_index:
-            raise ValueError(
-                "Invalid compaction cursors: "
-                f"last_consolidated={self.last_consolidated} > "
-                f"first_kept_index={compaction.first_kept_index}"
-            )
     
     def get_history(
         self,
@@ -738,6 +731,27 @@ class SessionManager:
 
             if last_consolidated > len(messages):
                 last_consolidated = len(messages)
+
+            # --- V3 extraction migration ---
+            # Sessions created before the V3 extraction pipeline have
+            # last_consolidated=0 even though they may contain thousands of
+            # messages.  Without this migration the first compaction after
+            # upgrade would try to extract the *entire* history through
+            # Haiku, which is both expensive and low-quality on huge windows.
+            #
+            # Fix: when a session has messages but last_consolidated was
+            # never advanced (still 0), skip the backlog by setting the
+            # pointer to the current message count.  New extractions will
+            # start from here going forward.
+            if last_consolidated == 0 and len(messages) > 0:
+                logger.info(
+                    "V3 extraction migration for {}: advancing last_consolidated "
+                    "from 0 → {} (skipping historical backlog)",
+                    key,
+                    len(messages),
+                )
+                last_consolidated = len(messages)
+
             for idx, compaction in enumerate(compactions):
                 raw_first_kept = compaction.get("first_kept_index", 0)
                 try:

@@ -468,12 +468,28 @@ class DiscordChannel(BaseChannel):
 
         reply_to = (payload.get("referenced_message") or {}).get("id")
 
+        # Extract replied-to message content for context injection
+        reply_context = None
+        referenced_msg = payload.get("referenced_message")
+        if referenced_msg:
+            ref_content = referenced_msg.get("content") or ""
+            ref_author = (referenced_msg.get("author") or {}).get("username", "unknown")
+            if ref_content:
+                # Truncate very long referenced messages
+                if len(ref_content) > 1500:
+                    ref_content = ref_content[:1500] + "…"
+                reply_context = f"[Replying to {ref_author}: {ref_content}]"
+
         await self._start_typing(channel_id)
+
+        final_content = "\n".join(p for p in content_parts if p) or "[empty message]"
+        if reply_context:
+            final_content = f"{reply_context}\n\n{final_content}"
 
         await self._handle_message(
             sender_id=sender_id,
             chat_id=channel_id,
-            content="\n".join(p for p in content_parts if p) or "[empty message]",
+            content=final_content,
             media=media_paths,
             metadata={
                 "message_id": str(payload.get("id", "")),

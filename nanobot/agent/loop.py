@@ -103,7 +103,6 @@ class AgentLoop:
     }
     _DEFAULT_CONTEXT_WINDOW = 200_000
     _COMPACTION_THRESHOLD_RATIO = 0.75  # Compact at 75% of context window
-    _HISTORY_MAX_MESSAGES = 1000
     _CONSOLIDATION_KEEP_COUNT = 25
     _COMPACTION_RESERVE_TOKENS = 16_384
     _COMPACTION_KEEP_RECENT_TOKENS = 20_000
@@ -432,15 +431,20 @@ class AgentLoop:
         return max(80, remaining)
 
     def _get_prompt_input_budget(self) -> int:
-        """Return a conservative prompt-input budget for preflight checks."""
+        """Return a prompt-input budget aligned with the compaction threshold.
+
+        The budget allows the prompt to use up to ``_COMPACTION_THRESHOLD_RATIO``
+        of the context window (minus a reserve for the compaction summary and
+        output headroom).  This ensures the preflight trimmer doesn't silently
+        drop messages before the compaction system has a chance to properly
+        summarize them.
+        """
         context_window = max(int(self._get_context_window_size()), 1)
-        output_budget = max(int(self.max_tokens), 1)
-        # Scale reserve for smaller models while preserving 16k reserve on large windows.
-        reserve_tokens = max(
-            2_048,
-            min(self._COMPACTION_RESERVE_TOKENS, max(2_048, context_window // 4)),
+        return max(
+            512,
+            int(context_window * self._COMPACTION_THRESHOLD_RATIO)
+            - self._COMPACTION_RESERVE_TOKENS,
         )
-        return max(512, context_window - output_budget - reserve_tokens)
 
     @staticmethod
     def _estimate_prompt_tokens(messages: list[dict[str, Any]]) -> int:
@@ -532,7 +536,7 @@ class AgentLoop:
         """Refresh token snapshot from visible prompt window after compaction."""
         context_window = self._get_context_window_size()
         visible_history, _ = session.get_history(
-            max_messages=self._HISTORY_MAX_MESSAGES,
+            max_messages=max(1, len(session.messages)),
             context_window=context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
         )
@@ -1013,7 +1017,7 @@ class AgentLoop:
 
         context_window = self._get_context_window_size()
         history, prune_result = session.get_history(
-            max_messages=self._HISTORY_MAX_MESSAGES,
+            max_messages=max(1, len(session.messages)),
             context_window=context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
         )
@@ -1208,7 +1212,7 @@ class AgentLoop:
             memory_context = await self._retrieve_memory_context(session, msg.content)
             context_window = self._get_context_window_size()
             history, prune_result = session.get_history(
-                max_messages=self._HISTORY_MAX_MESSAGES,
+                max_messages=max(1, len(session.messages)),
                 context_window=context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
@@ -1319,12 +1323,12 @@ class AgentLoop:
                 _token_count = int(self._last_input_tokens.get(session.key, 0) or 0)
 
             baseline_messages, _ = session.get_history(
-                max_messages=self._HISTORY_MAX_MESSAGES,
+                max_messages=max(1, len(session.messages)),
                 context_window=_context_window,
                 prune_tool_results=False,
             )
             pressure_messages, _ = session.get_history(
-                max_messages=self._HISTORY_MAX_MESSAGES,
+                max_messages=max(1, len(session.messages)),
                 context_window=_context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
@@ -1343,6 +1347,7 @@ class AgentLoop:
                 context_window=_context_window,
                 reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
                 last_input_tokens=decision_tokens,
+                threshold_ratio=self._COMPACTION_THRESHOLD_RATIO,
             )
             threshold = int((_context_window - self._COMPACTION_RESERVE_TOKENS) * self._COMPACTION_THRESHOLD_RATIO)
             logger.info(
@@ -1426,6 +1431,7 @@ class AgentLoop:
                         context_window=_context_window,
                         reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
                         keep_recent_tokens=self._COMPACTION_KEEP_RECENT_TOKENS,
+                        threshold_ratio=self._COMPACTION_THRESHOLD_RATIO,
                     )
 
                     if entry is None:
@@ -1573,7 +1579,7 @@ class AgentLoop:
         memory_context = await self._retrieve_memory_context(session, msg.content)
         extra_system_messages: list[str] = []
         history, prune_result = session.get_history(
-            max_messages=self._HISTORY_MAX_MESSAGES,
+            max_messages=max(1, len(session.messages)),
             context_window=_context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
         )
@@ -1588,6 +1594,16 @@ class AgentLoop:
             resume_notice=resume_notice,
             extra_system_messages=extra_system_messages,
         )
+
+        # Tag the current user message with the platform message_id so it
+        # persists in the session JSONL for future lookup / reply threading.
+        _msg_id = metadata.get("message_id") if metadata else None
+        if _msg_id:
+            for _m in reversed(initial_messages):
+                if _m.get("role") == "user":
+                    _m["message_id"] = str(_msg_id)
+                    break
+
         self._get_context_logger(session).log_turn(
             built_messages=initial_messages,
             memory_context=memory_context,

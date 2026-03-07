@@ -89,7 +89,7 @@ class AgentLoop:
     )
 
     # Known context window sizes for common models (in tokens).
-    # Used to determine when to trigger compaction (at 70% of window).
+    # Used to determine when to trigger compaction (at 75% of window).
     MODEL_CONTEXT_WINDOWS: dict[str, int] = {
         "claude-opus-4-6": 200_000,
         "claude-sonnet-4-6": 200_000,
@@ -1500,7 +1500,7 @@ class AgentLoop:
                                   content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
 
         # Token-based compaction: check if the session's last known input token count
-        # exceeds 70% of the model's context window.
+        # exceeds 75% of the model's context window.
         _needs_compaction = False
         _compaction_reason = "none"
         _token_count = 0

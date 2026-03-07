@@ -30,7 +30,7 @@ COMPONENTS_V2_FLAG = 1 << 15  # 32768 — IS_COMPONENTS_V2
 
 DEFAULT_POLL_INTERVAL_S = 60  # 1 minute
 BAR_WIDTH = 20  # characters for progress bar
-COMPACTION_THRESHOLD = 0.70  # 70% of context window
+COMPACTION_THRESHOLD = 0.75  # 75% of context window (must match AgentLoop._COMPACTION_THRESHOLD_RATIO)
 
 # ── Visual ─────────────────────────────────────────────────────────────────
 

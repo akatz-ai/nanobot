@@ -1213,7 +1213,13 @@ async function renderLogs(token) {
     container.innerHTML = '';
     const levelSelect = html('select', { value: state.logLevel, onChange: (event) => rerender({ logLevel: event.target.value }) }, [html('option', { value: 'all' }, 'All Levels'), html('option', { value: 'debug' }, 'Debug'), html('option', { value: 'info' }, 'Info'), html('option', { value: 'warning' }, 'Warning'), html('option', { value: 'error' }, 'Error')]);
     const lineSelect = html('select', { value: String(state.logLines), onChange: (event) => rerender({ logLines: Number(event.target.value) }) }, [50, 100, 250, 500].map((n) => html('option', { value: String(n) }, `${n} lines`)));
-    container.appendChild(renderPageHeader('Logs', 'Tail of ~/.nanobot/logs/gateway.log.', [lineSelect, levelSelect, html('button', { className: 'btn btn-ghost btn-sm', onClick: () => rerender() }, '↻ Refresh')]));
+    container.appendChild(renderPageHeader('Logs', 'Tail of ~/.nanobot/logs/gateway.log.'));
+    const toolbar = html('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:12px;' }, [
+      lineSelect, levelSelect,
+      html('div', { style: 'flex:1;' }),
+      html('button', { className: 'btn btn-ghost btn-sm', onClick: () => rerender() }, '↻ Refresh'),
+    ]);
+    container.appendChild(toolbar);
     const terminal = html('div', { className: 'terminal', style: 'max-height:620px;font-size:11.5px;' });
     const entries = data.entries || [];
     if (!entries.length) terminal.appendChild(html('div', { className: 'muted' }, 'No log lines matched the current filter.'));

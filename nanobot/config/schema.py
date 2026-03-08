@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field, ConfigDict
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings
 
+from nanobot.relay.config import RelayClientConfig
+
 
 SCHEMA_VERSION = 1
 
@@ -456,6 +458,7 @@ class Config(BaseSettings):
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    relay: RelayClientConfig = Field(default_factory=RelayClientConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     memory_graph: dict | None = Field(
         default=None,

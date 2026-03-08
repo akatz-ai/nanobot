@@ -52,8 +52,10 @@ class MemoryStore:
     _MAX_CONSOLIDATION_MESSAGES = 400
     _MAX_LINE_CONTENT_CHARS = 700
     _MAX_CONTENT_BLOCK_ITEMS = 10
-    _MEMORY_MD_MAX_TOKENS = 4000
-    _MEMORY_MD_MAX_CHARS = 16000
+    _MEMORY_MD_MAX_TOKENS = 10000
+    _MEMORY_MD_MAX_CHARS = 40000
+    _MEMORY_MD_COMPACTION_TRIGGER_TOKENS = 8000
+    _MEMORY_MD_COMPACTION_TARGET_TOKENS = 5000
     _CANONICAL_SECTIONS = (
         "Identity & Preferences",
         "Active Projects",
@@ -283,6 +285,129 @@ Reject chatter and transient details.
         except Exception:
             logger.exception("Memory consolidation failed")
             return False
+
+    async def _count_tokens_safe(self, text: str, provider: LLMProvider, model: str) -> int:
+        """Count tokens using provider support when available, else fall back to a char estimate."""
+        count_fn = getattr(provider, "count_tokens", None)
+        if callable(count_fn):
+            attempts = (
+                ((text,), {"model": model}),
+                ((), {"messages": [{"role": "user", "content": text}], "model": model, "system": None}),
+                (([{"role": "user", "content": text}], model, None), {}),
+            )
+            for args, kwargs in attempts:
+                try:
+                    count = await count_fn(*args, **kwargs)
+                except TypeError:
+                    continue
+                except Exception:
+                    break
+                if isinstance(count, int) and count > 0:
+                    return count
+        return self._estimate_tokens(text)
+
+    async def compact_memory_md(self, provider: LLMProvider, model: str) -> dict | None:
+        """Compact MEMORY.md when it grows beyond the working-memory token threshold."""
+        current_content = self.read_long_term()
+        if not current_content.strip():
+            return None
+
+        before_chars = len(current_content)
+        before_tokens = await self._count_tokens_safe(current_content, provider, model)
+        if before_tokens <= self._MEMORY_MD_COMPACTION_TRIGGER_TOKENS:
+            return None
+
+        result = {
+            "before_tokens": before_tokens,
+            "after_tokens": before_tokens,
+            "before_chars": before_chars,
+            "after_chars": before_chars,
+            "success": False,
+        }
+        current_memory = self._coerce_to_canonical(current_content)
+        prompt = f"""You are compacting an AI agent's personal working memory (MEMORY.md).
+This file is loaded into the agent's context on every single turn, so it must stay concise.
+
+Rules:
+- Preserve the canonical section structure: # MEMORY, ## Identity & Preferences, ## Active Projects, ## Decisions, ## Reference Facts, ## Recent Context
+- Keep ALL active preferences, decisions, and ongoing project context
+- Merge redundant or overlapping entries into single concise entries
+- Remove completed/stale projects and outdated decisions
+- Tighten wording - remove filler, compress without losing meaning
+- Do NOT add new information - only distill what's already there
+- Target size: ~{self._MEMORY_MD_COMPACTION_TARGET_TOKENS} tokens (current: ~{before_tokens} tokens)
+
+Call the save_memory tool with the compacted version.
+
+## Current MEMORY.md
+{current_memory}
+"""
+
+        try:
+            response = await provider.chat(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a memory compaction agent. Distill the current MEMORY.md and "
+                            "call the save_memory tool with the compacted version."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_SAVE_MEMORY_TOOL,
+                model=model,
+                temperature=0.0,
+            )
+
+            if not response.has_tool_calls:
+                logger.warning("MEMORY.md compaction: LLM did not call save_memory, skipping")
+                return result
+
+            args = response.tool_calls[0].arguments
+            if isinstance(args, str):
+                args = json.loads(args)
+            if not isinstance(args, dict):
+                logger.warning(
+                    "MEMORY.md compaction: unexpected arguments type {}",
+                    type(args).__name__,
+                )
+                return result
+
+            update = args.get("memory_update")
+            if update is None:
+                logger.warning("MEMORY.md compaction: missing memory_update")
+                return result
+            if not isinstance(update, str):
+                update = json.dumps(update, ensure_ascii=False)
+
+            normalized = self._strip_code_fence(update)
+            if not normalized.strip():
+                logger.warning("MEMORY.md compaction: rejected empty memory_update")
+                return result
+
+            if not self._is_valid_canonical_structure(normalized):
+                logger.warning("MEMORY.md compaction: rejected malformed memory_update")
+                return result
+
+            canonical = self._coerce_to_canonical(normalized)
+            bounded, _overflow_sections = self._enforce_memory_budget(canonical)
+            if not self._fits_memory_budget(bounded):
+                logger.warning("MEMORY.md compaction: rejected over-budget memory_update")
+                return result
+
+            after_chars = len(bounded)
+            after_tokens = await self._count_tokens_safe(bounded, provider, model)
+            if bounded != current_content:
+                self.write_long_term(bounded)
+
+            result["after_chars"] = after_chars
+            result["after_tokens"] = after_tokens
+            result["success"] = True
+            return result
+        except Exception:
+            logger.exception("MEMORY.md compaction failed")
+            return result
 
     @staticmethod
     def _strip_code_fence(text: str) -> str:

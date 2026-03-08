@@ -669,6 +669,7 @@ const CTX_LABEL_META = {
   compaction_summary: { name: 'Compaction Summary', color: '#93a4ff', icon: '🗜' },
   retrieved_memory: { name: 'Retrieved Memory', color: '#f472b6', icon: '🔍' },
   resume_notice: { name: 'Resume Notice', color: 'var(--accent-amber)', icon: '⚡' },
+  turn_context: { name: 'Per-Turn Context', color: '#22d3ee', icon: '🔄' },
   other: { name: 'Other', color: 'var(--text-muted)', icon: '•' },
 };
 function $(sel, root = document) { return root.querySelector(sel); }
@@ -1295,13 +1296,27 @@ async function renderContextTab(agentName, container, token) {
   const contextCard = html('div', { className: 'card' }, [
     html('div', { className: 'card-header' }, [html('div', {}, [html('div', { className: 'card-title' }, 'Injected Context'), html('div', { className: 'card-subtitle' }, `${fmtNumber(turn.total_messages || 0)} total messages at snapshot · ${fmtNumber(turnTotalChars(turn))} chars`)]), html('div', { className: 'toolbar-group' }, [html('span', { className: 'pill pill-purple' }, `hash:${turn.system_prompt_hash || '—'}`), (turn.system_prompt_changed_since_previous || turn.system_prompt_changed) ? html('span', { className: 'pill pill-amber' }, 'Prompt changed') : null])]),
   ]);
+  const staticCount = turn.static_prefix_system_count || 0;
+  const dynamicCount = turn.dynamic_system_count || 0;
+  if (staticCount > 0) {
+    contextCard.appendChild(html('div', { className: 'card-subtitle', style: 'margin-bottom:10px;padding:8px 12px;background:rgba(167,139,250,0.06);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:11px;' }, `📌 Static cached prefix: ${staticCount} system message${staticCount !== 1 ? 's' : ''} (stable across turns)${dynamicCount > 0 ? ` · ${dynamicCount} dynamic system message${dynamicCount !== 1 ? 's' : ''}` : ''}`));
+  }
   (turn.system_messages || []).forEach((systemMessage) => {
     const meta = CTX_LABEL_META[systemMessage.label] || CTX_LABEL_META.other;
+    const segment = systemMessage.segment;
+    const segmentBadge = segment === 'static_prefix' ? html('span', { className: 'pill pill-purple', style: 'font-size:9px;margin-left:auto;' }, '📌 cached') : segment === 'dynamic_system' ? html('span', { className: 'pill pill-amber', style: 'font-size:9px;margin-left:auto;' }, 'per-turn') : null;
     contextCard.appendChild(html('div', { className: 'context-panel' }, [
-      html('div', { className: 'context-summary', onClick: (event) => event.currentTarget.nextElementSibling.classList.toggle('hidden') }, [html('span', {}, meta.icon), html('span', {}, meta.name), html('span', { className: 'muted' }, `${fmtNumber(systemMessageChars(systemMessage))} chars`)]),
+      html('div', { className: 'context-summary', onClick: (event) => event.currentTarget.nextElementSibling.classList.toggle('hidden') }, [html('span', {}, meta.icon), html('span', {}, meta.name), html('span', { className: 'muted' }, `${fmtNumber(systemMessageChars(systemMessage))} chars`), segmentBadge]),
       html('div', { className: 'context-details hidden' }, [systemMessage.hash ? html('div', { className: 'card-subtitle' }, `hash: ${systemMessage.hash}`) : null, systemMessage.content ? html('pre', { className: 'message-pre', style: 'margin-top:8px;' }, systemMessage.content) : html('div', { className: 'card-subtitle' }, 'Full content was not captured in this log entry.')]),
     ]));
   });
+  if (turn.latest_user_turn_context) {
+    const turnCtxMeta = CTX_LABEL_META.turn_context;
+    contextCard.appendChild(html('div', { className: 'context-panel', style: 'border-color:rgba(34,211,238,0.25);background:rgba(34,211,238,0.06);' }, [
+      html('div', { className: 'context-summary', style: 'color:#22d3ee;', onClick: (event) => event.currentTarget.nextElementSibling.classList.toggle('hidden') }, [html('span', {}, turnCtxMeta.icon), html('span', {}, 'Per-Turn Context (prepended to user message)'), html('span', { className: 'muted' }, `${fmtNumber(turn.latest_user_turn_context.length)} chars`), html('span', { className: 'pill pill-amber', style: 'font-size:9px;margin-left:auto;' }, 'per-turn')]),
+      html('div', { className: 'context-details hidden', style: 'border-top-color:rgba(34,211,238,0.18);' }, [html('pre', { className: 'message-pre' }, turn.latest_user_turn_context)]),
+    ]));
+  }
   if (turn.memory_context_raw) contextCard.appendChild(html('div', { className: 'context-panel' }, [html('div', { className: 'context-summary' }, [html('span', {}, '🔍'), html('span', {}, 'Raw Retrieved Memory'), html('span', { className: 'muted' }, `${fmtNumber(turn.memory_context_raw.length)} chars`)]), html('div', { className: 'context-details' }, [html('pre', { className: 'message-pre' }, turn.memory_context_raw)])]));
   if (turn.tool_pruning) {
     const tp = turn.tool_pruning;
@@ -1428,19 +1443,25 @@ function buildContextPanel(ctxEntry) {
   const sysMsgs = ctxEntry.system_messages || [];
   const labels = sysMsgs.map((s) => s.label).filter((label) => label !== 'system_prompt');
   const chips = [];
-  if (ctxEntry.memory_context_raw) chips.push('🔍 Retrieved memory');
+  if (ctxEntry.latest_user_turn_context) chips.push('🔄 Per-turn context');
+  else if (ctxEntry.memory_context_raw) chips.push('🔍 Retrieved memory');
   labels.forEach((label) => { const meta = CTX_LABEL_META[label] || CTX_LABEL_META.other; chips.push(`${meta.icon} ${meta.name}`); });
   if (ctxEntry.tool_pruning && ctxEntry.tool_pruning.messages_pruned > 0) chips.push(`✂ ${ctxEntry.tool_pruning.messages_pruned} pruned`);
+  const staticCount = ctxEntry.static_prefix_system_count || 0;
+  if (staticCount > 0) chips.push(`📌 ${staticCount} cached`);
   const details = html('div', { className: 'context-details hidden' });
   panel.appendChild(html('div', { className: 'context-summary', onClick: () => details.classList.toggle('hidden') }, [html('span', {}, '🧠'), html('span', {}, 'LLM Context'), html('span', { className: 'muted' }, `${ctxEntry.total_messages || 0} msgs`), html('span', { className: 'muted', style: 'margin-left:auto;' }, chips.join(' · ') || 'System prompt only')]));
-  const promptSection = html('div', { className: 'context-section' }, [html('div', { className: 'context-section-head', style: `color:${CTX_LABEL_META.system_prompt.color};` }, [html('span', {}, CTX_LABEL_META.system_prompt.icon), html('span', {}, 'System Prompt'), html('span', { className: 'muted' }, `hash:${ctxEntry.system_prompt_hash || '—'}`), html('span', { className: 'muted' }, `${fmtNumber(ctxEntry.system_prompt_length || 0)} chars`), (ctxEntry.system_prompt_changed || ctxEntry.system_prompt_changed_since_previous) ? html('span', { className: 'pill pill-amber', style: 'font-size:9px;' }, 'changed') : null])]);
+  const promptSection = html('div', { className: 'context-section' }, [html('div', { className: 'context-section-head', style: `color:${CTX_LABEL_META.system_prompt.color};` }, [html('span', {}, CTX_LABEL_META.system_prompt.icon), html('span', {}, 'System Prompt'), html('span', { className: 'muted' }, `hash:${ctxEntry.system_prompt_hash || '—'}`), html('span', { className: 'muted' }, `${fmtNumber(ctxEntry.system_prompt_length || 0)} chars`), (ctxEntry.system_prompt_changed || ctxEntry.system_prompt_changed_since_previous) ? html('span', { className: 'pill pill-amber', style: 'font-size:9px;' }, 'changed') : html('span', { className: 'pill pill-purple', style: 'font-size:9px;' }, '📌 cached')])]);
   if (ctxEntry.system_prompt_full) promptSection.appendChild(html('pre', { className: 'message-pre' }, ctxEntry.system_prompt_full));
   details.appendChild(promptSection);
   sysMsgs.forEach((msg) => {
     if (msg.label === 'system_prompt') return;
     const meta = CTX_LABEL_META[msg.label] || CTX_LABEL_META.other;
-    details.appendChild(html('div', { className: 'context-section' }, [html('div', { className: 'context-section-head', style: `color:${meta.color};` }, [html('span', {}, meta.icon), html('span', {}, meta.name), html('span', { className: 'muted' }, `${fmtNumber(systemMessageChars(msg))} chars`)]), msg.content ? html('pre', { className: 'message-pre' }, msg.content) : html('div', { className: 'card-subtitle' }, 'Content not captured in log entry')]));
+    const segment = msg.segment;
+    const segmentBadge = segment === 'static_prefix' ? html('span', { className: 'pill pill-purple', style: 'font-size:9px;' }, '📌 cached') : segment === 'dynamic_system' ? html('span', { className: 'pill pill-amber', style: 'font-size:9px;' }, 'per-turn') : null;
+    details.appendChild(html('div', { className: 'context-section' }, [html('div', { className: 'context-section-head', style: `color:${meta.color};` }, [html('span', {}, meta.icon), html('span', {}, meta.name), html('span', { className: 'muted' }, `${fmtNumber(systemMessageChars(msg))} chars`), segmentBadge]), msg.content ? html('pre', { className: 'message-pre' }, msg.content) : html('div', { className: 'card-subtitle' }, 'Content not captured in log entry')]));
   });
+  if (ctxEntry.latest_user_turn_context) details.appendChild(html('div', { className: 'context-section' }, [html('div', { className: 'context-section-head', style: 'color:#22d3ee;' }, [html('span', {}, '🔄'), html('span', {}, 'Per-Turn Context (inline on user message)'), html('span', { className: 'pill pill-amber', style: 'font-size:9px;' }, 'per-turn')]), html('pre', { className: 'message-pre' }, ctxEntry.latest_user_turn_context)]));
   if (ctxEntry.memory_context_raw) details.appendChild(html('div', { className: 'context-section' }, [html('div', { className: 'context-section-head', style: 'color:var(--accent-amber);' }, [html('span', {}, '🔍'), html('span', {}, 'Raw Retrieved Memory')]), html('pre', { className: 'message-pre' }, ctxEntry.memory_context_raw)]));
   if (ctxEntry.tool_pruning) {
     const tp = ctxEntry.tool_pruning;

@@ -89,7 +89,7 @@ class AgentLoop:
     )
 
     # Known context window sizes for common models (in tokens).
-    # Used to determine when to trigger compaction (at 70% of window).
+    # Used to determine when to trigger compaction (at 75% of window).
     MODEL_CONTEXT_WINDOWS: dict[str, int] = {
         "claude-opus-4-6": 200_000,
         "claude-sonnet-4-6": 200_000,
@@ -633,12 +633,18 @@ class AgentLoop:
 
     @staticmethod
     def _drop_oldest_history_message(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Drop one oldest history entry, preserving compaction summary until needed."""
+        """Drop one oldest history entry."""
         if not history:
             return history
-        if history[0].get("role") == "system" and len(history) > 1:
-            return [history[0], *history[2:]]
         return history[1:]
+
+    @staticmethod
+    def _latest_compaction_system_messages(session: Session) -> list[str]:
+        """Return the latest compaction summary as explicit system input."""
+        entry = session.get_last_compaction()
+        if entry and entry.summary:
+            return [entry.summary]
+        return []
 
     def _build_messages_with_prompt_budget(
         self,
@@ -1201,6 +1207,7 @@ class AgentLoop:
             context_window=context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
         )
+        extra_system_messages = self._latest_compaction_system_messages(session)
         initial_messages = self._build_messages_with_prompt_budget(
             history=history,
             current_message=None,
@@ -1208,6 +1215,7 @@ class AgentLoop:
             channel=channel,
             chat_id=chat_id,
             resume_notice=self._RESUME_SYSTEM_MESSAGE,
+            extra_system_messages=extra_system_messages,
         )
         self._get_context_logger(session).log_turn(
             built_messages=initial_messages,
@@ -1396,6 +1404,7 @@ class AgentLoop:
                 context_window=context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
+            extra_system_messages = self._latest_compaction_system_messages(session)
             initial_messages = self._build_messages_with_prompt_budget(
                 history=history,
                 current_message=msg.content,
@@ -1404,6 +1413,7 @@ class AgentLoop:
                 chat_id=chat_id,
                 memory_context=memory_context,
                 resume_notice=resume_notice,
+                extra_system_messages=extra_system_messages,
             )
             self._get_context_logger(session).log_turn(
                 built_messages=initial_messages,
@@ -1490,7 +1500,7 @@ class AgentLoop:
                                   content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
 
         # Token-based compaction: check if the session's last known input token count
-        # exceeds 70% of the model's context window.
+        # exceeds 75% of the model's context window.
         _needs_compaction = False
         _compaction_reason = "none"
         _token_count = 0
@@ -1661,6 +1671,23 @@ class AgentLoop:
                                 session.key,
                             )
 
+                        memory_compact_result = None
+                        try:
+                            memory_compact_result = await self.context.memory.compact_memory_md(
+                                provider=self.provider,
+                                model=self.background_model,
+                            )
+                            if memory_compact_result and memory_compact_result.get("success"):
+                                logger.info(
+                                    "MEMORY.md compacted: {} -> {} tokens",
+                                    memory_compact_result["before_tokens"],
+                                    memory_compact_result["after_tokens"],
+                                )
+                            elif memory_compact_result:
+                                logger.warning("MEMORY.md compaction attempted but did not produce an update")
+                        except Exception:
+                            logger.exception("MEMORY.md compaction failed (non-fatal)")
+
                         self._refresh_estimated_token_snapshot(session)
                         self.sessions.save(session)
 
@@ -1680,6 +1707,8 @@ class AgentLoop:
                             is_iterative_update=bool(entry.previous_summary),
                             cut_point_type=str(plan_meta.get("cut_point_type", "clean")),
                         )
+                        if memory_compact_result:
+                            _compaction_event.data["memory_md_compaction"] = memory_compact_result
                         _compaction_event.finalize(
                             success=True,
                             error=None if extraction_ok else "memory extraction failed",
@@ -1757,7 +1786,7 @@ class AgentLoop:
             )
 
         memory_context = await self._retrieve_memory_context(session, msg.content)
-        extra_system_messages: list[str] = []
+        extra_system_messages = self._latest_compaction_system_messages(session)
         history, prune_result = session.get_history(
             max_messages=max(1, len(session.messages)),
             context_window=_context_window,

@@ -832,7 +832,7 @@ async function renderOverview(token) {
   setPageLoading('overview');
   const container = $('#page-overview');
   try {
-    const [overviewData, agentsResp] = await Promise.all([api('/api/overview'), api('/api/agents')]);
+    const [overviewData, agentsResp, versionData] = await Promise.all([api('/api/overview'), api('/api/agents'), api('/api/version')]);
     if (token !== state.renderToken || state.view !== 'overview') return;
     const agents = agentsResp.agents || [];
     updateNavBadges(agents.length, null);
@@ -883,6 +883,8 @@ async function renderOverview(token) {
           renderInfoRow('Started', fmtDateTime(overviewData.started_at)),
           renderInfoRow('Uptime', overviewData.uptime),
           renderInfoRow('nanobot', overviewData.nanobot_version || 'unknown'),
+          renderInfoRow('API Version', versionData.api_version || 'unknown'),
+          renderInfoRow('Schema Version', String(versionData.schema_version || 'unknown')),
           renderInfoRow('Python', truncate(overviewData.python_version || 'unknown', 52)),
           renderInfoRow('Disk Used', `${fmtBytes(overviewData.disk?.used)} / ${fmtBytes(overviewData.disk?.total)}`),
           renderInfoRow('Graph Memories', graph.available ? fmtNumber(graph.totalMemories) : 'Unavailable'),

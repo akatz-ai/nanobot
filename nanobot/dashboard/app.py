@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shutil
 import sys
@@ -31,7 +32,7 @@ from nanobot.session.usage_log import get_session_summary
 # App setup
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Nanobot Memory Dashboard", version="1.0.0")
+app = FastAPI(title="Nanobot Memory Dashboard", version=nanobot.__version__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/dashboard/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -892,6 +893,17 @@ async def overview():
         },
         "graph": graph,
         "recent_activity": recent_activity[:12],
+    }
+
+
+@app.get("/api/version")
+async def api_version():
+    cfg = _load_config()
+    return {
+        "version": nanobot.__version__,
+        "api_version": "1",
+        "schema_version": cfg.get("schemaVersion") or cfg.get("schema_version") or 1,
+        "python": platform.python_version(),
     }
 
 

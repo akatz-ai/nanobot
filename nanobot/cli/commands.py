@@ -157,7 +157,7 @@ def main(
 @app.command()
 def onboard():
     """Initialize nanobot configuration and workspace."""
-    from nanobot.config.loader import get_config_path, load_config, save_config
+    from nanobot.config.loader import get_config_path, load_base_config, save_config
     from nanobot.config.schema import Config
     from nanobot.utils.helpers import get_workspace_path, sync_workspace_templates
     
@@ -172,7 +172,7 @@ def onboard():
             save_config(config)
             console.print(f"[green]✓[/green] Config reset to defaults at {config_path}")
         else:
-            config = load_config()
+            config = load_base_config()
             save_config(config)
             console.print(f"[green]✓[/green] Config refreshed at {config_path} (existing values preserved)")
     else:
@@ -595,7 +595,7 @@ def gateway_worker(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
     """Internal gateway worker process."""
-    from nanobot.config.loader import load_config, get_config_path, get_data_dir
+    from nanobot.config.loader import get_config_path, get_data_dir, load_config
     from nanobot.bus.queue import MessageBus
     from nanobot.agent.router import AgentRouter
     from nanobot.agent.profile_manager import AgentProfileManager
@@ -606,6 +606,8 @@ def gateway_worker(
     from nanobot.heartbeat.service import HeartbeatService
     from nanobot.discord.usage_dashboard import UsageDashboard
     from nanobot.discord.system_status import SystemStatusDashboard
+    from nanobot.config.state import StateStore
+    from nanobot.discord.server_setup import setup_basic_server
 
     # Enable file logging for the worker process
     from nanobot.daemon import setup_daemon_logging
@@ -617,7 +619,29 @@ def gateway_worker(
 
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
 
-    config = load_config()
+    config_path = get_config_path()
+    state_store = StateStore.from_config_path(config_path)
+    config = load_config(config_path)
+
+    if config.channels.discord.enabled and config.channels.discord.guild_id and config.channels.discord.token:
+        try:
+            setup_result = asyncio.run(
+                setup_basic_server(
+                    guild_id=config.channels.discord.guild_id,
+                    bot_token=config.channels.discord.token,
+                )
+            )
+            state_store.record_discord_setup(
+                category_ids=setup_result.category_ids,
+                channel_ids=setup_result.channel_ids,
+                webhook_urls=setup_result.webhook_urls,
+                checkpoints={"discord_setup": {"status": "complete"}},
+            )
+            config = load_config(config_path)
+            console.print("[green]✓[/green] Discord provisioning state refreshed")
+        except Exception as exc:
+            console.print(f"[yellow]⚠ Discord provisioning skipped: {exc}[/yellow]")
+
     bus = MessageBus()
     provider = _make_provider(config)
 
@@ -644,7 +668,7 @@ def gateway_worker(
         guild_id = config.channels.discord.guild_id
         default = router.default_agent
         if default and guild_id:
-            profile_manager = AgentProfileManager(config, get_config_path())
+            profile_manager = AgentProfileManager(config, state_store)
             tool = AgentManagerTool(
                 router=router,
                 profile_manager=profile_manager,
@@ -817,7 +841,7 @@ def gateway_worker(
                 channel_id=dash_cfg.channel_id,
                 poll_interval_s=dash_cfg.poll_interval_s,
                 message_id=dash_cfg.message_id or None,
-                config_path=str(get_config_path()),
+                config_path=str(config_path),
             )
         else:
             console.print("[yellow]⚠ Usage dashboard: no Anthropic OAuth token[/yellow]")
@@ -846,7 +870,7 @@ def gateway_worker(
             channel_id=status_cfg.channel_id,
             poll_interval_s=status_cfg.poll_interval_s,
             message_id=status_cfg.message_id or None,
-            config_path=str(get_config_path()),
+            config_path=str(config_path),
         )
         console.print(f"[green]✓[/green] System status: channel={status_cfg.channel_id}, interval={status_cfg.poll_interval_s}s")
 

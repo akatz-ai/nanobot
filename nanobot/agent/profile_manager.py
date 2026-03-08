@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-from nanobot.config.loader import save_config
 from nanobot.config.schema import AgentProfile, Config
+from nanobot.config.state import StateStore
 
 
 class AgentProfileManager:
-    """Manages agent profiles in config with persistence to config.json."""
+    """Manages agent profiles in runtime state with persistence to state.json."""
 
-    def __init__(self, config: Config, config_path: Path | None = None):
+    def __init__(self, config: Config, state_store: StateStore):
         self.config = config
-        self.config_path = config_path
+        self.state_store = state_store
 
     def list_profiles(self) -> dict[str, AgentProfile]:
         """Return all configured profiles."""
@@ -58,7 +57,7 @@ class AgentProfileManager:
             discord_webhook_url=discord_webhook_url,
         )
         self.config.agents.profiles[agent_id] = profile
-        self._save()
+        self.state_store.upsert_profile(agent_id, profile)
         logger.info("Created agent profile '{}'", agent_id)
         return profile
 
@@ -74,7 +73,7 @@ class AgentProfileManager:
             else:
                 raise ValueError(f"Unknown profile field: {key}")
 
-        self._save()
+        self.state_store.upsert_profile(agent_id, profile)
         logger.info("Updated agent profile '{}'", agent_id)
         return profile
 
@@ -83,9 +82,5 @@ class AgentProfileManager:
         if agent_id not in self.config.agents.profiles:
             raise ValueError(f"Profile '{agent_id}' not found")
         del self.config.agents.profiles[agent_id]
-        self._save()
+        self.state_store.delete_profile(agent_id)
         logger.info("Deleted agent profile '{}'", agent_id)
-
-    def _save(self) -> None:
-        """Persist current config to disk."""
-        save_config(self.config, self.config_path)

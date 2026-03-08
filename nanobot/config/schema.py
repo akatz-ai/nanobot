@@ -1,10 +1,15 @@
 """Configuration schema using Pydantic."""
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from pydantic import BaseModel, Field, ConfigDict
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings
+
+from nanobot.relay.config import RelayClientConfig
+
+
+SCHEMA_VERSION = 1
 
 
 class Base(BaseModel):
@@ -395,13 +400,65 @@ class ToolsConfig(Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+class AgentState(Base):
+    """Runtime agent state persisted separately from base config."""
+
+    profiles: dict[str, AgentProfile] = Field(default_factory=dict)
+    deleted_profiles: list[str] = Field(default_factory=list)
+
+
+class DiscordDashboardState(Base):
+    """Runtime dashboard message state."""
+
+    message_id: str = ""
+
+
+class DiscordState(Base):
+    """Runtime Discord channel state."""
+
+    usage_dashboard: DiscordDashboardState = Field(default_factory=DiscordDashboardState)
+    system_status: DiscordDashboardState = Field(default_factory=DiscordDashboardState)
+
+
+class ChannelsState(Base):
+    """Runtime channel state persisted separately from base config."""
+
+    discord: DiscordState = Field(default_factory=DiscordState)
+
+
+class DiscordProvisioningState(Base):
+    """Runtime Discord provisioning data."""
+
+    category_ids: dict[str, str] = Field(default_factory=dict)
+    channel_ids: dict[str, str] = Field(default_factory=dict)
+    webhook_urls: dict[str, str] = Field(default_factory=dict)
+
+
+class ProvisioningState(Base):
+    """Provisioning checkpoints and runtime-generated layout data."""
+
+    checkpoints: dict[str, Any] = Field(default_factory=dict)
+    discord: DiscordProvisioningState = Field(default_factory=DiscordProvisioningState)
+
+
+class State(Base):
+    """Runtime state stored separately from base config."""
+
+    schema_version: int = SCHEMA_VERSION
+    agents: AgentState = Field(default_factory=AgentState)
+    channels: ChannelsState = Field(default_factory=ChannelsState)
+    provisioning: ProvisioningState = Field(default_factory=ProvisioningState)
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
+    schema_version: int = SCHEMA_VERSION
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    relay: RelayClientConfig = Field(default_factory=RelayClientConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     memory_graph: dict | None = Field(
         default=None,
@@ -492,4 +549,9 @@ class Config(BaseSettings):
                 return spec.default_api_base
         return None
 
-    model_config = ConfigDict(env_prefix="NANOBOT_", env_nested_delimiter="__")
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        env_prefix="NANOBOT_",
+        env_nested_delimiter="__",
+    )

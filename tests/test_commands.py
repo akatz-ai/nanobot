@@ -60,7 +60,7 @@ def mock_paths():
     """Mock config/workspace paths for test isolation."""
     with patch("nanobot.config.loader.get_config_path") as mock_cp, \
          patch("nanobot.config.loader.save_config") as mock_sc, \
-         patch("nanobot.config.loader.load_config") as mock_lc, \
+         patch("nanobot.config.loader.load_base_config") as mock_lbc, \
          patch("nanobot.utils.helpers.get_workspace_path") as mock_ws:
 
         base_dir = Path("./test_onboard_data")
@@ -74,6 +74,7 @@ def mock_paths():
         mock_cp.return_value = config_file
         mock_ws.return_value = workspace_dir
         mock_sc.side_effect = lambda config: config_file.write_text("{}")
+        mock_lbc.return_value = Config()
 
         yield config_file, workspace_dir
 

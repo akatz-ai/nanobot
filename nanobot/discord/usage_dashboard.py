@@ -402,30 +402,19 @@ class UsageDashboard:
     # ── Config persistence ──────────────────────────────────────────────
 
     def _persist_message_id(self) -> None:
-        """Save the current message_id back to config.json so restarts reuse it."""
+        """Save the current message_id back to state.json so restarts reuse it."""
         if not self.config_path or not self.message_id:
             return
         try:
-            import json
             from pathlib import Path
 
-            path = Path(self.config_path)
-            if not path.exists():
-                return
+            from nanobot.config.state import StateStore
 
-            config = json.loads(path.read_text())
-            dash = (
-                config.get("channels", {})
-                .get("discord", {})
-                .get("usageDashboard", {})
-            )
-            if dash.get("messageId") != self.message_id:
-                dash["messageId"] = self.message_id
-                path.write_text(json.dumps(config, indent=2))
-                logger.info(
-                    "UsageDashboard: Persisted message_id={} to config",
-                    self.message_id,
-                )
+            store = StateStore.from_config_path(Path(self.config_path))
+            state = store.load()
+            if state.channels.discord.usage_dashboard.message_id != self.message_id:
+                store.set_discord_message_id("usage_dashboard", self.message_id)
+                logger.info("UsageDashboard: Persisted message_id={} to state", self.message_id)
         except Exception:
             logger.exception("UsageDashboard: Failed to persist message_id")
 

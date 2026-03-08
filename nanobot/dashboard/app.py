@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shutil
 import sys
@@ -21,6 +22,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import yaml
 
+import nanobot
+from nanobot.config.loader import get_config_path, get_state_path, load_config_data
 from nanobot.session.context_log import load_context_log
 from nanobot.session.extraction_log import load_extraction_log
 from nanobot.session.usage_log import get_session_summary
@@ -29,7 +32,7 @@ from nanobot.session.usage_log import get_session_summary
 # App setup
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Nanobot Memory Dashboard", version="1.0.0")
+app = FastAPI(title="Nanobot Memory Dashboard", version=nanobot.__version__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/dashboard/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -71,18 +74,22 @@ _LOG_LINE_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 _config_cache: dict[str, Any] | None = None
-_config_mtime: float = 0
+_config_mtimes: tuple[float, float] = (0, 0)
 
 
 def _load_config() -> dict[str, Any]:
-    global _config_cache, _config_mtime
-    config_path = Path.home() / ".nanobot" / "config.json"
+    global _config_cache, _config_mtimes
+    config_path = get_config_path()
+    state_path = get_state_path(config_path)
     if not config_path.exists():
         raise RuntimeError(f"Config not found at {config_path}")
-    mtime = config_path.stat().st_mtime
-    if _config_cache is None or mtime != _config_mtime:
-        _config_cache = json.loads(config_path.read_text())
-        _config_mtime = mtime
+    mtimes = (
+        config_path.stat().st_mtime,
+        state_path.stat().st_mtime if state_path.exists() else 0,
+    )
+    if _config_cache is None or mtimes != _config_mtimes:
+        _config_cache = load_config_data(config_path=config_path, state_path=state_path)
+        _config_mtimes = mtimes
     return _config_cache
 
 
@@ -219,6 +226,9 @@ def _project_root() -> Path:
 
 
 def _nanobot_version() -> str:
+    if nanobot.__version__:
+        return nanobot.__version__
+
     for package_name in ("nanobot-ai", "nanobot"):
         try:
             return importlib_metadata.version(package_name)
@@ -944,6 +954,17 @@ async def overview():
         },
         "graph": graph,
         "recent_activity": recent_activity[:12],
+    }
+
+
+@app.get("/api/version")
+async def api_version():
+    cfg = _load_config()
+    return {
+        "version": nanobot.__version__,
+        "api_version": "1",
+        "schema_version": cfg.get("schemaVersion") or cfg.get("schema_version") or 1,
+        "python": platform.python_version(),
     }
 
 

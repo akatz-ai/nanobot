@@ -100,11 +100,21 @@ def _migrate_state(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merge dictionaries, with overlay values winning."""
+    """Recursively merge dictionaries, with overlay values winning.
+
+    Empty strings and empty lists in the overlay are treated as "no value"
+    and will NOT overwrite non-empty base values.  This prevents a fresh
+    state.json (with default empty fields) from clobbering real values
+    already present in config.json.
+    """
     for key, value in overlay.items():
         base_value = base.get(key)
         if isinstance(base_value, dict) and isinstance(value, dict):
             base[key] = _deep_merge(dict(base_value), value)
+        elif value == "" and base_value:
+            pass  # don't overwrite a real value with an empty default
+        elif isinstance(value, list) and len(value) == 0 and base_value:
+            pass  # don't overwrite a real list with an empty default
         else:
             base[key] = value
     return base

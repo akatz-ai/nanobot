@@ -797,6 +797,28 @@ function openModal(contentEl, title = 'Detail') {
   ]);
   document.body.appendChild(overlay);
 }
+function confirmModal({ title, message, confirmText = 'Confirm', cancelText = 'Cancel', danger = false }) {
+  return new Promise((resolve) => {
+    const close = (result) => { overlay.remove(); resolve(result); };
+    const body = html('div', {}, [
+      html('p', { style: 'color:var(--text-secondary);line-height:1.6;margin:0 0 24px 0;font-size:14px;' }, message),
+      html('div', { style: 'display:flex;gap:10px;justify-content:flex-end;' }, [
+        html('button', { className: 'btn btn-ghost', style: 'padding:8px 20px;', onClick: () => close(false) }, cancelText),
+        html('button', { className: danger ? 'btn btn-danger' : 'btn btn-primary', style: 'padding:8px 20px;font-weight:600;', onClick: () => close(true) }, confirmText),
+      ]),
+    ]);
+    const overlay = html('div', { className: 'modal-overlay open', onClick: (e) => { if (e.target === overlay) close(false); } }, [
+      html('div', { className: 'modal', style: 'width:440px;' }, [
+        html('div', { className: 'modal-header', style: 'margin-bottom:16px;' }, [
+          html('h2', { className: 'modal-title' }, title),
+          html('button', { className: 'modal-close', onClick: () => close(false) }, '×'),
+        ]),
+        body,
+      ]),
+    ]);
+    document.body.appendChild(overlay);
+  });
+}
 function sessionDetailPath(agent, key, suffix = '') { return `/api/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(key)}${suffix}`; }
 function stopIntegrationPoller(id) {
   if (!integrationPollers[id]) return;
@@ -1225,7 +1247,8 @@ async function renderSettings(token) {
 
     /* --- Gateway Controls --- */
     const restartBtn = html('button', { className: 'btn btn-danger', style: 'padding:10px 28px;font-size:14px;font-weight:600;white-space:nowrap;', onClick: async () => {
-      if (!confirm('⚠ Restart the gateway?\n\nThis will interrupt all active agent conversations. Sessions will reconnect automatically after restart.')) return;
+      const confirmed = await confirmModal({ title: '⚠ Restart Gateway', message: 'This will interrupt all active agent conversations. Any in-progress tool calls or responses will be lost. Sessions will reconnect automatically after restart.', confirmText: 'Restart Gateway', danger: true });
+      if (!confirmed) return;
       restartBtn.disabled = true;
       restartBtn.textContent = 'Restarting…';
       try {

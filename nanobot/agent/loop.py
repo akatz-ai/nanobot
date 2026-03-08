@@ -542,8 +542,11 @@ class AgentLoop:
         if not self._memory_module or not self._memory_module.retriever:
             return None
         try:
+            import time as _time
+            _t0 = _time.monotonic()
             if not self._memory_module.initialized:
                 await self._memory_module.initialize()
+                logger.info("Memory module initialized in {:.2f}s", _time.monotonic() - _t0)
             retrieval_cfg = {}
             if isinstance(self._memory_graph_config, dict):
                 retrieval_cfg = self._memory_graph_config.get("retrieval") or {}
@@ -558,13 +561,20 @@ class AgentLoop:
                 recent_turns=recent_turns,
                 user_message=user_message,
             )
-            return await self._memory_module.retriever.retrieve_context(
+            _t1 = _time.monotonic()
+            result = await self._memory_module.retriever.retrieve_context(
                 current_message=user_message,
                 recent_turns=recent_turns,
                 peer_key=peer_key,
                 agent_id=self.agent_id,
                 prompt_headroom_words=prompt_headroom_words,
             )
+            logger.info(
+                "Memory retrieval completed in {:.2f}s (total prep+retrieve: {:.2f}s)",
+                _time.monotonic() - _t1,
+                _time.monotonic() - _t0,
+            )
+            return result
         except Exception as e:
             logger.warning(f"Memory retrieval failed: {e}")
             return None
@@ -666,26 +676,9 @@ class AgentLoop:
             f"{channel}:{chat_id}" if channel is not None and chat_id is not None else "unknown"
         )
 
-        messages = self.context.build_messages(
-            history=history_window,
-            current_message=current_message,
-            skill_names=skill_names,
-            media=media,
-            channel=channel,
-            chat_id=chat_id,
-            memory_context=memory_context,
-            resume_notice=resume_notice,
-            extra_system_messages=extra_system_messages,
-        )
-        initial_estimate = self._estimate_prompt_tokens(messages)
-        estimated = initial_estimate
-        trimmed = 0
-
-        while estimated > prompt_budget and history_window:
-            history_window = self._drop_oldest_history_message(history_window)
-            trimmed += 1
-            messages = self.context.build_messages(
-                history=history_window,
+        def _build(hw: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return self.context.build_messages(
+                history=hw,
                 current_message=current_message,
                 skill_names=skill_names,
                 media=media,
@@ -695,7 +688,34 @@ class AgentLoop:
                 resume_notice=resume_notice,
                 extra_system_messages=extra_system_messages,
             )
-            estimated = self._estimate_prompt_tokens(messages)
+
+        messages = _build(history_window)
+        initial_estimate = self._estimate_prompt_tokens(messages)
+        estimated = initial_estimate
+        trimmed = 0
+
+        if estimated > prompt_budget and history_window:
+            # Estimate tokens per message for batch trimming
+            avg_tokens_per_msg = max(estimated / max(len(history_window), 1), 1)
+            overshoot = estimated - prompt_budget
+            # Drop estimated number of messages in one batch (with 10% safety margin)
+            batch_drop = min(
+                int(overshoot / avg_tokens_per_msg * 1.1) + 1,
+                len(history_window) - 1,
+            )
+            if batch_drop > 0:
+                for _ in range(batch_drop):
+                    history_window = self._drop_oldest_history_message(history_window)
+                    trimmed += 1
+                messages = _build(history_window)
+                estimated = self._estimate_prompt_tokens(messages)
+
+            # Fine-tune: drop one at a time if still over (should be few iterations)
+            while estimated > prompt_budget and history_window:
+                history_window = self._drop_oldest_history_message(history_window)
+                trimmed += 1
+                messages = _build(history_window)
+                estimated = self._estimate_prompt_tokens(messages)
 
         if trimmed:
             logger.warning(

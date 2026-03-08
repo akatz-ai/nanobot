@@ -64,7 +64,10 @@ class ChannelManager:
             try:
                 from nanobot.channels.discord import DiscordChannel
                 self.channels["discord"] = DiscordChannel(
-                    self.config.channels.discord, self.bus
+                    self.config.channels.discord,
+                    self.bus,
+                    groq_api_key=self.config.providers.groq.api_key,
+                    openai_api_key=self.config.providers.openai.api_key,
                 )
                 logger.info("Discord channel enabled")
             except ImportError as e:

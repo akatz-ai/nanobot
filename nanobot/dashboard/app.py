@@ -1371,6 +1371,30 @@ async def config():
     return {"config": _sanitize_config_value("config", _load_config())}
 
 
+@app.post("/api/restart")
+async def restart_gateway():
+    """Gracefully restart the gateway worker process."""
+    import signal as _signal
+
+    try:
+        from nanobot.daemon import GatewayDaemon
+
+        if GatewayDaemon.send_signal(_signal.SIGUSR1):
+            return {"status": "ok", "message": "Restart signal sent to gateway worker."}
+        else:
+            raise HTTPException(
+                status_code=503,
+                detail="Gateway process not running. Cannot send restart signal.",
+            )
+    except ImportError:
+        raise HTTPException(
+            status_code=501,
+            detail="Daemon module not available.",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/agents/{name}/memory")
 async def agent_memory(name: str):
     adir = _agent_dir(name)

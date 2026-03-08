@@ -828,10 +828,37 @@ function stopIntegrationPoller(id) {
 function stopAllIntegrationPollers() {
   Object.keys(integrationPollers).forEach((id) => stopIntegrationPoller(id));
 }
+/* --- URL hash routing --- */
+function stateToHash() {
+  const v = state.view;
+  if (v === 'agent-detail' && state.agent) {
+    let h = `#agents/${encodeURIComponent(state.agent)}`;
+    if (state.agentTab && state.agentTab !== 'context') h += `/${state.agentTab}`;
+    return h;
+  }
+  if (v === 'session' && state.agent && state.sessionKey) {
+    return `#agents/${encodeURIComponent(state.agent)}/sessions/${encodeURIComponent(state.sessionKey)}`;
+  }
+  if (v === 'overview') return '#overview';
+  return `#${v}`;
+}
+function hashToState(hash) {
+  const h = (hash || '#overview').replace(/^#\/?/, '');
+  const parts = h.split('/').map(decodeURIComponent);
+  if (parts[0] === 'agents' && parts.length >= 2 && parts[1]) {
+    if (parts[2] === 'sessions' && parts[3]) return { view: 'session', agent: parts[1], sessionKey: parts[3] };
+    return { view: 'agent-detail', agent: parts[1], agentTab: parts[2] || 'context', contextTurnIndex: null };
+  }
+  const known = Object.keys(PAGE_TO_NAV);
+  const view = known.includes(parts[0]) ? parts[0] : 'overview';
+  return { view };
+}
 function navigate(view, params = {}) {
   if (view !== 'integrations') stopAllIntegrationPollers();
   Object.assign(state, params);
   state.view = view;
+  const newHash = stateToHash();
+  if (window.location.hash !== newHash) history.pushState(null, '', newHash);
   activatePage(view);
   renderRoute();
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1866,6 +1893,17 @@ document.addEventListener('DOMContentLoaded', () => {
   marked.setOptions({ gfm: true, breaks: true });
   $all('.nav-item').forEach((item) => item.addEventListener('click', () => navigate(item.dataset.view)));
   updateInstanceBadge(API_BASE ? API_BASE : 'same origin');
+  /* Restore view from URL hash on initial load */
+  const initial = hashToState(window.location.hash);
+  Object.assign(state, initial);
+  if (!window.location.hash) history.replaceState(null, '', stateToHash());
+  activatePage(state.view);
+  renderRoute();
+});
+/* Handle browser back/forward */
+window.addEventListener('popstate', () => {
+  const restored = hashToState(window.location.hash);
+  Object.assign(state, restored);
   activatePage(state.view);
   renderRoute();
 });

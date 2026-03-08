@@ -605,6 +605,7 @@ hr.divider { border: none; border-top: 1px solid var(--border-subtle); margin: 2
       <div class="nav-item" data-view="skills"><span class="nav-icon">◇</span> Skills <span class="nav-badge" id="nav-badge-skills">—</span></div>
       <div class="nav-item" data-view="memory"><span class="nav-icon">◆</span> Memory</div>
       <div class="nav-item" data-view="channels"><span class="nav-icon">◫</span> Channels</div>
+      <div class="nav-item" data-view="integrations"><span class="nav-icon">⚡</span> Integrations</div>
       <div class="nav-section-label">System</div>
       <div class="nav-item" data-view="logs"><span class="nav-icon">▤</span> Logs</div>
       <div class="nav-item" data-view="settings"><span class="nav-icon">⚙</span> Settings</div>
@@ -621,6 +622,7 @@ hr.divider { border: none; border-top: 1px solid var(--border-subtle); margin: 2
     <div class="page" id="page-skills"></div>
     <div class="page" id="page-memory"></div>
     <div class="page" id="page-channels"></div>
+    <div class="page" id="page-integrations"></div>
     <div class="page" id="page-logs"></div>
     <div class="page" id="page-settings"></div>
     <div class="page" id="page-agent-detail"></div>
@@ -649,6 +651,7 @@ const PAGE_TO_NAV = {
   skills: 'skills',
   memory: 'memory',
   channels: 'channels',
+  integrations: 'integrations',
   logs: 'logs',
   settings: 'settings',
   'agent-detail': 'agents',
@@ -656,6 +659,8 @@ const PAGE_TO_NAV = {
 };
 let browseState = { peerKey: '', type: '', offset: 0, limit: 50, forgotten: 0 };
 let sessionFilterState = { showUser: true, showAssistant: true, showTool: true, showSystem: true, llmView: false };
+let integrationRuntimeState = {};
+const integrationPollers = {};
 const CTX_LABEL_META = {
   system_prompt: { name: 'System Prompt', color: 'var(--accent-purple)', icon: '📋' },
   session_info: { name: 'Session Info', color: 'var(--text-secondary)', icon: '🔗' },
@@ -784,7 +789,16 @@ function openModal(contentEl, title = 'Detail') {
   document.body.appendChild(overlay);
 }
 function sessionDetailPath(agent, key, suffix = '') { return `/api/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(key)}${suffix}`; }
+function stopIntegrationPoller(id) {
+  if (!integrationPollers[id]) return;
+  clearInterval(integrationPollers[id]);
+  delete integrationPollers[id];
+}
+function stopAllIntegrationPollers() {
+  Object.keys(integrationPollers).forEach((id) => stopIntegrationPoller(id));
+}
 function navigate(view, params = {}) {
+  if (view !== 'integrations') stopAllIntegrationPollers();
   Object.assign(state, params);
   state.view = view;
   activatePage(view);
@@ -822,6 +836,7 @@ async function renderRoute() {
   if (view === 'skills') return renderSkills(token);
   if (view === 'memory') return renderMemoryPage(token);
   if (view === 'channels') return renderChannels(token);
+  if (view === 'integrations') return renderIntegrations(token);
   if (view === 'logs') return renderLogs(token);
   if (view === 'settings') return renderSettings(token);
   if (view === 'agent-detail') return renderAgentDetail(token);
@@ -1026,6 +1041,134 @@ async function renderChannels(token) {
     container.innerHTML = '';
     container.appendChild(renderPageHeader('Channels', 'Connected platforms and channel-to-agent mappings.'));
     container.appendChild(renderEmpty('⚠', 'Failed to load channels', error.message));
+  }
+}
+function integrationStatusMeta(status) {
+  if (status === 'connected') return { cls: 'pill-green', label: '● Connected' };
+  if (status === 'expired') return { cls: 'pill-amber', label: '⚠ Expired' };
+  if (status === 'error') return { cls: 'pill-amber', label: '⚠ Error' };
+  if (status === 'configured') return { cls: 'pill-blue', label: '◉ Configured' };
+  if (status === 'disabled') return { cls: 'pill-muted', label: '○ Disabled' };
+  if (status === 'not_configured') return { cls: 'pill-muted', label: '○ Not configured' };
+  return { cls: 'pill-muted', label: `○ ${String(status || 'Unknown').replace(/_/g, ' ')}` };
+}
+function integrationStatusPill(status) {
+  const meta = integrationStatusMeta(status);
+  return html('span', { className: `pill ${meta.cls}` }, [
+    html('span', { className: 'dot', style: meta.cls === 'pill-muted' ? 'background:var(--text-muted);' : '' }),
+    meta.label,
+  ]);
+}
+function integrationData(item) {
+  return { ...item, ...(integrationRuntimeState[item.id] || {}) };
+}
+async function runIntegrationCheck(id) {
+  try {
+    integrationRuntimeState[id] = await api(`/api/integrations/${encodeURIComponent(id)}/check`, { method: 'POST' });
+  } catch (error) {
+    integrationRuntimeState[id] = { id, status: 'error', error: error.message };
+  }
+  if (state.view === 'integrations') rerender();
+  return integrationRuntimeState[id];
+}
+async function startIntegrationAuth(id) {
+  try {
+    const callbackBase = `${window.location.origin}/api`;
+    const data = await api(`/api/integrations/${encodeURIComponent(id)}/auth?callback_base=${encodeURIComponent(callbackBase)}`);
+    window.open(data.auth_url, '_blank', 'noopener,noreferrer');
+    integrationRuntimeState[id] = { id, status: 'configured' };
+    if (state.view === 'integrations') rerender();
+    stopIntegrationPoller(id);
+    integrationPollers[id] = setInterval(async () => {
+      const result = await runIntegrationCheck(id);
+      if (result.status === 'connected') stopIntegrationPoller(id);
+    }, 3000);
+  } catch (error) {
+    integrationRuntimeState[id] = { id, status: 'error', error: error.message };
+    if (state.view === 'integrations') rerender();
+  }
+}
+function buildIntegrationDetail(item) {
+  const rows = html('div', { className: 'toolbar-group', style: 'align-items:flex-start;margin-top:12px;' });
+  if (item.type === 'mcp') {
+    rows.appendChild(html('span', { className: 'tag mono' }, item.command || 'no command'));
+    rows.appendChild(html('span', { className: 'tag' }, item.has_env ? 'env configured' : 'no env'));
+    if (item.has_refresh_token) rows.appendChild(html('span', { className: 'tag' }, 'refresh token saved'));
+  }
+  if (item.type === 'channel') {
+    if (item.bot_token_set !== undefined) rows.appendChild(html('span', { className: 'tag' }, item.bot_token_set ? 'bot token set' : 'bot token missing'));
+    if (item.allowed_users !== undefined) rows.appendChild(html('span', { className: 'tag' }, `${item.allowed_users} allowed users`));
+    if (item.guild_id) rows.appendChild(html('span', { className: 'tag mono' }, `guild ${item.guild_id}`));
+  }
+  if (item.type === 'provider') {
+    if (item.has_api_key !== undefined) rows.appendChild(html('span', { className: 'tag' }, item.has_api_key ? 'API key set' : 'API key missing'));
+    if (item.subscription) rows.appendChild(html('span', { className: 'tag' }, item.subscription));
+    if ((item.scopes || []).length) rows.appendChild(html('span', { className: 'tag' }, `${item.scopes.length} scopes`));
+  }
+  return rows.childElementCount ? rows : html('div', { className: 'card-subtitle', style: 'margin-top:12px;' }, 'No additional details available.');
+}
+function buildIntegrationCard(item) {
+  const supportsOauth = item.id === 'google-drive' || item.oauth_supported;
+  const actions = html('div', { className: 'toolbar-group' });
+  if (item.type === 'mcp') {
+    actions.appendChild(html('button', { className: 'btn btn-secondary btn-sm', onClick: () => runIntegrationCheck(item.id) }, 'Check Health'));
+  }
+  if (supportsOauth && item.status !== 'connected') {
+    actions.appendChild(html('button', { className: 'btn btn-primary btn-sm', onClick: () => startIntegrationAuth(item.id) }, 'Re-authorize'));
+  }
+  return html('div', { className: 'card card-sm' }, [
+    html('div', { className: 'card-header' }, [
+      html('div', {}, [
+        html('div', { className: 'card-title' }, item.name),
+        html('div', { className: 'card-subtitle' }, `${item.type.toUpperCase()} · ${item.id}`),
+      ]),
+      html('div', { className: 'toolbar-group' }, [integrationStatusPill(item.status), actions.childElementCount ? actions : null]),
+    ]),
+    buildIntegrationDetail(item),
+    item.error ? html('div', { className: 'card-subtitle', style: 'margin-top:12px;color:var(--accent-amber);' }, item.error) : null,
+    item.checked_at ? html('div', { className: 'card-subtitle', style: 'margin-top:12px;' }, `Last checked ${fmtDateTime(item.checked_at)}`) : null,
+  ]);
+}
+async function renderIntegrations(token) {
+  setPageLoading('integrations');
+  const container = $('#page-integrations');
+  try {
+    const data = await api('/api/integrations');
+    if (token !== state.renderToken || state.view !== 'integrations') return;
+    const integrations = (data.integrations || []).map((item) => integrationData(item));
+    const groups = {
+      mcp: integrations.filter((item) => item.type === 'mcp'),
+      channel: integrations.filter((item) => item.type === 'channel'),
+      provider: integrations.filter((item) => item.type === 'provider'),
+    };
+    container.innerHTML = '';
+    container.appendChild(renderPageHeader('Integrations', 'Connected MCP servers, channels, and AI providers.', [
+      html('button', { className: 'btn btn-ghost btn-sm', onClick: () => rerender() }, '↻ Refresh'),
+    ]));
+    const stats = html('div', { className: 'stat-grid' });
+    [
+      ['Total', fmtNumber(integrations.length)],
+      ['Connected', fmtNumber(integrations.filter((item) => item.status === 'connected').length)],
+      ['Attention', fmtNumber(integrations.filter((item) => item.status === 'error' || item.status === 'expired').length)],
+      ['Configured', fmtNumber(integrations.filter((item) => item.status === 'configured').length)],
+    ].forEach(([label, value]) => stats.appendChild(statMini(label, value)));
+    container.appendChild(stats);
+    [
+      ['MCP Servers', groups.mcp, 'mcp'],
+      ['Channels', groups.channel, 'channel'],
+      ['AI Providers', groups.provider, 'provider'],
+    ].forEach(([title, items, key]) => {
+      container.appendChild(html('div', { className: 'section-label' }, title));
+      if (!items.length) {
+        container.appendChild(renderEmpty('○', `No ${String(title).toLowerCase()} found`, `Nothing from the current config is available in the ${key} group.`));
+        return;
+      }
+      items.forEach((item) => container.appendChild(buildIntegrationCard(item)));
+    });
+  } catch (error) {
+    container.innerHTML = '';
+    container.appendChild(renderPageHeader('Integrations', 'Connected MCP servers, channels, and AI providers.'));
+    container.appendChild(renderEmpty('⚠', 'Failed to load integrations', error.message));
   }
 }
 async function renderLogs(token) {

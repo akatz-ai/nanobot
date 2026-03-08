@@ -250,6 +250,67 @@ def _sanitize_config_value(key: str, value: Any) -> Any:
     return value
 
 
+def _friendly_name(identifier: str) -> str:
+    mapping = {
+        "caldav": "CalDAV (iCloud)",
+        "google-drive": "Google Drive",
+        "filesystem": "Filesystem",
+    }
+    if identifier in mapping:
+        return mapping[identifier]
+    return identifier.replace("-", " ").replace("_", " ").title()
+
+
+def _provider_display_name(identifier: str) -> str:
+    mapping = {
+        "anthropic": "Anthropic",
+        "anthropic-direct": "Anthropic Direct",
+        "anthropicDirect": "Anthropic Direct",
+        "openai": "OpenAI",
+        "openrouter": "OpenRouter",
+        "google": "Google",
+        "groq": "Groq",
+        "ollama": "Ollama",
+        "custom": "Custom Provider",
+        "vllm": "vLLM",
+        "deepseek": "DeepSeek",
+        "gemini": "Gemini",
+        "claudeCode": "Claude Code",
+        "claude-code": "Claude Code",
+        "openaiCodex": "OpenAI Codex",
+        "githubCopilot": "GitHub Copilot",
+    }
+    if identifier in mapping:
+        return mapping[identifier]
+    return identifier.replace("-", " ").replace("_", " ").title()
+
+
+def _google_drive_credentials_file() -> Path:
+    return _workspace().parent / "credentials" / "google-drive.json"
+
+
+def _google_drive_status(server_cfg: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    env = server_cfg.get("env", {})
+    details: dict[str, Any] = {"oauth_supported": True}
+
+    creds_file = _google_drive_credentials_file()
+    if not creds_file.exists():
+        return "error", {**details, "error": "Authorization required"}
+
+    try:
+        creds = json.loads(creds_file.read_text())
+    except Exception as exc:
+        return "error", {**details, "error": f"Invalid credentials file: {exc}"}
+
+    has_access_token = bool(creds.get("token"))
+    has_refresh_token = bool(creds.get("refresh_token"))
+    details["has_refresh_token"] = has_refresh_token
+
+    if has_access_token or has_refresh_token:
+        return "connected", details
+    return "error", {**details, "error": "Authorization required"}
+
+
 def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if not text.startswith("---\n"):
         return {}, text
@@ -959,6 +1020,291 @@ async def channels():
             "channels": rows,
         }
     }
+
+
+@app.get("/api/integrations")
+async def integrations():
+    cfg = _load_config()
+    items = []
+
+    mcp_servers = cfg.get("tools", {}).get("mcpServers", {})
+    for server_id, server_cfg in mcp_servers.items():
+        item = {
+            "id": server_id,
+            "name": _friendly_name(server_id),
+            "type": "mcp",
+            "status": "configured",
+            "command": server_cfg.get("command", ""),
+            "has_env": bool(server_cfg.get("env")),
+        }
+        if server_id == "google-drive":
+            status, details = _google_drive_status(server_cfg)
+            item["status"] = status
+            item.update(details)
+        items.append(item)
+
+    channels_cfg = cfg.get("channels", {})
+
+    telegram = channels_cfg.get("telegram", {})
+    if telegram.get("enabled") or telegram.get("token"):
+        items.append({
+            "id": "telegram",
+            "name": "Telegram",
+            "type": "channel",
+            "status": "connected" if telegram.get("enabled") else "disabled",
+            "bot_token_set": bool(telegram.get("token")),
+            "allowed_users": len(telegram.get("allowFrom", telegram.get("allow_from", [])) or []),
+        })
+
+    discord_cfg = channels_cfg.get("discord", {})
+    if discord_cfg.get("enabled") or discord_cfg.get("token"):
+        items.append({
+            "id": "discord",
+            "name": "Discord",
+            "type": "channel",
+            "status": "connected" if discord_cfg.get("enabled") else "disabled",
+            "guild_id": discord_cfg.get("guildId") or discord_cfg.get("guild_id"),
+        })
+
+    providers = cfg.get("providers", {})
+    for provider_id, provider_cfg in providers.items():
+        # Skip providers without API keys configured (don't show unconfigured defaults)
+        if not provider_cfg.get("apiKey"):
+            continue
+        items.append({
+            "id": f"provider-{provider_id}",
+            "name": _provider_display_name(provider_id),
+            "type": "provider",
+            "status": "configured",
+            "has_api_key": True,
+        })
+
+    claude_creds = Path.home() / ".claude" / ".credentials.json"
+    if claude_creds.exists():
+        try:
+            creds = json.loads(claude_creds.read_text())
+            oauth = creds.get("claudeAiOauth", {})
+            expires_at = oauth.get("expiresAt", 0)
+            status = "connected"
+            if expires_at and expires_at < time.time() * 1000:
+                status = "expired"
+            items.append({
+                "id": "provider-anthropic-oauth",
+                "name": "Anthropic (OAuth)",
+                "type": "provider",
+                "status": status,
+                "subscription": oauth.get("subscriptionType", "unknown"),
+                "scopes": oauth.get("scopes", []),
+            })
+        except Exception:
+            pass
+
+    return {"integrations": items}
+
+
+@app.post("/api/integrations/{id}/check")
+async def check_integration(id: str):
+    cfg = _load_config()
+
+    if id == "provider-anthropic-oauth":
+        claude_creds = Path.home() / ".claude" / ".credentials.json"
+        if not claude_creds.exists():
+            return {"id": id, "status": "not_configured", "error": "No OAuth credentials found"}
+        try:
+            creds = json.loads(claude_creds.read_text())
+            oauth = creds.get("claudeAiOauth", {})
+            expires_at = oauth.get("expiresAt", 0)
+            if expires_at and expires_at < time.time() * 1000:
+                return {"id": id, "status": "expired", "error": "OAuth token expired (will auto-refresh)"}
+            return {"id": id, "status": "connected", "subscription": oauth.get("subscriptionType")}
+        except Exception as exc:
+            return {"id": id, "status": "error", "error": str(exc)}
+
+    mcp_servers = cfg.get("tools", {}).get("mcpServers", {})
+    if id in mcp_servers:
+        server = mcp_servers[id]
+        env = server.get("env", {})
+        if id == "google-drive":
+            status, details = _google_drive_status(server)
+            payload = {"id": id, "status": status}
+            payload.update(details)
+            if status == "connected":
+                payload["checked_at"] = datetime.now(timezone.utc).isoformat()
+            return payload
+
+        cmd = str(server.get("command", "")).strip()
+        missing_env = [key for key, value in env.items() if not value]
+        if missing_env:
+            return {"id": id, "status": "error", "error": f"Missing env vars: {', '.join(missing_env)}"}
+
+        cmd_name = cmd.split()[0] if cmd else ""
+        if cmd_name and not shutil.which(cmd_name):
+            return {"id": id, "status": "error", "error": f"Command not found: {cmd_name}"}
+        return {"id": id, "status": "configured", "checked_at": datetime.now(timezone.utc).isoformat()}
+
+    return {"id": id, "status": "unknown", "error": "Integration not found"}
+
+
+@app.get("/api/integrations/{id}/auth")
+async def integration_auth(id: str, callback_base: str = ""):
+    """Generate OAuth authorization URL for an integration."""
+    import secrets
+    import urllib.parse
+
+    if not callback_base:
+        callback_base = "http://localhost:18790/api"
+
+    if id != "google-drive":
+        raise HTTPException(400, f"OAuth not supported for {id}")
+
+    cfg = _load_config()
+    mcp = cfg.get("tools", {}).get("mcpServers", {}).get("google-drive", {})
+    env = mcp.get("env", {})
+
+    client_id = env.get("GOOGLE_CLIENT_ID", "")
+    if not client_id:
+        try:
+            creds_data = json.loads(env.get("GOOGLE_CREDENTIALS_JSON", "{}"))
+            client_id = creds_data.get("client_id", "")
+        except Exception:
+            pass
+
+    if not client_id:
+        raise HTTPException(400, "No Google client_id configured")
+
+    callback_url = f"{callback_base}/integrations/{id}/callback"
+    state = secrets.token_urlsafe(32)
+
+    if not hasattr(app, "_oauth_states"):
+        app._oauth_states = {}
+    app._oauth_states[state] = {"id": id, "created": time.time()}
+
+    cutoff = time.time() - 600
+    app._oauth_states = {
+        key: value for key, value in app._oauth_states.items() if value["created"] > cutoff
+    }
+
+    params = {
+        "client_id": client_id,
+        "redirect_uri": callback_url,
+        "response_type": "code",
+        "scope": (
+            "https://www.googleapis.com/auth/drive "
+            "https://www.googleapis.com/auth/spreadsheets "
+            "https://www.googleapis.com/auth/documents.readonly"
+        ),
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    }
+
+    auth_url = "https://accounts.google.com/o/oauth2/auth?" + urllib.parse.urlencode(params)
+    return {"auth_url": auth_url, "callback_url": callback_url, "state": state}
+
+
+@app.get("/api/integrations/{id}/callback")
+async def integration_callback(
+    id: str,
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+):
+    """Handle OAuth callback from provider."""
+    from html import escape
+
+    if error:
+        return HTMLResponse(
+            f"""<html><body style="font-family:sans-serif;padding:40px;background:#1a1a2e;color:#e0e0e0;">
+            <h1>Authorization Failed</h1><p>{escape(error)}</p>
+            <p>Close this tab and try again from the dashboard.</p>
+        </body></html>"""
+        )
+
+    if not code:
+        raise HTTPException(400, "No authorization code received")
+
+    if hasattr(app, "_oauth_states") and state:
+        if state not in app._oauth_states:
+            return HTMLResponse(
+                """<html><body style="font-family:sans-serif;padding:40px;background:#1a1a2e;color:#e0e0e0;">
+                <h1>Invalid State</h1><p>The authorization request has expired. Please try again.</p>
+            </body></html>"""
+            )
+        del app._oauth_states[state]
+
+    if id != "google-drive":
+        raise HTTPException(400, f"OAuth callback not supported for {id}")
+
+    cfg = _load_config()
+    mcp = cfg.get("tools", {}).get("mcpServers", {}).get("google-drive", {})
+    env = mcp.get("env", {})
+
+    client_id = env.get("GOOGLE_CLIENT_ID", "")
+    client_secret = env.get("GOOGLE_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        try:
+            creds_data = json.loads(env.get("GOOGLE_CREDENTIALS_JSON", "{}"))
+            client_id = client_id or creds_data.get("client_id", "")
+            client_secret = client_secret or creds_data.get("client_secret", "")
+        except Exception:
+            pass
+
+    import httpx
+
+    callback_url = str(request.url).split("?", 1)[0]
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "redirect_uri": callback_url,
+                    "grant_type": "authorization_code",
+                },
+            )
+            if resp.status_code != 200:
+                try:
+                    error_detail = resp.json().get("error_description", resp.text)
+                except Exception:
+                    error_detail = resp.text
+                return HTMLResponse(
+                    f"""<html><body style="font-family:sans-serif;padding:40px;background:#1a1a2e;color:#e0e0e0;">
+                    <h1>Token Exchange Failed</h1><p>{escape(error_detail)}</p>
+                </body></html>"""
+                )
+
+            tokens = resp.json()
+    except Exception as exc:
+        return HTMLResponse(
+            f"""<html><body style="font-family:sans-serif;padding:40px;background:#1a1a2e;color:#e0e0e0;">
+            <h1>Error</h1><p>{escape(str(exc))}</p>
+        </body></html>"""
+        )
+
+    new_creds = json.dumps({
+        "token": tokens.get("access_token"),
+        "refresh_token": tokens.get("refresh_token"),
+        "client_id": client_id,
+        "client_secret": client_secret,
+    })
+
+    creds_dir = _workspace().parent / "credentials"
+    creds_dir.mkdir(parents=True, exist_ok=True)
+    creds_file = creds_dir / "google-drive.json"
+    creds_file.write_text(new_creds)
+
+    return HTMLResponse(
+        """<html><body style="font-family:sans-serif;padding:40px;background:#1a1a2e;color:#e0e0e0;text-align:center;">
+        <h1 style="color:#4ade80;">Google Drive Connected</h1>
+        <p style="color:#a0a0a0;">New credentials have been saved.</p>
+        <p style="color:#a0a0a0;">You can close this tab and return to the dashboard.</p>
+        <script>setTimeout(function(){ window.close(); }, 3000);</script>
+    </body></html>"""
+    )
 
 
 @app.get("/api/logs")

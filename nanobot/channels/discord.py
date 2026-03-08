@@ -470,6 +470,14 @@ class DiscordChannel(BaseChannel):
                                 "Transcribed Discord voice attachment: {}...",
                                 transcription[:50],
                             )
+                            # Send visible transcription reply in Discord
+                            msg_id = str(payload.get("id", ""))
+                            if msg_id:
+                                asyncio.create_task(
+                                    self._send_transcription_reply(
+                                        channel_id, msg_id, transcription
+                                    )
+                                )
                             continue
 
                 suffix = Path(filename).suffix.lower()
@@ -556,6 +564,37 @@ class DiscordChannel(BaseChannel):
         task = self._typing_tasks.pop(channel_id, None)
         if task:
             task.cancel()
+
+    async def _send_transcription_reply(
+        self, channel_id: str, message_id: str, transcription: str
+    ) -> None:
+        """Send a visible transcription of a voice message as a reply in Discord."""
+        if not self._http or not self.config.token:
+            return
+        try:
+            # Truncate very long transcriptions for the Discord message
+            display = transcription
+            if len(display) > 1900:
+                display = display[:1900] + "…"
+            content = f"📝 **Transcription:**\n{display}"
+            url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
+            headers = {"Authorization": f"Bot {self.config.token}"}
+            payload: dict[str, Any] = {
+                "content": content,
+                "message_reference": {"message_id": message_id},
+                "allowed_mentions": {"replied_user": False},
+            }
+            resp = await self._http.post(url, headers=headers, json=payload)
+            if resp.status_code < 300:
+                logger.info("Sent transcription reply for message {}", message_id)
+            else:
+                logger.warning(
+                    "Failed to send transcription reply: {} {}",
+                    resp.status_code,
+                    resp.text[:200],
+                )
+        except Exception as e:
+            logger.warning("Error sending transcription reply: {}", e)
 
     # ------------------------------------------------------------------
     # Guild management REST API (for dynamic channel creation)

@@ -83,7 +83,13 @@ class DiscordChannel(BaseChannel):
 
     name = "discord"
 
-    def __init__(self, config: DiscordConfig, bus: MessageBus):
+    def __init__(
+        self,
+        config: DiscordConfig,
+        bus: MessageBus,
+        groq_api_key: str = "",
+        openai_api_key: str = "",
+    ):
         super().__init__(config, bus)
         self.config: DiscordConfig = config
         self._ws: websockets.WebSocketClientProtocol | None = None
@@ -95,6 +101,14 @@ class DiscordChannel(BaseChannel):
         self._webhooks: dict[str, dict[str, str | None]] = {}
         # Set of our own webhook IDs (extracted from webhook URLs) for echo detection
         self._own_webhook_ids: dict[str, str | None] = {}  # webhook_id -> display_name
+        self._transcription = None
+        if groq_api_key or openai_api_key:
+            from nanobot.providers.transcription_service import TranscriptionService
+
+            self._transcription = TranscriptionService(
+                groq_api_key=groq_api_key,
+                openai_api_key=openai_api_key,
+            )
 
     async def start(self) -> None:
         """Start the Discord gateway connection."""
@@ -394,7 +408,12 @@ class DiscordChannel(BaseChannel):
                 # webhook's default name — always treat as own echo.
                 # If display_name is set, only treat as echo when names match;
                 # a different name (e.g. "Alex (Voice)") means external source.
-                if registered_name is None or author_name == registered_name:
+                # Normalize Unicode for comparison — Discord may strip
+                # variation selectors (e.g. U+FE0F) from emoji in webhook names.
+                import unicodedata
+                def _normalize_name(n: str) -> str:
+                    return unicodedata.normalize("NFC", n).replace("\ufe0f", "")
+                if registered_name is None or _normalize_name(author_name) == _normalize_name(registered_name):
                     logger.debug(
                         "Ignoring own webhook echo: webhook_id={} name={}",
                         webhook_id, author_name,
@@ -439,6 +458,20 @@ class DiscordChannel(BaseChannel):
                 resp.raise_for_status()
                 file_path.write_bytes(resp.content)
                 media_paths.append(str(file_path))
+
+                if self._transcription:
+                    from nanobot.providers.transcription_service import is_audio_file
+
+                    if is_audio_file(file_path):
+                        transcription = await self._transcription.transcribe(file_path)
+                        if transcription:
+                            content_parts.append(f"[transcription: {transcription}]")
+                            logger.info(
+                                "Transcribed Discord voice attachment: {}...",
+                                transcription[:50],
+                            )
+                            continue
+
                 suffix = Path(filename).suffix.lower()
                 is_text = suffix in TEXT_EXTENSIONS
                 file_size = file_path.stat().st_size

@@ -247,6 +247,43 @@ def test_openai_codex_strip_prefix_supports_hyphen_and_underscore():
 
 
 @pytest.mark.asyncio
+async def test_openai_codex_provider_retries_transient_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = {'count': 0}
+
+    class _Token:
+        account_id = 'acct'
+        access = 'secret'
+
+    async def _fake_request(url, headers, body, verify):
+        _ = (url, headers, body, verify)
+        attempts['count'] += 1
+        if attempts['count'] < 3:
+            raise RuntimeError('HTTP 503: upstream connect error or disconnect/reset before headers. delayed connect error: No route to host')
+        return 'OK', [], 'stop', {'prompt_tokens': 10, 'completion_tokens': 2}
+
+    async def _no_sleep(delay):
+        return None
+
+    monkeypatch.setattr(
+        'nanobot.providers.openai_codex_provider.get_codex_token',
+        lambda: _Token(),
+    )
+    monkeypatch.setattr(
+        'nanobot.providers.openai_codex_provider._request_codex',
+        _fake_request,
+    )
+    monkeypatch.setattr('nanobot.providers.openai_codex_provider.asyncio.sleep', _no_sleep)
+
+    provider = OpenAICodexProvider(default_model='openai-codex/gpt-5.4')
+    response = await provider.chat(messages=[{'role': 'user', 'content': 'hello'}])
+
+    assert response.content == 'OK'
+    assert attempts['count'] == 3
+
+
+@pytest.mark.asyncio
 async def test_openai_codex_provider_forwards_reasoning_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

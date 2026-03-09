@@ -17,6 +17,7 @@ from nanobot.providers.content import content_to_text
 DEFAULT_CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
 DEFAULT_ORIGINATOR = "nanobot"
 _SUPPORTED_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+_CODEX_MAX_RETRIES = 3
 
 
 class OpenAICodexProvider(LLMProvider):
@@ -64,13 +65,11 @@ class OpenAICodexProvider(LLMProvider):
         url = DEFAULT_CODEX_URL
 
         try:
-            try:
-                content, tool_calls, finish_reason, usage = await _request_codex(url, headers, body, verify=True)
-            except Exception as e:
-                if "CERTIFICATE_VERIFY_FAILED" not in str(e):
-                    raise
-                logger.warning("SSL certificate verification failed for Codex API; retrying with verify=False")
-                content, tool_calls, finish_reason, usage = await _request_codex(url, headers, body, verify=False)
+            content, tool_calls, finish_reason, usage = await _request_codex_with_retries(
+                url=url,
+                headers=headers,
+                body=body,
+            )
             return LLMResponse(
                 content=content,
                 tool_calls=tool_calls,
@@ -115,6 +114,59 @@ def _build_headers(account_id: str, token: str) -> dict[str, str]:
         "accept": "text/event-stream",
         "content-type": "application/json",
     }
+
+
+def _is_retryable_codex_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(fragment in text for fragment in [
+        'http 429',
+        'http 500',
+        'http 502',
+        'http 503',
+        'http 504',
+        'upstream connect error',
+        'disconnect/reset before headers',
+        'transport failure reason',
+        'delayed connect error',
+        'no route to host',
+        'connecterror',
+        'readtimeout',
+        'pooltimeout',
+        'temporarily unavailable',
+    ])
+
+
+async def _request_codex_with_retries(
+    *,
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+) -> tuple[str, list[ToolCallRequest], str, dict[str, int]]:
+    last_error: Exception | None = None
+    verify = True
+    for attempt in range(1, _CODEX_MAX_RETRIES + 1):
+        try:
+            return await _request_codex(url, headers, body, verify=verify)
+        except Exception as e:
+            last_error = e
+            if 'CERTIFICATE_VERIFY_FAILED' in str(e):
+                if verify:
+                    logger.warning('SSL certificate verification failed for Codex API; retrying with verify=False')
+                    verify = False
+                    continue
+            if attempt >= _CODEX_MAX_RETRIES or not _is_retryable_codex_error(e):
+                raise
+            delay = min(2 ** (attempt - 1), 8)
+            logger.warning(
+                'Codex request failed (attempt {}/{}): {}. Retrying in {}s',
+                attempt,
+                _CODEX_MAX_RETRIES,
+                e,
+                delay,
+            )
+            await asyncio.sleep(delay)
+    assert last_error is not None
+    raise last_error
 
 
 async def _request_codex(

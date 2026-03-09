@@ -26,8 +26,10 @@ from nanobot.providers.claude_code_provider import ClaudeCodeProvider
 from nanobot.providers.factory import build_provider
 from nanobot.providers.litellm_provider import LiteLLMProvider
 from nanobot.providers.openai_codex_provider import (
+    CodexAPIError,
     OpenAICodexProvider,
     _convert_messages,
+    _friendly_error,
     _prompt_cache_key,
     _strip_model_prefix,
 )
@@ -246,6 +248,18 @@ def test_openai_codex_strip_prefix_supports_hyphen_and_underscore():
     assert _strip_model_prefix("openai_codex/gpt-5.1-codex") == "gpt-5.1-codex"
 
 
+def test_openai_codex_friendly_error_classifies_rate_limit_and_quota() -> None:
+    msg, err_type, err_code = _friendly_error(429, json.dumps({'error': {'message': 'You exceeded your current quota, please check your plan and billing details.', 'type': 'insufficient_quota', 'code': 'insufficient_quota'}}))
+    assert 'quota is exhausted' in msg.lower()
+    assert err_type == 'insufficient_quota'
+    assert err_code == 'insufficient_quota'
+
+    msg2, err_type2, err_code2 = _friendly_error(429, json.dumps({'error': {'message': 'Rate limit reached, retry after 8 seconds', 'type': 'rate_limit_error', 'code': 'rate_limit_exceeded'}}))
+    assert 'rate limit triggered' in msg2.lower()
+    assert err_type2 == 'rate_limit_error'
+    assert err_code2 == 'rate_limit_exceeded'
+
+
 @pytest.mark.asyncio
 async def test_openai_codex_provider_retries_transient_failures(
     monkeypatch: pytest.MonkeyPatch,
@@ -263,7 +277,9 @@ async def test_openai_codex_provider_retries_transient_failures(
             raise RuntimeError('HTTP 503: upstream connect error or disconnect/reset before headers. delayed connect error: No route to host')
         return 'OK', [], 'stop', {'prompt_tokens': 10, 'completion_tokens': 2}
 
+    delays = []
     async def _no_sleep(delay):
+        delays.append(delay)
         return None
 
     monkeypatch.setattr(
@@ -281,6 +297,41 @@ async def test_openai_codex_provider_retries_transient_failures(
 
     assert response.content == 'OK'
     assert attempts['count'] == 3
+    assert delays == [2, 8]
+
+
+@pytest.mark.asyncio
+async def test_openai_codex_provider_does_not_retry_insufficient_quota(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Token:
+        account_id = 'acct'
+        access = 'secret'
+
+    attempts = {'count': 0}
+
+    async def _fake_request(url, headers, body, verify):
+        _ = (url, headers, body, verify)
+        attempts['count'] += 1
+        raise CodexAPIError(
+            'ChatGPT/Codex quota is exhausted for the current plan or billing pool. Please try again later.',
+            status_code=429,
+            error_type='insufficient_quota',
+            error_code='insufficient_quota',
+        )
+
+    async def _no_sleep(delay):
+        raise AssertionError(f'should not sleep/retry, got delay={delay}')
+
+    monkeypatch.setattr('nanobot.providers.openai_codex_provider.get_codex_token', lambda: _Token())
+    monkeypatch.setattr('nanobot.providers.openai_codex_provider._request_codex', _fake_request)
+    monkeypatch.setattr('nanobot.providers.openai_codex_provider.asyncio.sleep', _no_sleep)
+
+    provider = OpenAICodexProvider(default_model='openai-codex/gpt-5.4')
+    response = await provider.chat(messages=[{'role': 'user', 'content': 'hello'}])
+
+    assert 'quota is exhausted' in response.content.lower()
+    assert attempts['count'] == 1
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 from typing import Any, AsyncGenerator
 
 import httpx
@@ -18,6 +19,17 @@ DEFAULT_CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
 DEFAULT_ORIGINATOR = "nanobot"
 _SUPPORTED_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
 _CODEX_MAX_RETRIES = 3
+
+
+class CodexAPIError(RuntimeError):
+    """Structured error for Codex HTTP/API failures."""
+
+    def __init__(self, message: str, *, status_code: int | None = None, retry_after: float | None = None, error_type: str | None = None, error_code: str | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after = retry_after
+        self.error_type = error_type
+        self.error_code = error_code
 
 
 class OpenAICodexProvider(LLMProvider):
@@ -116,10 +128,31 @@ def _build_headers(account_id: str, token: str) -> dict[str, str]:
     }
 
 
+def _format_codex_error(exc: Exception) -> str:
+    text = str(exc).strip()
+    if text:
+        return text
+    cause = getattr(exc, '__cause__', None) or getattr(exc, '__context__', None)
+    if isinstance(cause, Exception):
+        cause_text = _format_codex_error(cause)
+        if cause_text:
+            return f'{exc.__class__.__name__}: {cause_text}'
+    return exc.__class__.__name__
+
+
 def _is_retryable_codex_error(exc: Exception) -> bool:
-    text = str(exc).lower()
+    if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
+        return True
+    if isinstance(exc, CodexAPIError):
+        if exc.status_code in {500, 502, 503, 504, 408, 409}:
+            return True
+        if exc.status_code == 429:
+            return exc.error_code != 'insufficient_quota'
+    cause = getattr(exc, '__cause__', None) or getattr(exc, '__context__', None)
+    if isinstance(cause, Exception) and _is_retryable_codex_error(cause):
+        return True
+    text = _format_codex_error(exc).lower()
     return any(fragment in text for fragment in [
-        'http 429',
         'http 500',
         'http 502',
         'http 503',
@@ -156,12 +189,14 @@ async def _request_codex_with_retries(
                     continue
             if attempt >= _CODEX_MAX_RETRIES or not _is_retryable_codex_error(e):
                 raise
-            delay = min(2 ** (attempt - 1), 8)
+            retry_after = getattr(e, 'retry_after', None)
+            delay = retry_after if retry_after is not None else [2, 8, 16][attempt - 1]
+            delay = max(1.0, min(float(delay), 60.0))
             logger.warning(
-                'Codex request failed (attempt {}/{}): {}. Retrying in {}s',
+                'Codex request failed (attempt {}/{}): {}. Retrying in {:.1f}s',
                 attempt,
                 _CODEX_MAX_RETRIES,
-                e,
+                _format_codex_error(e),
                 delay,
             )
             await asyncio.sleep(delay)
@@ -179,7 +214,15 @@ async def _request_codex(
         async with client.stream("POST", url, headers=headers, json=body) as response:
             if response.status_code != 200:
                 text = await response.aread()
-                raise RuntimeError(_friendly_error(response.status_code, text.decode("utf-8", "ignore")))
+                retry_after = _parse_retry_after(response.headers.get('retry-after'))
+                message, error_type, error_code = _friendly_error(response.status_code, text.decode("utf-8", "ignore"))
+                raise CodexAPIError(
+                    message,
+                    status_code=response.status_code,
+                    retry_after=retry_after,
+                    error_type=error_type,
+                    error_code=error_code,
+                )
             return await _consume_sse(response)
 
 
@@ -415,7 +458,51 @@ def _map_finish_reason(status: str | None) -> str:
     return _FINISH_REASON_MAP.get(status or "completed", "stop")
 
 
-def _friendly_error(status_code: int, raw: str) -> str:
+def _parse_retry_after(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _friendly_error(status_code: int, raw: str) -> tuple[str, str | None, str | None]:
+    error_type = None
+    error_code = None
+    message = raw.strip()
+    try:
+        payload = json.loads(raw)
+        error = payload.get('error') if isinstance(payload, dict) else None
+        if isinstance(error, dict):
+            message = str(error.get('message') or message or '').strip()
+            error_type = str(error.get('type') or '') or None
+            error_code = str(error.get('code') or '') or None
+    except Exception:
+        pass
+
+    lower = message.lower()
+    if status_code == 401:
+        return ('Codex authentication failed. Please reconnect the ChatGPT/Codex OAuth session.', error_type or 'authentication_error', error_code)
+    if status_code == 403:
+        return ('Codex access was denied for this request. Check subscription access and model permissions.', error_type or 'permission_error', error_code)
+    if status_code == 404:
+        return ('Codex endpoint or requested resource was not found.', error_type or 'not_found_error', error_code)
+    if status_code == 408:
+        return ('Codex request timed out before a response was available.', error_type or 'timeout_error', error_code)
+    if status_code == 409:
+        return ('Codex request conflicted with current backend state. Please retry.', error_type or 'conflict_error', error_code)
+    if status_code == 413:
+        return ('Codex rejected the request because it was too large.', error_type or 'request_too_large', error_code)
+    if status_code == 422:
+        return ('Codex rejected the request payload as invalid.', error_type or 'invalid_request_error', error_code)
     if status_code == 429:
-        return "ChatGPT usage quota exceeded or rate limit triggered. Please try again later."
-    return f"HTTP {status_code}: {raw}"
+        if 'insufficient_quota' in lower or error_code == 'insufficient_quota':
+            return ('ChatGPT/Codex quota is exhausted for the current plan or billing pool. Please try again later.', error_type or 'quota_exceeded', error_code or 'insufficient_quota')
+        return ('ChatGPT/Codex rate limit triggered. Please wait a bit and retry.', error_type or 'rate_limit_error', error_code)
+    if status_code in {500, 502, 503, 504}:
+        return (f'Codex upstream service is temporarily unavailable (HTTP {status_code}).', error_type or 'server_error', error_code)
+
+    if not message:
+        message = f'HTTP {status_code}'
+    return (f'HTTP {status_code}: {message}', error_type, error_code)

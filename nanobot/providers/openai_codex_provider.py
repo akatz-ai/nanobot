@@ -383,6 +383,34 @@ async def _iter_sse(response: httpx.Response) -> AsyncGenerator[dict[str, Any], 
         buffer.append(line)
 
 
+def _extract_event_error(event: dict[str, Any]) -> str:
+    for key in ('error', 'response'):
+        value = event.get(key)
+        if not isinstance(value, dict):
+            continue
+        err = value.get('error') if key == 'response' else value
+        if isinstance(err, dict):
+            message = str(err.get('message') or '').strip()
+            code = str(err.get('code') or '').strip()
+            err_type = str(err.get('type') or '').strip()
+            parts = [part for part in [message, code, err_type] if part]
+            if parts:
+                return ' | '.join(parts)
+        if key == 'response':
+            status = str(value.get('status') or '').strip()
+            incomplete = value.get('incomplete_details')
+            if isinstance(incomplete, dict):
+                reason = str(incomplete.get('reason') or '').strip()
+                if reason:
+                    return f'{status}: {reason}' if status else reason
+            if status:
+                return status
+    message = str(event.get('message') or '').strip()
+    if message:
+        return message
+    return 'Codex response failed'
+
+
 async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequest], str, dict[str, int]]:
     content = ""
     tool_calls: list[ToolCallRequest] = []
@@ -445,8 +473,8 @@ async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequ
                 "completion_tokens": output_tokens,
                 "cache_read_input_tokens": cached_tokens,
             }
-        elif event_type in {"error", "response.failed"}:
-            raise RuntimeError("Codex response failed")
+        elif event_type in {"error", "response.failed", "response.incomplete"}:
+            raise RuntimeError(_extract_event_error(event))
 
     return content, tool_calls, finish_reason, usage
 

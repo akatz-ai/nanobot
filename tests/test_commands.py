@@ -29,6 +29,7 @@ from nanobot.providers.openai_codex_provider import (
     CodexAPIError,
     OpenAICodexProvider,
     _convert_messages,
+    _extract_event_error,
     _friendly_error,
     _prompt_cache_key,
     _strip_model_prefix,
@@ -258,6 +259,11 @@ def test_openai_codex_friendly_error_classifies_rate_limit_and_quota() -> None:
     assert 'rate limit triggered' in msg2.lower()
     assert err_type2 == 'rate_limit_error'
     assert err_code2 == 'rate_limit_exceeded'
+
+
+def test_openai_codex_extract_event_error_uses_event_details() -> None:
+    assert _extract_event_error({'error': {'message': 'Rate limit reached', 'code': 'rate_limit_exceeded', 'type': 'rate_limit_error'}}) == 'Rate limit reached | rate_limit_exceeded | rate_limit_error'
+    assert _extract_event_error({'response': {'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}}}) == 'incomplete: max_output_tokens'
 
 
 @pytest.mark.asyncio

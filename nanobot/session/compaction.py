@@ -552,7 +552,13 @@ def find_valid_cut_points(
     messages: list[dict[str, Any]],
     after_index: int = 0,
 ) -> list[int]:
-    """Return safe first-kept indices (turn boundaries) for compaction."""
+    """Return safe first-kept indices (turn boundaries) for compaction.
+
+    A user message is always a valid cut point because it marks a natural turn
+    boundary.  Any unmatched ``tool_calls`` preceding a user message are treated
+    as orphans from interrupted sessions (e.g. gateway restarts) and are cleared
+    when the user message is reached.
+    """
     floor = max(0, int(after_index))
     pending_tool_calls: set[str] = set()
     points: list[int] = []
@@ -571,7 +577,11 @@ def find_valid_cut_points(
             tc_id = msg.get("tool_call_id")
             if tc_id:
                 pending_tool_calls.discard(str(tc_id))
-        elif role == "user" and idx >= floor and not pending_tool_calls:
+        elif role == "user" and idx >= floor:
+            # A user message is a natural turn boundary.  Clear any orphan
+            # tool_calls left over from interrupted sessions so they don't
+            # block all subsequent cut points.
+            pending_tool_calls.clear()
             points.append(idx)
 
     return points

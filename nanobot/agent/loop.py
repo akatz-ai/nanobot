@@ -1065,6 +1065,16 @@ class AgentLoop:
                 emergency_threshold,
             )
 
+        # Always refresh the persisted estimate for the current visible prompt window.
+        # This keeps dashboards/channel labels current even for providers that do not
+        # report usage on every request or when no request has been made since restart.
+        self._last_input_tokens[session.key] = int(estimated_tokens)
+        self.sessions.set_usage_snapshot(
+            session,
+            total_input_tokens=int(estimated_tokens),
+            source="estimated_current_prompt",
+        )
+
         return messages
 
     def _refresh_estimated_token_snapshot(self, session: Session) -> None:

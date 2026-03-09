@@ -430,7 +430,7 @@ async def test_failure_recovery_on_summary_error(tmp_path: Path) -> None:
     assert session.compactions == []
     usage_snapshot = session.metadata.get("usage_snapshot")
     assert isinstance(usage_snapshot, dict)
-    assert usage_snapshot.get("source") == "estimated_visible_history"
+    assert usage_snapshot.get("source") in {"estimated_visible_history", "estimated_current_prompt"}
     assert int(usage_snapshot.get("total_input_tokens", 0)) > 0
 
 

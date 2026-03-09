@@ -259,7 +259,7 @@ async def test_openai_codex_provider_forwards_reasoning_effort(
     async def _fake_request(url, headers, body, verify):
         _ = (url, headers, verify)
         captured["body"] = body
-        return "OK", [], "stop"
+        return "OK", [], "stop", {"prompt_tokens": 123, "completion_tokens": 45, "cache_read_input_tokens": 67}
 
     monkeypatch.setattr(
         "nanobot.providers.openai_codex_provider.get_codex_token",
@@ -278,6 +278,7 @@ async def test_openai_codex_provider_forwards_reasoning_effort(
     )
 
     assert response.content == "OK"
+    assert response.usage == {"prompt_tokens": 123, "completion_tokens": 45, "cache_read_input_tokens": 67}
     body = captured["body"]
     assert isinstance(body, dict)
     assert body["reasoning"] == {"effort": "xhigh"}

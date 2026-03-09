@@ -702,6 +702,12 @@ class SQLiteSessionManager(SessionManager):
             )
 
             if rewrite_messages:
+                # CRITICAL: Hydrate lazy messages BEFORE deleting rows.
+                # LazyMessageList._ensure_loaded() queries the same table;
+                # if we DELETE first, the lazy load returns 0 rows and we
+                # commit an empty message table.
+                if isinstance(session.messages, LazyMessageList) and not session.messages.is_loaded:
+                    session.messages._ensure_loaded()
                 self._conn.execute("DELETE FROM message WHERE session_key = ?", (session.key,))
                 for seq, message in enumerate(session.messages):
                     columns = self._message_columns(message, seq=seq, now_iso=now_iso)

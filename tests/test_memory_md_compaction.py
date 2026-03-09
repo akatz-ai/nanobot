@@ -120,6 +120,25 @@ async def test_compact_memory_md_under_threshold(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_compact_memory_md_forwards_reasoning_effort(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    store.write_long_term(_large_memory())
+
+    provider = MagicMock()
+    provider.count_tokens = AsyncMock(return_value=9000)
+    provider.chat = AsyncMock(return_value=_tool_response(_compacted_memory()))
+
+    result = await store.compact_memory_md(
+        provider=provider,
+        model="openai-codex/gpt-5.3-codex-spark",
+        reasoning_effort="xhigh",
+    )
+
+    assert result is not None
+    assert provider.chat.await_args.kwargs["reasoning_effort"] == "xhigh"
+
+
+@pytest.mark.asyncio
 async def test_compact_memory_md_over_threshold(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path)
     original = _large_memory()

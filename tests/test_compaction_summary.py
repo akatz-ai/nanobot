@@ -178,6 +178,31 @@ async def test_generate_compaction_summary_uses_update_prompt_with_previous_summ
 
 
 @pytest.mark.asyncio
+async def test_generate_compaction_summary_forwards_reasoning_effort() -> None:
+    provider = AsyncMock()
+    provider.chat.return_value = LLMResponse(
+        content=(
+            "## Goal\nUpdated\n\n"
+            "## Constraints & Preferences\n- C\n\n"
+            "## Progress\n### Done\n- [x] D\n### In Progress\n- [ ] I\n### Blocked\n- B\n\n"
+            "## Key Decisions\n- **K**: R\n\n"
+            "## Next Steps\n1. N\n\n"
+            "## Critical Context\n- X"
+        )
+    )
+
+    await generate_compaction_summary(
+        messages=[{"role": "user", "content": "hello"}],
+        provider=provider,
+        model="openai-codex/gpt-5.3-codex-spark",
+        reasoning_effort="high",
+    )
+
+    assert provider.chat.await_count == 1
+    assert provider.chat.await_args.kwargs["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
 async def test_generate_compaction_summary_retries_and_falls_back_on_malformed_output() -> None:
     provider = AsyncMock()
     provider.chat.side_effect = [

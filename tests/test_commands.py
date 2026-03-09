@@ -24,6 +24,7 @@ from nanobot.providers.claude_code_provider import ClaudeCodeProvider
 from nanobot.providers.factory import build_provider
 from nanobot.providers.litellm_provider import LiteLLMProvider
 from nanobot.providers.openai_codex_provider import (
+    OpenAICodexProvider,
     _convert_messages,
     _prompt_cache_key,
     _strip_model_prefix,
@@ -217,6 +218,43 @@ def test_litellm_provider_canonicalizes_github_copilot_hyphen_prefix():
 def test_openai_codex_strip_prefix_supports_hyphen_and_underscore():
     assert _strip_model_prefix("openai-codex/gpt-5.1-codex") == "gpt-5.1-codex"
     assert _strip_model_prefix("openai_codex/gpt-5.1-codex") == "gpt-5.1-codex"
+
+
+@pytest.mark.asyncio
+async def test_openai_codex_provider_forwards_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Token:
+        account_id = "acct"
+        access = "secret"
+
+    async def _fake_request(url, headers, body, verify):
+        _ = (url, headers, verify)
+        captured["body"] = body
+        return "OK", [], "stop"
+
+    monkeypatch.setattr(
+        "nanobot.providers.openai_codex_provider.get_codex_token",
+        lambda: _Token(),
+    )
+    monkeypatch.setattr(
+        "nanobot.providers.openai_codex_provider._request_codex",
+        _fake_request,
+    )
+
+    provider = OpenAICodexProvider(default_model="openai-codex/gpt-5.4")
+    response = await provider.chat(
+        messages=[{"role": "user", "content": "hello"}],
+        model="openai-codex/gpt-5.3-codex-spark",
+        reasoning_effort="xhigh",
+    )
+
+    assert response.content == "OK"
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["reasoning"] == {"effort": "xhigh"}
 
 
 def test_context_build_messages_prepends_retrieved_memory_to_user_message(tmp_path: Path):

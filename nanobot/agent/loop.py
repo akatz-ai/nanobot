@@ -100,6 +100,7 @@ class AgentLoop:
         "claude-3-opus": 200_000,
         "claude-3-sonnet": 200_000,
         "claude-3-haiku": 200_000,
+        "gpt-5.3-codex-spark": 128_000,
         "gpt-4o": 128_000,
         "gpt-4-turbo": 128_000,
         "gpt-4": 8_192,
@@ -267,7 +268,11 @@ class AgentLoop:
 
     def _get_context_window_size(self) -> int:
         """Look up the context window size for the current model."""
-        model_lower = (self.model or "").lower()
+        return self._get_context_window_size_for_model(self.model)
+
+    def _get_context_window_size_for_model(self, model: str | None) -> int:
+        """Look up the context window size for a specific model string."""
+        model_lower = (model or "").lower()
         # Try exact match first, then substring match
         for key, size in self.MODEL_CONTEXT_WINDOWS.items():
             if key in model_lower:
@@ -869,6 +874,7 @@ class AgentLoop:
                     reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
                     keep_recent_tokens=self._COMPACTION_KEEP_RECENT_TOKENS,
                     threshold_ratio=self._COMPACTION_THRESHOLD_RATIO,
+                    reasoning_effort=self.reasoning_effort,
                 )
 
                 if entry is None:
@@ -916,6 +922,7 @@ class AgentLoop:
                         memory_compact_result = await self.context.memory.compact_memory_md(
                             provider=self.background_provider,
                             model=self.background_model,
+                            reasoning_effort=self.reasoning_effort,
                         )
                         if memory_compact_result and memory_compact_result.get("success"):
                             logger.info(
@@ -1931,6 +1938,7 @@ class AgentLoop:
                             self.background_provider,
                             self.background_model,
                             previous_summary=previous_summary,
+                            reasoning_effort=self.reasoning_effort,
                         )
                         temp = Session(key=session.key)
                         temp.messages = list(snapshot)
@@ -2273,13 +2281,13 @@ class AgentLoop:
             or ""
         )
 
-        context_window = self._get_context_window_size()
+        context_window = self._get_context_window_size_for_model(resolved_model)
         get_window_fn = getattr(llm_adapter, "get_context_window", None)
         if callable(get_window_fn):
             try:
                 context_window = int(get_window_fn(resolved_model))
             except Exception:
-                context_window = self._get_context_window_size()
+                context_window = self._get_context_window_size_for_model(resolved_model)
         context_window = max(1, context_window)
 
         get_output_budget_fn = getattr(consolidator, "get_extraction_max_tokens", None)
@@ -2732,6 +2740,7 @@ class AgentLoop:
                     self.background_model,
                     archive_all=True,
                     keep_count=0,
+                    reasoning_effort=self.reasoning_effort,
                 )
                 if success:
                     self.sessions.advance_last_consolidated(
@@ -2741,7 +2750,9 @@ class AgentLoop:
             else:
                 success = await MemoryStore(self.workspace).consolidate(
                     session, self.background_provider, self.background_model,
-                    archive_all=archive_all, keep_count=self._CONSOLIDATION_KEEP_COUNT,
+                    archive_all=archive_all,
+                    keep_count=self._CONSOLIDATION_KEEP_COUNT,
+                    reasoning_effort=self.reasoning_effort,
                 )
             if self._memory_module and self._memory_module.consolidator and graph_window_messages:
                 try:

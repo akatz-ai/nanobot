@@ -187,6 +187,7 @@ class MemoryStore:
         *,
         archive_all: bool = False,
         keep_count: int = 25,
+        reasoning_effort: str | None = None,
     ) -> bool:
         """Consolidate old messages into MEMORY.md + HISTORY.md via LLM tool call.
 
@@ -232,14 +233,17 @@ Reject chatter and transient details.
 {chr(10).join(lines) or "(empty)"}"""
 
         try:
-            response = await provider.chat(
-                messages=[
+            chat_kwargs = {
+                "messages": [
                     {"role": "system", "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation."},
                     {"role": "user", "content": prompt},
                 ],
-                tools=_SAVE_MEMORY_TOOL,
-                model=model,
-            )
+                "tools": _SAVE_MEMORY_TOOL,
+                "model": model,
+            }
+            if reasoning_effort:
+                chat_kwargs["reasoning_effort"] = reasoning_effort
+            response = await provider.chat(**chat_kwargs)
 
             if not response.has_tool_calls:
                 logger.warning("Memory consolidation: LLM did not call save_memory, skipping")
@@ -306,7 +310,13 @@ Reject chatter and transient details.
                     return count
         return self._estimate_tokens(text)
 
-    async def compact_memory_md(self, provider: LLMProvider, model: str) -> dict | None:
+    async def compact_memory_md(
+        self,
+        provider: LLMProvider,
+        model: str,
+        *,
+        reasoning_effort: str | None = None,
+    ) -> dict | None:
         """Compact MEMORY.md when it grows beyond the working-memory token threshold."""
         current_content = self.read_long_term()
         if not current_content.strip():
@@ -344,8 +354,8 @@ Call the save_memory tool with the compacted version.
 """
 
         try:
-            response = await provider.chat(
-                messages=[
+            chat_kwargs = {
+                "messages": [
                     {
                         "role": "system",
                         "content": (
@@ -355,10 +365,13 @@ Call the save_memory tool with the compacted version.
                     },
                     {"role": "user", "content": prompt},
                 ],
-                tools=_SAVE_MEMORY_TOOL,
-                model=model,
-                temperature=0.0,
-            )
+                "tools": _SAVE_MEMORY_TOOL,
+                "model": model,
+                "temperature": 0.0,
+            }
+            if reasoning_effort:
+                chat_kwargs["reasoning_effort"] = reasoning_effort
+            response = await provider.chat(**chat_kwargs)
 
             if not response.has_tool_calls:
                 logger.warning("MEMORY.md compaction: LLM did not call save_memory, skipping")

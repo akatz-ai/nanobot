@@ -238,7 +238,7 @@ class AgentDefaults(Base):
     temperature: float = 0.1
     max_tool_iterations: int = 40
     memory_window: int = 50  # Reserved for provisioning defaults / future retrieval tuning
-    reasoning_effort: str | None = None  # low / medium / high — enables LLM thinking mode
+    reasoning_effort: str | None = None  # none / minimal / low / medium / high / xhigh
 
 
 class AgentProfile(Base):

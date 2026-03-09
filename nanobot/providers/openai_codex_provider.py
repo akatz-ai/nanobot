@@ -16,6 +16,7 @@ from nanobot.providers.content import content_to_text
 
 DEFAULT_CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
 DEFAULT_ORIGINATOR = "nanobot"
+_SUPPORTED_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
 
 
 class OpenAICodexProvider(LLMProvider):
@@ -53,6 +54,10 @@ class OpenAICodexProvider(LLMProvider):
             "parallel_tool_calls": True,
         }
 
+        normalized_effort = _normalize_reasoning_effort(reasoning_effort, model)
+        if normalized_effort is not None:
+            body["reasoning"] = {"effort": normalized_effort}
+
         if tools:
             body["tools"] = _convert_tools(tools)
 
@@ -85,6 +90,18 @@ def _strip_model_prefix(model: str) -> str:
     if model.startswith("openai-codex/") or model.startswith("openai_codex/"):
         return model.split("/", 1)[1]
     return model
+
+
+def _normalize_reasoning_effort(reasoning_effort: str | None, model: str) -> str | None:
+    if not reasoning_effort:
+        return None
+    effort = str(reasoning_effort).strip().lower()
+    if effort not in _SUPPORTED_REASONING_EFFORTS:
+        logger.warning("Ignoring unsupported Codex reasoning effort '{}'", reasoning_effort)
+        return None
+    if "gpt-5" not in _strip_model_prefix(model).lower():
+        return None
+    return effort
 
 
 def _build_headers(account_id: str, token: str) -> dict[str, str]:

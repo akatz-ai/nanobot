@@ -366,6 +366,7 @@ async def _compress_summary_to_target(
     *,
     target_chars: int,
     reason: str,
+    reasoning_effort: str | None = None,
 ) -> str:
     clipped_input = _clip_from_start(summary, MAX_SUMMARY_COMPRESSION_INPUT_CHARS)
     prompt = SUMMARY_COMPRESSION_PROMPT.format(
@@ -375,15 +376,18 @@ async def _compress_summary_to_target(
 
     attempts = 2
     for attempt in range(attempts):
-        response = await provider.chat(
-            messages=[
+        chat_kwargs = {
+            "messages": [
                 {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
-            model=model,
-            temperature=0.0,
-            max_tokens=SUMMARY_COMPRESSION_MAX_TOKENS,
-        )
+            "model": model,
+            "temperature": 0.0,
+            "max_tokens": SUMMARY_COMPRESSION_MAX_TOKENS,
+        }
+        if reasoning_effort:
+            chat_kwargs["reasoning_effort"] = reasoning_effort
+        response = await provider.chat(**chat_kwargs)
         content = (response.content or "").strip()
         if not _summary_has_required_sections(content):
             logger.warning(
@@ -422,6 +426,7 @@ async def generate_compaction_summary(
     model: str,
     previous_summary: str | None = None,
     max_transcript_chars: int = 100_000,
+    reasoning_effort: str | None = None,
 ) -> str:
     """Generate a structured compaction summary from conversation history."""
     transcript = serialize_conversation(messages, max_transcript_chars=max_transcript_chars)
@@ -441,6 +446,7 @@ async def generate_compaction_summary(
             model,
             target_chars=TARGET_PREVIOUS_SUMMARY_CHARS,
             reason="previous summary over cap",
+            reasoning_effort=reasoning_effort,
         )
 
     prompt_parts = [f"<conversation>\n{transcript}\n</conversation>"]
@@ -453,15 +459,18 @@ async def generate_compaction_summary(
 
     attempts = 2
     for attempt in range(attempts):
-        response = await provider.chat(
-            messages=[
+        chat_kwargs = {
+            "messages": [
                 {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
-            model=model,
-            temperature=0.0,
-            max_tokens=3000,
-        )
+            "model": model,
+            "temperature": 0.0,
+            "max_tokens": 3000,
+        }
+        if reasoning_effort:
+            chat_kwargs["reasoning_effort"] = reasoning_effort
+        response = await provider.chat(**chat_kwargs)
         content = (response.content or "").strip()
         if _summary_has_required_sections(content):
             if len(content) > MAX_SUMMARY_CHARS:
@@ -476,6 +485,7 @@ async def generate_compaction_summary(
                     model,
                     target_chars=TARGET_SUMMARY_CHARS,
                     reason="generated summary over cap",
+                    reasoning_effort=reasoning_effort,
                 )
             if len(content) > MAX_SUMMARY_CHARS:
                 content = _hard_cap_summary(content, MAX_SUMMARY_CHARS)
@@ -496,6 +506,7 @@ async def generate_turn_prefix_summary(
     provider: LLMProvider,
     model: str,
     max_transcript_chars: int = 20_000,
+    reasoning_effort: str | None = None,
 ) -> str:
     """Generate a compact summary for a split-turn prefix segment."""
     transcript = serialize_conversation(messages, max_transcript_chars=max_transcript_chars)
@@ -503,15 +514,18 @@ async def generate_turn_prefix_summary(
         f"<conversation>\n{transcript}\n</conversation>\n\n"
         f"{TURN_PREFIX_SUMMARIZATION_PROMPT}"
     )
-    response = await provider.chat(
-        messages=[
+    chat_kwargs = {
+        "messages": [
             {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        model=model,
-        temperature=0.0,
-        max_tokens=1200,
-    )
+        "model": model,
+        "temperature": 0.0,
+        "max_tokens": 1200,
+    }
+    if reasoning_effort:
+        chat_kwargs["reasoning_effort"] = reasoning_effort
+    response = await provider.chat(**chat_kwargs)
     content = (response.content or "").strip()
     if content:
         return content
@@ -737,6 +751,7 @@ async def compact_session(
     reserve_tokens: int = 16_384,
     keep_recent_tokens: int = 20_000,
     threshold_ratio: float = 0.75,
+    reasoning_effort: str | None = None,
 ) -> CompactionEntry | None:
     """Run structured compaction and persist a CompactionEntry when successful."""
     last_input_tokens = _usage_snapshot_tokens(session)
@@ -798,6 +813,7 @@ async def compact_session(
             provider,
             model,
             previous_summary=plan.previous_summary,
+            reasoning_effort=reasoning_effort,
         )
         if plan.is_split_turn and plan.turn_start_index is not None:
             if plan.turn_start_index < plan.first_kept_index:
@@ -809,6 +825,7 @@ async def compact_session(
                     split_prefix_messages,
                     provider,
                     model,
+                    reasoning_effort=reasoning_effort,
                 )
                 summary = f"{summary}\n\n## Split Turn Prefix\n{split_prefix}"
     except Exception:

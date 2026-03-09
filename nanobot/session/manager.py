@@ -939,6 +939,68 @@ class SessionManager:
 
     def advance_last_consolidated(self, session: Session, value: int) -> None:
         self.apply_state(session, last_consolidated=int(value))
+
+    def get_extraction_state(self, session: Session) -> dict[str, Any]:
+        value = session.metadata.get("extraction_state", {})
+        return dict(value) if isinstance(value, dict) else {}
+
+    def mark_extraction_batch_pending(
+        self,
+        session: Session,
+        *,
+        batch_start: int,
+        batch_end: int,
+    ) -> None:
+        state = self.get_extraction_state(session)
+        state.update(
+            {
+                "pending_batch_start": int(batch_start),
+                "pending_batch_end": int(batch_end),
+                "last_status": "pending",
+            }
+        )
+        self.apply_state(session, metadata_updates={"extraction_state": state})
+
+    def mark_extraction_batch_failed(
+        self,
+        session: Session,
+        *,
+        batch_start: int,
+        batch_end: int,
+        error: str,
+    ) -> None:
+        state = self.get_extraction_state(session)
+        failures = int(state.get("consecutive_failures", 0) or 0) + 1
+        state.update(
+            {
+                "pending_batch_start": int(batch_start),
+                "pending_batch_end": int(batch_end),
+                "last_status": "failed",
+                "last_error": str(error),
+                "consecutive_failures": failures,
+            }
+        )
+        self.apply_state(session, metadata_updates={"extraction_state": state})
+
+    def mark_extraction_batch_succeeded(
+        self,
+        session: Session,
+        *,
+        batch_end: int,
+    ) -> None:
+        state = self.get_extraction_state(session)
+        state.update(
+            {
+                "last_extracted_index": int(batch_end),
+                "last_extraction_at": datetime.now().isoformat(),
+                "pending_batch_start": None,
+                "pending_batch_end": None,
+                "last_status": "success",
+                "last_error": None,
+                "consecutive_failures": 0,
+            }
+        )
+        self.apply_state(session, metadata_updates={"extraction_state": state})
     
     def save_all(self) -> int:
         """Flush all cached sessions to disk.

@@ -782,10 +782,15 @@ async def test_extraction_failure_retries_then_skips(tmp_path: Path):
 
     ok = await agent._consolidate_memory(session, archive_all=False)
 
-    # Batch fails twice (initial + retry), gets skipped, checkpoint advances
+    # Batch fails twice (initial + retry), stays pending, cursor does not advance.
     assert ok is True
-    assert session.last_consolidated == 85
+    assert session.last_consolidated == 0
     assert call_count["count"] == 2  # 1 attempt + 1 retry
+    extraction_state = session.metadata.get("extraction_state", {})
+    assert extraction_state.get("pending_batch_start") == 0
+    assert extraction_state.get("pending_batch_end") == 85
+    assert extraction_state.get("last_status") == "failed"
+    assert extraction_state.get("consecutive_failures") == 1
 
 
 @pytest.mark.asyncio
@@ -820,9 +825,13 @@ async def test_extraction_empty_suspicious(tmp_path: Path):
 
     ok = await agent._consolidate_memory(session, archive_all=False)
 
-    # Batch fails twice (retry), gets skipped, checkpoint advances to avoid stuck loops
+    # Batch fails twice (retry), stays pending and does not advance the cursor.
     assert ok is True
-    assert session.last_consolidated == 15  # 20 messages - 5 keep_count
+    assert session.last_consolidated == start_checkpoint
+    extraction_state = session.metadata.get("extraction_state", {})
+    assert extraction_state.get("pending_batch_start") == 0
+    assert extraction_state.get("pending_batch_end") == 15
+    assert extraction_state.get("last_status") == "failed"
 
 
 @pytest.mark.asyncio
@@ -952,10 +961,14 @@ async def test_consolidate_memory_hybrid_preserves_partial_batch_progress_on_fai
 
     ok = await agent._consolidate_memory(session, archive_all=False)
 
-    # With retry+skip: batch 1 succeeds, batch 2 fails+retries+skips, rest continue.
-    # All batches complete (some skipped), checkpoint advances to end.
+    # Batch 2 transiently fails once, then succeeds on retry, so extraction completes.
     assert ok is True
     assert session.last_consolidated == 85
+    extraction_state = session.metadata.get("extraction_state", {})
+    assert extraction_state.get("last_status") == "success"
+    assert extraction_state.get("pending_batch_start") is None
+    assert extraction_state.get("pending_batch_end") is None
+    assert extraction_state.get("consecutive_failures") == 0
 
 
 @pytest.mark.asyncio
@@ -997,12 +1010,55 @@ async def test_partial_batch_failure(tmp_path: Path):
 
     ok = await agent._consolidate_memory(session, archive_all=False)
 
-    # Batch 1 succeeds, subsequent batches fail+retry+skip. Overall completes with skips.
+    # Batch 1 succeeds, batch 2 fails+retry and remains pending. Later batches are not attempted.
     assert ok is True
-    assert session.last_consolidated == 85
+    assert session.last_consolidated == 29
+    extraction_state = session.metadata.get("extraction_state", {})
+    assert extraction_state.get("last_status") == "failed"
+    assert extraction_state.get("pending_batch_start") == 29
+    assert extraction_state.get("pending_batch_end") == 58
+    assert hybrid.compact.await_count == 3
     # rewrite_memory_md should be called once with the entries from successful batches
     rewrite_memory_md.assert_awaited_once()
     assert "batch-1" in rewrite_memory_md.await_args.kwargs["entries"]
+
+
+@pytest.mark.asyncio
+async def test_consolidate_memory_hybrid_does_not_advance_cursor_on_total_failure(tmp_path: Path):
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_StubProvider(),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    agent._CONSOLIDATION_KEEP_COUNT = 10
+    agent._memory_graph_config = {
+        "consolidation": {"engine": "hybrid", "batch_messages": 30}
+    }
+
+    async def _fail_compact(**kwargs):
+        _ = kwargs
+        return SimpleNamespace(success=False, error="json decode error")
+
+    hybrid = SimpleNamespace(compact=AsyncMock(side_effect=_fail_compact))
+    llm_adapter = SimpleNamespace()
+    consolidator_mock = SimpleNamespace(llm=llm_adapter)
+    agent._memory_module = SimpleNamespace(initialized=True, hybrid=hybrid, consolidator=consolidator_mock)
+
+    session = agent.sessions.get_or_create("cli:all-fail")
+    for i in range(95):
+        session.add_message("user", f"msg-{i}")
+    agent.sessions.save(session)
+
+    ok = await agent._consolidate_memory(session, archive_all=False)
+
+    assert ok is True
+    assert session.last_consolidated == 0
+    extraction_state = session.metadata.get("extraction_state", {})
+    assert extraction_state.get("pending_batch_start") == 0
+    assert extraction_state.get("pending_batch_end") == 85
+    assert extraction_state.get("last_status") == "failed"
+    assert extraction_state.get("consecutive_failures") == 1
 
 
 @pytest.mark.asyncio

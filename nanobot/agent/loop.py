@@ -2472,6 +2472,7 @@ class AgentLoop:
                         completed_batches = 0
                         skipped_batches = 0
                         accumulated_entries: list[Any] = []
+                        aborted_on_failure = False
                         _ce = getattr(self, "_active_compaction_event", None)
                         for batch_index, (batch_start, batch_end) in enumerate(planned_batches):
                             last_consolidated_before = session.last_consolidated
@@ -2488,6 +2489,11 @@ class AgentLoop:
                                 session.key,
                                 batch_start,
                                 batch_end,
+                            )
+                            self.sessions.mark_extraction_batch_pending(
+                                session,
+                                batch_start=batch_start,
+                                batch_end=batch_end,
                             )
 
                             result = None
@@ -2584,8 +2590,14 @@ class AgentLoop:
                                     reason=extraction_reason,
                                     compaction_event_id=compaction_event_id,
                                 )
-                                self.sessions.advance_last_consolidated(session, batch_end)
-                                continue
+                                self.sessions.mark_extraction_batch_failed(
+                                    session,
+                                    batch_start=batch_start,
+                                    batch_end=batch_end,
+                                    error=skip_error,
+                                )
+                                aborted_on_failure = True
+                                break
 
                             batch_entries = getattr(result, "entries", None)
                             _batch_items = len(batch_entries) if isinstance(batch_entries, list) else 0
@@ -2622,6 +2634,10 @@ class AgentLoop:
 
                             # Persist per-batch checkpoint so failures are resumable.
                             self.sessions.advance_last_consolidated(session, batch_end)
+                            self.sessions.mark_extraction_batch_succeeded(
+                                session,
+                                batch_end=batch_end,
+                            )
                             completed_batches += 1
 
                         if accumulated_entries and hasattr(self._memory_module.hybrid, "rewrite_memory_md"):
@@ -2635,11 +2651,12 @@ class AgentLoop:
 
                         logger.info(
                             "Hybrid memory consolidation done: {} messages, batches={}, skipped={}, "
-                            "last_consolidated={}",
+                            "last_consolidated={}{}",
                             len(session.messages),
                             completed_batches,
                             skipped_batches,
                             session.last_consolidated,
+                            " (aborted on first failed batch)" if aborted_on_failure else "",
                         )
                         return True
                     else:

@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS session (
     message_count INTEGER NOT NULL DEFAULT 0,
     last_consolidated_seq INTEGER NOT NULL DEFAULT 0,
     revision INTEGER NOT NULL DEFAULT 0,
+    pending_summary_start INTEGER,
+    pending_summary_end INTEGER,
+    pending_extract_start INTEGER,
+    pending_extract_end INTEGER,
+    pending_cut_point_type TEXT,
     storage_version INTEGER NOT NULL DEFAULT 1,
     jsonl_path TEXT,
     jsonl_migrated_at TEXT
@@ -256,6 +261,17 @@ class SQLiteSessionManager(SessionManager):
         }
         if "revision" not in session_columns:
             self._conn.execute("ALTER TABLE session ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+        for column_name, column_sql in (
+            ("pending_summary_start", "INTEGER"),
+            ("pending_summary_end", "INTEGER"),
+            ("pending_extract_start", "INTEGER"),
+            ("pending_extract_end", "INTEGER"),
+            ("pending_cut_point_type", "TEXT"),
+        ):
+            if column_name not in session_columns:
+                self._conn.execute(
+                    f"ALTER TABLE session ADD COLUMN {column_name} {column_sql}"
+                )
         columns = {
             str(row["name"])
             for row in self._conn.execute("PRAGMA table_info(message)").fetchall()
@@ -356,6 +372,143 @@ class SQLiteSessionManager(SessionManager):
             session._persisted_metadata_sig = session._metadata_signature()
             self._sync_session_tracking(session)
             self._cache[session.key] = session
+
+    def set_compaction_plan(self, session: Session, plan: dict[str, Any]) -> None:
+        """Persist pending compaction plan state as explicit session-row columns."""
+        session.bind_path(self._get_session_path(session.key))
+        now = datetime.now()
+        now_iso = now.isoformat()
+        summary_start = (
+            int(plan["summary_start"]) if plan.get("summary_start") is not None else None
+        )
+        summary_end = (
+            int(plan["summary_end"]) if plan.get("summary_end") is not None else None
+        )
+        extract_start = (
+            int(plan["extract_start"]) if plan.get("extract_start") is not None else None
+        )
+        extract_end = (
+            int(plan["extract_end"]) if plan.get("extract_end") is not None else None
+        )
+        cut_point_type = (
+            str(plan["cut_point_type"]) if plan.get("cut_point_type") is not None else None
+        )
+
+        with self._lock:
+            self._bind_sqlite_session(session)
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._upsert_session_row_locked(
+                    session,
+                    updated_at=now_iso,
+                    preserve_existing_message_count=True,
+                )
+                self._conn.execute(
+                    """
+                    UPDATE session
+                    SET
+                        updated_at = ?,
+                        revision = revision + 1,
+                        pending_summary_start = ?,
+                        pending_summary_end = ?,
+                        pending_extract_start = ?,
+                        pending_extract_end = ?,
+                        pending_cut_point_type = ?
+                    WHERE key = ?
+                    """,
+                    (
+                        now_iso,
+                        summary_start,
+                        summary_end,
+                        extract_start,
+                        extract_end,
+                        cut_point_type,
+                        session.key,
+                    ),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+            session.updated_at = now
+            self._sync_session_tracking(session)
+            self._cache[session.key] = session
+
+    def pop_compaction_plan(self, session: Session) -> dict[str, Any]:
+        """Load and clear pending compaction plan state from explicit session-row columns."""
+        session.bind_path(self._get_session_path(session.key))
+        now = datetime.now()
+        now_iso = now.isoformat()
+
+        with self._lock:
+            self._bind_sqlite_session(session)
+            row = self._conn.execute(
+                """
+                SELECT
+                    pending_summary_start,
+                    pending_summary_end,
+                    pending_extract_start,
+                    pending_extract_end,
+                    pending_cut_point_type
+                FROM session
+                WHERE key = ?
+                """,
+                (session.key,),
+            ).fetchone()
+            if row is None:
+                return {}
+
+            plan: dict[str, Any] = {}
+            if row["pending_summary_start"] is not None:
+                plan["summary_start"] = int(row["pending_summary_start"])
+            if row["pending_summary_end"] is not None:
+                plan["summary_end"] = int(row["pending_summary_end"])
+            if row["pending_extract_start"] is not None:
+                plan["extract_start"] = int(row["pending_extract_start"])
+            if row["pending_extract_end"] is not None:
+                plan["extract_end"] = int(row["pending_extract_end"])
+            if row["pending_cut_point_type"] is not None:
+                plan["cut_point_type"] = str(row["pending_cut_point_type"])
+            has_pending = any(
+                row[name] is not None
+                for name in (
+                    "pending_summary_start",
+                    "pending_summary_end",
+                    "pending_extract_start",
+                    "pending_extract_end",
+                    "pending_cut_point_type",
+                )
+            )
+            if not has_pending:
+                return {}
+
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute(
+                    """
+                    UPDATE session
+                    SET
+                        updated_at = ?,
+                        revision = revision + 1,
+                        pending_summary_start = NULL,
+                        pending_summary_end = NULL,
+                        pending_extract_start = NULL,
+                        pending_extract_end = NULL,
+                        pending_cut_point_type = NULL
+                    WHERE key = ?
+                    """,
+                    (now_iso, session.key),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+            session.updated_at = now
+            self._sync_session_tracking(session)
+            self._cache[session.key] = session
+            return plan
 
     def list_sessions(self) -> list[dict[str, Any]]:
         """List sessions from SQLite plus any JSONL files not yet migrated."""

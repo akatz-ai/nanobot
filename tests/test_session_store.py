@@ -929,6 +929,15 @@ def test_session_state_helper_methods_persist_semantic_fields(
         session,
         {"extract_start": 1, "extract_end": 4, "cut_point_type": "clean"},
     )
+    row = _fetch_all(
+        manager.db_path,
+        """
+        SELECT pending_extract_start, pending_extract_end, pending_cut_point_type
+        FROM session
+        WHERE key = ?
+        """,
+        (key,),
+    )[0]
     removed_plan = manager.pop_compaction_plan(session)
     manager.advance_last_consolidated(session, 4)
     manager.clear_usage_snapshot(session)
@@ -937,6 +946,9 @@ def test_session_state_helper_methods_persist_semantic_fields(
     reloaded = manager.get_or_create(key)
 
     assert removed_plan == {"extract_start": 1, "extract_end": 4, "cut_point_type": "clean"}
+    assert row["pending_extract_start"] == 1
+    assert row["pending_extract_end"] == 4
+    assert row["pending_cut_point_type"] == "clean"
     assert "usage_snapshot" not in reloaded.metadata
     assert "_structured_compaction_plan" not in reloaded.metadata
     assert reloaded.last_consolidated == 4

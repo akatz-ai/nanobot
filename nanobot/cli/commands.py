@@ -194,19 +194,6 @@ def onboard():
     console.print("     Get one at: https://openrouter.ai/keys")
     console.print("  2. Chat: [cyan]nanobot agent -m \"Hello!\"[/cyan]")
     console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
-def _setup_secondary_env_vars(config: Config) -> None:
-    """Set env vars for secondary providers (OpenAI, Groq, etc.) so litellm can find them."""
-    import os
-    mapping = [
-        ("openai", "OPENAI_API_KEY"),
-        ("groq", "GROQ_API_KEY"),
-    ]
-    for name, env_key in mapping:
-        p = getattr(config.providers, name, None)
-        if p and hasattr(p, "api_key") and p.api_key:
-            os.environ.setdefault(env_key, p.api_key)
-
-
 def _resolve_target_session_key(
     *,
     channel: str | None,
@@ -499,89 +486,11 @@ def provision(
     console.print("[dim]If Claude auth is missing, run `claude auth login` on this instance, then re-run `nanobot provision --check`.[/dim]")
 
 
-def _make_provider(config: Config):
+def _make_provider(config: Config, *, model: str | None = None, workspace: Path | None = None):
     """Create the appropriate LLM provider from config."""
-    from nanobot.providers.litellm_provider import LiteLLMProvider
-    from nanobot.providers.claude_code_provider import ClaudeCodeProvider
-    from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-    from nanobot.providers.custom_provider import CustomProvider
-    from nanobot.providers.anthropic_auth import get_oauth_token, is_oauth_token
+    from nanobot.providers.factory import build_provider
 
-    model = config.agents.defaults.model
-    provider_name = config.get_provider_name(model)
-    p = config.get_provider(model)
-    api_key = p.api_key if p and hasattr(p, "api_key") else None
-
-    def _is_claude_model_name(model_name: str) -> bool:
-        model_lower = model_name.lower()
-        if model_lower.startswith(("claude-code/", "claude_code/")):
-            return True
-        if "/" in model_lower:
-            prefix = model_lower.split("/", 1)[0]
-            if prefix in {"anthropic", "claude", "anthropic-direct", "anthropic_direct"}:
-                return True
-        return "claude" in model_lower
-
-    # Claude Code (OAuth via local CLI)
-    if provider_name == "claude_code" or model.startswith("claude-code/") or model.startswith("claude_code/"):
-        return ClaudeCodeProvider(
-            default_model=model,
-            workspace=config.workspace_path,
-        )
-
-    # OpenAI Codex (OAuth)
-    if provider_name == "openai_codex" or model.startswith("openai-codex/"):
-        return OpenAICodexProvider(default_model=model)
-
-    # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
-    if provider_name == "custom":
-        return CustomProvider(
-            api_key=p.api_key if p else "no-key",
-            api_base=config.get_api_base(model) or "http://localhost:8000/v1",
-            default_model=model,
-        )
-
-    # Explicit API key always wins and routes through LiteLLM.
-    if not model.startswith("bedrock/") and api_key:
-        return LiteLLMProvider(
-            api_key=api_key,
-            api_base=config.get_api_base(model),
-            default_model=model,
-            extra_headers=p.extra_headers if p and hasattr(p, "extra_headers") else None,
-            provider_name=provider_name,
-        )
-
-    # Fallback: Claude OAuth token (direct Anthropic API).
-    direct_cfg = config.providers.anthropic_direct
-    wants_anthropic_direct = provider_name == "anthropic_direct" or _is_claude_model_name(model)
-    if direct_cfg.enabled and wants_anthropic_direct:
-        oauth_token = get_oauth_token()
-        if oauth_token and is_oauth_token(oauth_token):
-            from nanobot.providers.anthropic_direct_provider import AnthropicDirectProvider
-
-            direct_model = direct_cfg.model or model
-            # Ensure secondary provider env vars are set for memory/consolidation ops
-            _setup_secondary_env_vars(config)
-            return AnthropicDirectProvider(oauth_token=oauth_token, default_model=direct_model)
-        if provider_name == "anthropic_direct" or _is_claude_model_name(model):
-            console.print("[red]Error: No Anthropic OAuth token configured.[/red]")
-            console.print("Run [cyan]claude login[/cyan] or set [cyan]CLAUDE_CODE_OAUTH_TOKEN[/cyan]")
-            raise typer.Exit(1)
-
-    from nanobot.providers.registry import find_by_name
-    spec = find_by_name(provider_name)
-    if not model.startswith("bedrock/") and not api_key and not (spec and spec.is_oauth):
-        console.print("[red]Error: No API key configured.[/red]")
-        console.print("Set one in ~/.nanobot/config.json under providers section")
-        raise typer.Exit(1)
-
-    return LiteLLMProvider(
-        api_key=api_key,
-        api_base=config.get_api_base(model),
-        default_model=model,
-        extra_headers=p.extra_headers if p and hasattr(p, "extra_headers") else None,
-        provider_name=provider_name,
-    )
+    return build_provider(config, model=model, workspace=workspace)
 
 
 # ============================================================================
@@ -643,7 +552,10 @@ def gateway_worker(
             console.print(f"[yellow]⚠ Discord provisioning skipped: {exc}[/yellow]")
 
     bus = MessageBus()
-    provider = _make_provider(config)
+    from nanobot.providers.factory import ProviderFactory
+
+    provider_factory = ProviderFactory(config)
+    provider = provider_factory.for_model(config.agents.defaults.model)
 
     # Create cron service first (callback set after router creation)
     cron_jobs_path = get_data_dir() / "cron" / "jobs"
@@ -657,6 +569,7 @@ def gateway_worker(
         front_bus=bus,
         config=config,
         provider=provider,
+        provider_factory=provider_factory,
         cron_service=cron,
     )
 
@@ -825,6 +738,8 @@ def gateway_worker(
             workspace=agent_inst.workspace,
             on_execute=_make_heartbeat_execute(agent_inst),
             on_notify=_make_heartbeat_notify(agent_inst),
+            provider=agent_inst.loop.provider,
+            model=agent_inst.loop.model,
         )
 
     # Create usage dashboard if configured
@@ -1004,7 +919,14 @@ def agent(
     config = load_config()
     
     bus = MessageBus()
-    provider = _make_provider(config)
+    provider = _make_provider(config, model=config.agents.defaults.model, workspace=config.workspace_path)
+    background_provider = provider
+    if config.agents.defaults.background_model:
+        background_provider = _make_provider(
+            config,
+            model=config.agents.defaults.background_model,
+            workspace=config.workspace_path,
+        )
 
     # Create cron service for tool usage (no callback needed for CLI unless running)
     cron_jobs_path = get_data_dir() / "cron" / "jobs"
@@ -1018,6 +940,7 @@ def agent(
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
+        background_provider=background_provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
         background_model=config.agents.defaults.background_model,
@@ -1510,11 +1433,19 @@ def cron_run(
     logger.disable("nanobot")
 
     config = load_config()
-    provider = _make_provider(config)
+    provider = _make_provider(config, model=config.agents.defaults.model, workspace=config.workspace_path)
+    background_provider = provider
+    if config.agents.defaults.background_model:
+        background_provider = _make_provider(
+            config,
+            model=config.agents.defaults.background_model,
+            workspace=config.workspace_path,
+        )
     bus = MessageBus()
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
+        background_provider=background_provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
         background_model=config.agents.defaults.background_model,

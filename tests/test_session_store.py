@@ -647,6 +647,72 @@ async def test_router_uses_sqlite_session_manager_when_profile_requests_it(
     assert isinstance(created["session_manager"], SQLiteSessionManager)
 
 
+@pytest.mark.asyncio
+async def test_router_resolves_main_and_background_providers_per_agent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    created: dict[str, Any] = {}
+
+    class FakeLoop:
+        def __init__(self, **kwargs: Any):
+            created["provider"] = kwargs["provider"]
+            created["background_provider"] = kwargs["background_provider"]
+            created["model"] = kwargs["model"]
+            created["background_model"] = kwargs["background_model"]
+
+    class FakeProviderFactory:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def for_model(self, model: str | None = None, *, workspace: Path | None = None):
+            assert model is not None
+            assert workspace is not None
+            provider = SimpleNamespace(model=model, workspace=str(workspace))
+            self.calls.append((model, str(workspace)))
+            return provider
+
+    monkeypatch.setattr("nanobot.agent.router.AgentLoop", FakeLoop)
+
+    config = Config.model_validate(
+        {
+            "agents": {
+                "defaults": {
+                    "workspace": str(tmp_path / "workspace"),
+                    "model": "anthropic-direct/claude-opus-4-6",
+                    "backgroundModel": "anthropic/claude-haiku-4-5",
+                },
+                "profiles": {
+                    "sqlite-agent": {
+                        "model": "openai-codex/gpt-5.4",
+                        "backgroundModel": "anthropic/claude-haiku-4-5",
+                        "sessionStore": "sqlite",
+                    }
+                },
+            }
+        }
+    )
+    factory = FakeProviderFactory()
+    router = AgentRouter(
+        front_bus=MessageBus(),
+        config=config,
+        provider=SimpleNamespace(name="fallback"),
+        provider_factory=factory,
+    )
+    profile = config.agents.profiles["sqlite-agent"].resolve(config.agents.defaults)
+
+    await router._create_agent_instance("sqlite-agent", profile)
+
+    expected_workspace = str((tmp_path / "workspace" / "agents" / "sqlite-agent").resolve())
+    assert created["model"] == "openai-codex/gpt-5.4"
+    assert created["background_model"] == "anthropic/claude-haiku-4-5"
+    assert created["provider"].model == "openai-codex/gpt-5.4"
+    assert created["background_provider"].model == "anthropic/claude-haiku-4-5"
+    assert factory.calls == [
+        ("openai-codex/gpt-5.4", expected_workspace),
+        ("anthropic/claude-haiku-4-5", expected_workspace),
+    ]
+
+
 def test_rewrite_does_not_destroy_unloaded_lazy_messages(sqlite_manager: SQLiteSessionManager) -> None:
     """Regression: _rewrite_session_locked must hydrate LazyMessageList BEFORE
     deleting rows.  Without the fix, DELETE runs first, then _ensure_loaded()

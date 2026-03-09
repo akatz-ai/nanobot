@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from nanobot.config.schema import ChannelsConfig, Config
     from nanobot.cron.service import CronService
     from nanobot.providers.base import LLMProvider
+    from nanobot.providers.factory import ProviderFactory
 
 
 @dataclass
@@ -88,11 +89,13 @@ class AgentRouter:
         front_bus: MessageBus,
         config: Config,
         provider: LLMProvider,
+        provider_factory: ProviderFactory | None = None,
         cron_service: CronService | None = None,
     ):
         self.front_bus = front_bus
         self.config = config
         self.provider = provider
+        self.provider_factory = provider_factory
         self.cron_service = cron_service
 
         self._agents: dict[str, AgentInstance] = {}
@@ -162,9 +165,19 @@ class AgentRouter:
         else:
             session_manager = SessionManager(workspace)
 
+        provider = self.provider_factory.for_model(profile.model, workspace=workspace) if self.provider_factory else self.provider
+        background_provider = provider
+        if profile.background_model:
+            background_provider = (
+                self.provider_factory.for_model(profile.background_model, workspace=workspace)
+                if self.provider_factory
+                else provider
+            )
+
         loop = AgentLoop(
             bus=agent_bus,
-            provider=self.provider,
+            provider=provider,
+            background_provider=background_provider,
             workspace=workspace,
             model=profile.model,
             background_model=profile.background_model,

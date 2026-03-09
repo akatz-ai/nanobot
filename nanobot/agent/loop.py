@@ -121,6 +121,7 @@ class AgentLoop:
         bus: MessageBus,
         provider: LLMProvider,
         workspace: Path,
+        background_provider: LLMProvider | None = None,
         model: str | None = None,
         background_model: str | None = None,
         max_iterations: int = 40,
@@ -144,6 +145,7 @@ class AgentLoop:
         self.agent_id = agent_id
         self.channels_config = channels_config
         self.provider = provider
+        self.background_provider = background_provider or provider
         self.workspace = workspace
         self.model = model or provider.get_default_model()
         self.background_model = background_model or self.model
@@ -858,7 +860,7 @@ class AgentLoop:
 
                 entry = await compact_session(
                     session=session,
-                    provider=self.provider,
+                    provider=self.background_provider,
                     model=self.background_model,
                     session_manager=self.sessions,
                     context_window=resolved_context_window,
@@ -910,7 +912,7 @@ class AgentLoop:
                     memory_compact_result = None
                     try:
                         memory_compact_result = await self.context.memory.compact_memory_md(
-                            provider=self.provider,
+                            provider=self.background_provider,
                             model=self.background_model,
                         )
                         if memory_compact_result and memory_compact_result.get("success"):
@@ -1924,7 +1926,7 @@ class AgentLoop:
                         previous_summary = previous.summary if previous else None
                         summary = await generate_compaction_summary(
                             snapshot,
-                            self.provider,
+                            self.background_provider,
                             self.background_model,
                             previous_summary=previous_summary,
                         )
@@ -2724,7 +2726,7 @@ class AgentLoop:
                 temp_session.messages = session.get_messages_slice(start_index, end_index)
                 success = await MemoryStore(self.workspace).consolidate(
                     temp_session,
-                    self.provider,
+                    self.background_provider,
                     self.background_model,
                     archive_all=True,
                     keep_count=0,
@@ -2736,7 +2738,7 @@ class AgentLoop:
                     )
             else:
                 success = await MemoryStore(self.workspace).consolidate(
-                    session, self.provider, self.background_model,
+                    session, self.background_provider, self.background_model,
                     archive_all=archive_all, keep_count=self._CONSOLIDATION_KEEP_COUNT,
                 )
             if self._memory_module and self._memory_module.consolidator and graph_window_messages:

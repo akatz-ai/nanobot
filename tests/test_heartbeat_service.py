@@ -9,8 +9,10 @@ from nanobot.providers.base import LLMResponse, ToolCallRequest
 class DummyProvider:
     def __init__(self, responses: list[LLMResponse] | None = None):
         self._responses = list(responses or [])
+        self.models: list[str | None] = []
 
     async def chat(self, *args, **kwargs) -> LLMResponse:
+        self.models.append(kwargs.get("model"))
         if self._responses:
             return self._responses.pop(0)
         return LLMResponse(content="nothing to do", tool_calls=[])
@@ -219,6 +221,74 @@ async def test_per_agent_tick_only_fires_agents_with_heartbeat_file(tmp_path) ->
 
     # Only agent_a should have executed
     assert executed == [("agent_a", "Deploy check")]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_uses_registered_agent_provider_and_model(tmp_path) -> None:
+    agent_a_dir = tmp_path / "agent_a"
+    agent_b_dir = tmp_path / "agent_b"
+    agent_a_dir.mkdir()
+    agent_b_dir.mkdir()
+    (agent_a_dir / "HEARTBEAT.md").write_text("A", encoding="utf-8")
+    (agent_b_dir / "HEARTBEAT.md").write_text("B", encoding="utf-8")
+
+    provider_a = DummyProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="hb_a",
+                        name="heartbeat",
+                        arguments={"action": "skip"},
+                    )
+                ],
+            )
+        ]
+    )
+    provider_b = DummyProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="hb_b",
+                        name="heartbeat",
+                        arguments={"action": "skip"},
+                    )
+                ],
+            )
+        ]
+    )
+
+    async def _noop_execute(_: str) -> str:
+        return ""
+
+    async def _noop_notify(_: str) -> None:
+        return None
+
+    service = HeartbeatService(provider=DummyProvider(), model="default-model")
+    service.register_agent(
+        "agent_a",
+        agent_a_dir,
+        _noop_execute,
+        _noop_notify,
+        provider=provider_a,
+        model="openai-codex/gpt-5.4",
+    )
+    service.register_agent(
+        "agent_b",
+        agent_b_dir,
+        _noop_execute,
+        _noop_notify,
+        provider=provider_b,
+        model="anthropic/claude-sonnet-4-6",
+    )
+
+    await service._tick()
+
+    assert provider_a.models == ["openai-codex/gpt-5.4"]
+    assert provider_b.models == ["anthropic/claude-sonnet-4-6"]
 
 
 @pytest.mark.asyncio

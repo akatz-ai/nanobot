@@ -44,6 +44,8 @@ class HeartbeatAgent:
 
     agent_id: str
     workspace: Path
+    provider: LLMProvider
+    model: str
     on_execute: Callable[[str], Coroutine[Any, Any, str]]
     on_notify: Callable[[str], Coroutine[Any, Any, None]]
 
@@ -100,6 +102,8 @@ class HeartbeatService:
             self._agents["_legacy"] = HeartbeatAgent(
                 agent_id="_legacy",
                 workspace=workspace,
+                provider=provider,
+                model=model,
                 on_execute=on_execute,
                 on_notify=on_notify or (lambda _: asyncio.sleep(0)),
             )
@@ -110,22 +114,32 @@ class HeartbeatService:
         workspace: Path,
         on_execute: Callable[[str], Coroutine[Any, Any, str]],
         on_notify: Callable[[str], Coroutine[Any, Any, None]],
+        provider: LLMProvider | None = None,
+        model: str | None = None,
     ) -> None:
         """Register an agent for heartbeat checks."""
         self._agents[agent_id] = HeartbeatAgent(
             agent_id=agent_id,
             workspace=workspace,
+            provider=provider or self.provider,
+            model=model or self.model,
             on_execute=on_execute,
             on_notify=on_notify,
         )
         logger.debug("Heartbeat: registered agent '{}'", agent_id)
 
-    async def _decide(self, content: str) -> tuple[str, str]:
+    async def _decide(
+        self,
+        content: str,
+        *,
+        provider: LLMProvider | None = None,
+        model: str | None = None,
+    ) -> tuple[str, str]:
         """Phase 1: ask LLM to decide skip/run via virtual tool call.
 
         Returns (action, tasks) where action is 'skip' or 'run'.
         """
-        response = await self.provider.chat(
+        response = await (provider or self.provider).chat(
             messages=[
                 {"role": "system", "content": "You are a heartbeat agent. Call the heartbeat tool to report your decision."},
                 {"role": "user", "content": (
@@ -134,7 +148,7 @@ class HeartbeatService:
                 )},
             ],
             tools=_HEARTBEAT_TOOL,
-            model=self.model,
+            model=model or self.model,
         )
 
         if not response.has_tool_calls:
@@ -196,7 +210,11 @@ class HeartbeatService:
 
         logger.info("Heartbeat: {}: checking for tasks...", agent.agent_id)
 
-        action, tasks = await self._decide(content)
+        action, tasks = await self._decide(
+            content,
+            provider=agent.provider,
+            model=agent.model,
+        )
 
         if action != "run":
             logger.info("Heartbeat: {}: OK (nothing to report)", agent.agent_id)

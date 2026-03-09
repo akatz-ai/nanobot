@@ -21,6 +21,7 @@ from nanobot.config.schema import Config
 from nanobot.cron.types import CronJob, CronPayload
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.claude_code_provider import ClaudeCodeProvider
+from nanobot.providers.factory import build_provider
 from nanobot.providers.litellm_provider import LiteLLMProvider
 from nanobot.providers.openai_codex_provider import (
     _convert_messages,
@@ -150,6 +151,52 @@ def test_config_matches_openai_codex_with_hyphen_prefix():
     config.agents.defaults.model = "openai-codex/gpt-5.1-codex"
 
     assert config.get_provider_name() == "openai_codex"
+
+
+def test_model_specific_provider_resolution_ignores_global_forced_provider():
+    config = Config()
+    config.agents.defaults.provider = "anthropic_direct"
+
+    assert config.get_provider_name("openai-codex/gpt-5.4") == "openai_codex"
+
+
+def test_build_provider_uses_requested_claude_model_for_anthropic_direct(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    captured: dict[str, str] = {}
+
+    class FakeAnthropicDirectProvider:
+        def __init__(self, oauth_token: str, default_model: str):
+            captured["oauth_token"] = oauth_token
+            captured["default_model"] = default_model
+
+    monkeypatch.setattr(
+        "nanobot.providers.anthropic_auth.get_oauth_token",
+        lambda: "oauth-token",
+    )
+    monkeypatch.setattr(
+        "nanobot.providers.anthropic_auth.is_oauth_token",
+        lambda token: token == "oauth-token",
+    )
+    monkeypatch.setattr(
+        "nanobot.providers.anthropic_direct_provider.AnthropicDirectProvider",
+        FakeAnthropicDirectProvider,
+    )
+
+    config = Config()
+    config.agents.defaults.workspace = str(tmp_path)
+    config.providers.anthropic_direct.enabled = True
+    config.providers.anthropic_direct.model = "claude-opus-4-6"
+
+    build_provider(
+        config,
+        model="anthropic/claude-sonnet-4-6",
+        workspace=tmp_path,
+    )
+
+    assert captured["oauth_token"] == "oauth-token"
+    assert captured["default_model"] == "anthropic/claude-sonnet-4-6"
 
 
 def test_find_by_model_prefers_explicit_prefix_over_generic_codex_keyword():

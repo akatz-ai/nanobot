@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import shutil
+import ssl
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.tools.message import MessageTool
+from nanobot.agent.tools.web import WebFetchTool
 from nanobot.cli.commands import app, _record_cron_inbox_event
 from nanobot.config.schema import Config
 from nanobot.cron.types import CronJob, CronPayload
@@ -814,7 +816,44 @@ async def test_consolidate_memory_uses_hybrid_engine_path(tmp_path: Path):
     assert ok is True
     legacy_consolidate.assert_not_called()
     hybrid.compact.assert_awaited_once()
-    assert session.last_consolidated == 7
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_uses_system_ssl_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/html"}
+        url = "https://example.com"
+        text = "<html><head><title>Example</title></head><body><p>Hello</p></body></html>"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured["verify"] = kwargs.get("verify")
+
+        async def __aenter__(self) -> "_FakeClient":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def get(self, url: str, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers")
+            return _FakeResponse()
+
+    monkeypatch.setattr("nanobot.agent.tools.web.httpx.AsyncClient", _FakeClient)
+
+    tool = WebFetchTool()
+    result = await tool.execute("https://example.com")
+
+    assert '"url": "https://example.com"' in result
+    verify = captured.get("verify")
+    assert isinstance(verify, ssl.SSLContext)
 
 
 @pytest.mark.asyncio

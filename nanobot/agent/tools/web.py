@@ -4,6 +4,7 @@ import html
 import json
 import os
 import re
+import ssl
 from typing import Any
 from urllib.parse import urlparse
 
@@ -116,6 +117,11 @@ class WebFetchTool(Tool):
     
     def __init__(self, max_chars: int = 50000):
         self.max_chars = max_chars
+
+    @staticmethod
+    def _ssl_context() -> ssl.SSLContext:
+        """Use the system trust store instead of the venv certifi bundle."""
+        return ssl.create_default_context()
     
     async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> str:
         from readability import Document
@@ -129,6 +135,7 @@ class WebFetchTool(Tool):
 
         try:
             async with httpx.AsyncClient(
+                verify=self._ssl_context(),
                 follow_redirects=True,
                 max_redirects=MAX_REDIRECTS,
                 timeout=30.0

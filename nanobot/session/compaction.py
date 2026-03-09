@@ -10,7 +10,7 @@ from typing import Any
 from loguru import logger
 
 from nanobot.providers.base import LLMProvider
-from nanobot.session.manager import CompactionEntry, Session
+from nanobot.session.manager import CompactionEntry, Session, SessionManager
 
 
 SUMMARIZATION_SYSTEM_PROMPT = (
@@ -732,6 +732,7 @@ async def compact_session(
     session: Session,
     provider: LLMProvider,
     model: str,
+    session_manager: SessionManager | None = None,
     context_window: int = 200_000,
     reserve_tokens: int = 16_384,
     keep_recent_tokens: int = 20_000,
@@ -812,7 +813,10 @@ async def compact_session(
     except Exception:
         logger.exception("Structured compaction summary generation failed for {}", session.key)
         # Avoid immediate retrigger loops from stale usage readings.
-        session.metadata.pop("usage_snapshot", None)
+        if session_manager is not None:
+            session_manager.clear_usage_snapshot(session)
+        else:
+            session.metadata.pop("usage_snapshot", None)
         return None
 
     file_ops = extract_file_ops(summary_messages)
@@ -826,12 +830,16 @@ async def compact_session(
         previous_summary=plan.previous_summary,
     )
 
-    session.metadata["_structured_compaction_plan"] = {
+    plan_payload = {
         "summary_start": plan.summary_start,
         "summary_end": plan.summary_end,
         "extract_start": plan.extract_start,
         "extract_end": plan.extract_end,
         "cut_point_type": "split_turn" if plan.is_split_turn else "clean",
     }
+    if session_manager is not None:
+        session_manager.set_compaction_plan(session, plan_payload)
+    else:
+        session.metadata["_structured_compaction_plan"] = plan_payload
 
     return entry

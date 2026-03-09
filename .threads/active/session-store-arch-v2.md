@@ -6,7 +6,7 @@ title: "Session Store Architecture V2 \u2014 DB-authoritative sessions and op-ba
 status: active
 priority: 1
 created_at: '2026-03-09T05:31:21Z'
-updated_at: '2026-03-09T05:44:54Z'
+updated_at: '2026-03-09T06:05:04Z'
 ---
 
 ## Tasks
@@ -15,8 +15,8 @@ updated_at: '2026-03-09T05:44:54Z'
 - [x] session-store-arch-v2.2 Refactor prompt/history call sites to use DB-backed visible counts instead of trusting len(session.messages) as session authority {deps=[session-store-arch-v2.1] claim_by=codex@/data/projects/nanobot claim_at=2026-03-09T05:41:13Z}
 - [x] session-store-arch-v2.3 Add optimistic session revision tracking for stale-cache detection across workers {deps=[session-store-arch-v2.2] claim_by=codex@/data/projects/nanobot claim_at=2026-03-09T05:41:13Z}
 - [x] session-store-arch-v2.4 Add regression tests for stale flush, count mismatch repair, and Forge-style tail truncation {deps=[session-store-arch-v2.3] claim_by=codex@/data/projects/nanobot claim_at=2026-03-09T05:31:34Z}
-- [>] session-store-arch-v2.5 Introduce explicit save_state row-level persistence API and migrate metadata/cursor-only loop call sites {claim_by=codex@/data/projects/nanobot claim_at=2026-03-09T05:44:53Z}
-- [>] session-store-arch-v2.6 Detect loaded LazyMessageList content mutations in SQLite message signatures {claim_by=codex@/data/projects/nanobot claim_at=2026-03-09T05:44:53Z}
+- [x] session-store-arch-v2.5 Introduce explicit save_state row-level persistence API and migrate metadata/cursor-only loop call sites {claim_by=codex@/data/projects/nanobot claim_at=2026-03-09T05:44:53Z}
+- [x] session-store-arch-v2.6 Detect loaded LazyMessageList content mutations in SQLite message signatures {claim_by=codex@/data/projects/nanobot claim_at=2026-03-09T05:44:53Z}
 
 ## Notes
 Goal: move Nanobot away from write-back cached `Session` objects and toward an

@@ -14,6 +14,8 @@ from loguru import logger
 
 from nanobot.utils.helpers import ensure_dir, safe_filename
 
+_UNSET = object()
+
 
 @dataclass
 class CompactionEntry:
@@ -874,6 +876,69 @@ class SessionManager:
     def save_state(self, session: Session) -> None:
         """Persist session row/state changes without requiring a history rewrite."""
         self.save(session)
+
+    def apply_state(
+        self,
+        session: Session,
+        *,
+        metadata_updates: dict[str, Any] | None = None,
+        metadata_remove: list[str] | tuple[str, ...] | None = None,
+        last_consolidated: int | object = _UNSET,
+    ) -> dict[str, Any]:
+        """Apply persisted session-row changes without treating Session as the write API."""
+        removed: dict[str, Any] = {}
+
+        if metadata_updates:
+            for key, value in metadata_updates.items():
+                session.metadata[str(key)] = value
+
+        if metadata_remove:
+            for key in metadata_remove:
+                text_key = str(key)
+                if text_key in session.metadata:
+                    removed[text_key] = session.metadata.pop(text_key)
+
+        if last_consolidated is not _UNSET:
+            session.last_consolidated = int(last_consolidated)
+
+        self.save_state(session)
+        return removed
+
+    def set_usage_snapshot(
+        self,
+        session: Session,
+        *,
+        total_input_tokens: int,
+        message_index: int | None = None,
+        source: str | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "total_input_tokens": int(total_input_tokens),
+            "message_index": session.get_message_count() if message_index is None else int(message_index),
+        }
+        if source:
+            payload["source"] = source
+        self.apply_state(session, metadata_updates={"usage_snapshot": payload})
+
+    def clear_usage_snapshot(self, session: Session) -> None:
+        self.apply_state(session, metadata_remove=["usage_snapshot"])
+
+    def set_compaction_plan(self, session: Session, plan: dict[str, Any]) -> None:
+        self.apply_state(
+            session,
+            metadata_updates={"_structured_compaction_plan": dict(plan)},
+        )
+
+    def pop_compaction_plan(self, session: Session) -> dict[str, Any]:
+        removed = self.apply_state(
+            session,
+            metadata_remove=["_structured_compaction_plan"],
+        )
+        value = removed.get("_structured_compaction_plan", {})
+        return value if isinstance(value, dict) else {}
+
+    def advance_last_consolidated(self, session: Session, value: int) -> None:
+        self.apply_state(session, last_consolidated=int(value))
     
     def save_all(self) -> int:
         """Flush all cached sessions to disk.

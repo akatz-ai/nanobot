@@ -889,3 +889,54 @@ def test_save_state_falls_back_to_full_save_when_messages_changed(
     manager.invalidate(key)
     reloaded = manager.get_or_create(key)
     assert reloaded.messages[0]["content"] == "after"
+
+
+def test_apply_state_updates_metadata_removes_keys_and_advances_cursor(
+    tmp_path: Path,
+) -> None:
+    key = "cli:apply-state"
+    manager = SQLiteSessionManager(tmp_path)
+    session = manager.get_or_create(key)
+    session.checkpoint([{"role": "user", "content": f"msg-{i}"} for i in range(4)])
+    session.metadata["old"] = "gone"
+
+    removed = manager.apply_state(
+        session,
+        metadata_updates={"new": "value"},
+        metadata_remove=["old"],
+        last_consolidated=3,
+    )
+
+    manager.invalidate(key)
+    reloaded = manager.get_or_create(key)
+
+    assert removed == {"old": "gone"}
+    assert reloaded.metadata["new"] == "value"
+    assert "old" not in reloaded.metadata
+    assert reloaded.last_consolidated == 3
+
+
+def test_session_state_helper_methods_persist_semantic_fields(
+    tmp_path: Path,
+) -> None:
+    key = "cli:state-helpers"
+    manager = SQLiteSessionManager(tmp_path)
+    session = manager.get_or_create(key)
+    session.checkpoint([{"role": "user", "content": f"msg-{i}"} for i in range(5)])
+
+    manager.set_usage_snapshot(session, total_input_tokens=1234, source="test")
+    manager.set_compaction_plan(
+        session,
+        {"extract_start": 1, "extract_end": 4, "cut_point_type": "clean"},
+    )
+    removed_plan = manager.pop_compaction_plan(session)
+    manager.advance_last_consolidated(session, 4)
+    manager.clear_usage_snapshot(session)
+
+    manager.invalidate(key)
+    reloaded = manager.get_or_create(key)
+
+    assert removed_plan == {"extract_start": 1, "extract_end": 4, "cut_point_type": "clean"}
+    assert "usage_snapshot" not in reloaded.metadata
+    assert "_structured_compaction_plan" not in reloaded.metadata
+    assert reloaded.last_consolidated == 4

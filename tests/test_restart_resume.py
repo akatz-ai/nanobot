@@ -211,6 +211,63 @@ async def test_auto_resume_cron_session_uses_origin_routing(tmp_path: Path) -> N
     assert outbound.content == "resumed cron"
 
 
+@pytest.mark.asyncio
+async def test_collect_resumable_sessions_normalizes_mid_tool_and_skips_resume(tmp_path: Path) -> None:
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=_ScriptedProvider([]),
+        workspace=tmp_path,
+        model="stub-model",
+    )
+    session = loop.sessions.get_or_create("cron:job-123")
+    session.metadata["origin_channel"] = "discord"
+    session.metadata["origin_chat_id"] = "thread-42"
+    _checkpoint_mid_tool(session)
+    loop.sessions.save(session)
+
+    resumable = loop._collect_resumable_sessions()
+    reloaded = loop.sessions.get_or_create("cron:job-123")
+    history, _ = reloaded.get_history(max_messages=10, prune_tool_results=False)
+
+    assert resumable == []
+    assert reloaded.detect_resume_state() == "clean"
+    assert history[-2]["role"] == "tool"
+    assert "interrupted during gateway restart" in history[-2]["content"]
+    assert history[-1]["role"] == "assistant"
+    assert "interrupted by a gateway restart" in history[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_new_message_normalizes_mid_tool_before_processing(tmp_path: Path) -> None:
+    provider = _ScriptedProvider([LLMResponse(content="handled after cleanup", tool_calls=[])])
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="stub-model",
+    )
+
+    session = loop.sessions.get_or_create("cli:test")
+    _checkpoint_mid_tool(session)
+    loop.sessions.save(session)
+
+    response = await loop._process_message(
+        InboundMessage(channel="cli", sender_id="u", chat_id="test", content="continue")
+    )
+
+    assert response is not None
+    assert response.content == "handled after cleanup"
+
+    reloaded = loop.sessions.get_or_create("cli:test")
+    history, _ = reloaded.get_history(max_messages=10, prune_tool_results=False)
+    assert reloaded.detect_resume_state() == "clean"
+    assert any(
+        msg.get("role") == "tool"
+        and "interrupted during gateway restart" in str(msg.get("content"))
+        for msg in history
+    )
+
+
 async def _shutdown_run(loop: AgentLoop, run_task: asyncio.Task) -> None:
     loop.stop()
     run_task.cancel()

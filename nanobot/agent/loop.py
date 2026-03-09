@@ -847,16 +847,17 @@ class AgentLoop:
                 )
 
                 if input_tokens > 0:
-                    session.metadata["usage_snapshot"] = {
-                        "total_input_tokens": int(input_tokens),
-                        "message_index": len(session.messages),
-                        "source": "compaction_trigger",
-                    }
+                    self.sessions.set_usage_snapshot(
+                        session,
+                        total_input_tokens=int(input_tokens),
+                        source="compaction_trigger",
+                    )
 
                 entry = await compact_session(
                     session=session,
                     provider=self.provider,
                     model=self.background_model,
+                    session_manager=self.sessions,
                     context_window=resolved_context_window,
                     reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
                     keep_recent_tokens=self._COMPACTION_KEEP_RECENT_TOKENS,
@@ -865,15 +866,14 @@ class AgentLoop:
 
                 if entry is None:
                     self._refresh_estimated_token_snapshot(session)
-                    session.metadata.pop("_structured_compaction_plan", None)
+                    self.sessions.pop_compaction_plan(session)
                     compaction_event.finalize(
                         success=True,
                         error="structured no-op or summary failure",
                         total_duration_ms=int((time.monotonic() - compaction_started_at) * 1000),
                     )
                 else:
-                    plan_meta_raw = session.metadata.pop("_structured_compaction_plan", {})
-                    plan_meta = plan_meta_raw if isinstance(plan_meta_raw, dict) else {}
+                    plan_meta = self.sessions.pop_compaction_plan(session)
                     extract_start_raw = plan_meta.get("extract_start", previous_boundary)
                     extract_end_raw = plan_meta.get("extract_end", entry.first_kept_index)
                     try:
@@ -1036,11 +1036,11 @@ class AgentLoop:
         )
         estimated_tokens = int(self._estimate_prompt_tokens(visible_history))
         self._last_input_tokens[session.key] = estimated_tokens
-        session.metadata["usage_snapshot"] = {
-            "total_input_tokens": estimated_tokens,
-            "message_index": session.get_message_count(),
-            "source": "estimated_visible_history",
-        }
+        self.sessions.set_usage_snapshot(
+            session,
+            total_input_tokens=estimated_tokens,
+            source="estimated_visible_history",
+        )
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
@@ -1262,10 +1262,10 @@ class AgentLoop:
                     total_input = input_tokens + cache_read + cache_creation
                     if total_input:
                         self._last_input_tokens[session.key] = total_input
-                        session.metadata["usage_snapshot"] = {
-                            "total_input_tokens": int(total_input),
-                            "message_index": session.get_message_count(),
-                        }
+                        self.sessions.set_usage_snapshot(
+                            session,
+                            total_input_tokens=int(total_input),
+                        )
                         context_window = self._get_context_window_size()
                         utilization = round(total_input / context_window * 100, 1) if context_window else 0
                         logger.info(
@@ -1552,7 +1552,11 @@ class AgentLoop:
                 break
 
             session = self.sessions.get_or_create(key)
-            if session.detect_resume_state() not in {"mid_tool", "mid_loop"}:
+            state = session.detect_resume_state()
+            if state == "mid_tool":
+                self._normalize_interrupted_mid_tool_session(session)
+                state = session.detect_resume_state()
+            if state != "mid_loop":
                 continue
 
             channel, chat_id = self._split_session_key(key)
@@ -1565,6 +1569,56 @@ class AgentLoop:
                     chat_id = origin_chat_id
             sessions.append((key, channel, chat_id))
         return sessions
+
+    def _normalize_interrupted_mid_tool_session(self, session: Session) -> bool:
+        """Convert a dangling assistant tool_call tail into explicit interruption records."""
+        if session.detect_resume_state() != "mid_tool":
+            return False
+
+        tail = session.messages[-1] if session.messages else {}
+        tool_calls = tail.get("tool_calls") or []
+        if not isinstance(tool_calls, list) or not tool_calls:
+            return False
+
+        timestamp = datetime.now().isoformat()
+        entries: list[dict[str, Any]] = []
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            tool_call_id = tool_call.get("id") or (tool_call.get("function") or {}).get("id")
+            tool_name = (tool_call.get("function") or {}).get("name") or "unknown_tool"
+            if not tool_call_id:
+                continue
+            entries.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": str(tool_call_id),
+                    "name": str(tool_name),
+                    "content": "[Tool execution interrupted during gateway restart]",
+                    "timestamp": timestamp,
+                }
+            )
+
+        if not entries:
+            return False
+
+        entries.append(
+            {
+                "role": "assistant",
+                "content": (
+                    "A previous tool execution was interrupted by a gateway restart. "
+                    "The interrupted call was marked failed; waiting for a new user message."
+                ),
+                "timestamp": timestamp,
+            }
+        )
+        session.checkpoint(entries)
+        self.sessions.save_state(session)
+        logger.warning(
+            "Normalized interrupted mid_tool session {} into explicit interrupted tool results",
+            session.key,
+        )
+        return True
 
     async def _resume_and_publish(self, session_key: str, channel: str, chat_id: str) -> bool:
         session = self.sessions.get_or_create(session_key)
@@ -1876,6 +1930,7 @@ class AgentLoop:
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
+        self._normalize_interrupted_mid_tool_session(session)
         metadata = msg.metadata or {}
         if key.startswith("cron:"):
             session.metadata.setdefault("origin_channel", msg.channel)
@@ -1925,7 +1980,7 @@ class AgentLoop:
             self.sessions.get_inbox(session.key).clear()
             session.clear()
             self._last_input_tokens.pop(session.key, None)
-            session.metadata.pop("usage_snapshot", None)
+            self.sessions.clear_usage_snapshot(session)
             self._close_evidence_index(session.key, delete_files=False)
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
@@ -2015,7 +2070,15 @@ class AgentLoop:
         pending_events = inbox.drain()
 
         legacy_present = "recent_cron_actions" in session.metadata
-        legacy_cron = session.metadata.pop("recent_cron_actions", None)
+        removed_state = (
+            self.sessions.apply_state(
+                session,
+                metadata_remove=["recent_cron_actions"],
+            )
+            if legacy_present
+            else {}
+        )
+        legacy_cron = removed_state.get("recent_cron_actions")
         if isinstance(legacy_cron, list) and legacy_cron:
             for idx, action in enumerate(legacy_cron):
                 if not isinstance(action, dict):
@@ -2032,8 +2095,6 @@ class AgentLoop:
                         source_meta=action,
                     )
                 )
-        if legacy_present:
-            self.sessions.save_state(session)
 
         if pending_events:
             delivered_text = self._build_inbox_delivery(pending_events)
@@ -2105,6 +2166,8 @@ class AgentLoop:
         self.subagents.set_skill_index(self.context.get_last_skills_summary())
         turn_start = max(len(initial_messages) - 1, 0)
 
+        streamed_progress_content = False
+
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
             meta = dict(msg.metadata or {})
             meta["_progress"] = True
@@ -2113,9 +2176,16 @@ class AgentLoop:
                 channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
             ))
 
+        async def _tracked_progress(content: str, *, tool_hint: bool = False) -> None:
+            nonlocal streamed_progress_content
+            if content and not tool_hint:
+                streamed_progress_content = True
+            progress_callback = on_progress or _bus_progress
+            await progress_callback(content, tool_hint=tool_hint)
+
         final_content, _, all_msgs = await self._run_agent_loop(
             initial_messages,
-            on_progress=on_progress or _bus_progress,
+            on_progress=_tracked_progress,
             session=session,
             checkpoint_start=turn_start,
             rebuild_messages=lambda: self._build_messages_with_prompt_budget(
@@ -2133,25 +2203,27 @@ class AgentLoop:
             ),
         )
 
-        if final_content is None:
-            final_content = "I've completed processing but have no response to give."
-
         self._save_turn(session, all_msgs, turn_start)
         self.sessions.save_state(session)
 
-        suppress_final_reply = False
+        suppress_reason: str | None = None
+        if final_content is None and streamed_progress_content:
+            suppress_reason = "streamed progress already delivered content for this turn"
+
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 sent_targets = set(message_tool.get_turn_sends())
-                suppress_final_reply = (msg.channel, msg.chat_id) in sent_targets
+                if (msg.channel, msg.chat_id) in sent_targets:
+                    suppress_reason = (
+                        f"message tool already sent to {msg.channel}:{msg.chat_id} in this turn"
+                    )
 
-        if suppress_final_reply:
-            logger.info(
-                "Skipping final auto-reply because message tool already sent to {}:{} in this turn",
-                msg.channel,
-                msg.chat_id,
-            )
+        if suppress_reason is not None:
+            logger.info("Skipping final auto-reply because {}", suppress_reason)
             return None
+
+        if final_content is None:
+            final_content = "I've completed processing but have no response to give."
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
@@ -2512,8 +2584,7 @@ class AgentLoop:
                                     reason=extraction_reason,
                                     compaction_event_id=compaction_event_id,
                                 )
-                                session.last_consolidated = batch_end
-                                self.sessions.save_state(session)
+                                self.sessions.advance_last_consolidated(session, batch_end)
                                 continue
 
                             batch_entries = getattr(result, "entries", None)
@@ -2549,9 +2620,8 @@ class AgentLoop:
                                 compaction_event_id=compaction_event_id,
                             )
 
-                            session.last_consolidated = batch_end
                             # Persist per-batch checkpoint so failures are resumable.
-                            self.sessions.save_state(session)
+                            self.sessions.advance_last_consolidated(session, batch_end)
                             completed_batches += 1
 
                         if accumulated_entries and hasattr(self._memory_module.hybrid, "rewrite_memory_md"):
@@ -2622,7 +2692,10 @@ class AgentLoop:
                             archive_error or "unknown error",
                         )
                         return False
-                    session.last_consolidated = target_last_consolidated
+                    self.sessions.advance_last_consolidated(
+                        session,
+                        target_last_consolidated,
+                    )
                     logger.info(
                         "Hybrid memory consolidation done: {} messages, last_consolidated={}",
                         len(session.messages),
@@ -2662,7 +2735,10 @@ class AgentLoop:
                     keep_count=0,
                 )
                 if success:
-                    session.last_consolidated = max(session.last_consolidated, end_index)
+                    self.sessions.advance_last_consolidated(
+                        session,
+                        max(session.last_consolidated, end_index),
+                    )
             else:
                 success = await MemoryStore(self.workspace).consolidate(
                     session, self.provider, self.background_model,

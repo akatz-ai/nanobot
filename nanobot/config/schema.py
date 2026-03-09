@@ -234,6 +234,8 @@ class AgentDefaults(Base):
     provider: str = "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
     session_store: Literal["jsonl", "sqlite"] = "jsonl"
     background_model: str | None = None  # Optional cheaper model for compaction/consolidation tasks.
+    context_window: int | None = None
+    background_context_window: int | None = None
     max_tokens: int = 100_000
     temperature: float = 0.1
     max_tool_iterations: int = 40
@@ -246,6 +248,8 @@ class AgentProfile(Base):
 
     model: str | None = None
     background_model: str | None = None
+    context_window: int | None = None
+    background_context_window: int | None = None
     session_store: Literal["jsonl", "sqlite"] | None = None
     max_tokens: int | None = None
     temperature: float | None = None
@@ -266,6 +270,16 @@ class AgentProfile(Base):
                 self.background_model
                 if self.background_model is not None
                 else defaults.background_model
+            ),
+            context_window=(
+                self.context_window
+                if self.context_window is not None
+                else defaults.context_window
+            ),
+            background_context_window=(
+                self.background_context_window
+                if self.background_context_window is not None
+                else defaults.background_context_window
             ),
             session_store=(
                 self.session_store
@@ -294,6 +308,8 @@ class ResolvedAgentProfile(Base):
 
     model: str
     background_model: str | None = None
+    context_window: int | None = None
+    background_context_window: int | None = None
     session_store: Literal["jsonl", "sqlite"] = "jsonl"
     max_tokens: int
     temperature: float

@@ -125,6 +125,8 @@ class AgentLoop:
         background_provider: LLMProvider | None = None,
         model: str | None = None,
         background_model: str | None = None,
+        context_window_override: int | None = None,
+        background_context_window_override: int | None = None,
         max_iterations: int = 40,
         temperature: float = 0.1,
         max_tokens: int = 4096,
@@ -150,6 +152,8 @@ class AgentLoop:
         self.workspace = workspace
         self.model = model or provider.get_default_model()
         self.background_model = background_model or self.model
+        self.context_window_override = context_window_override
+        self.background_context_window_override = background_context_window_override
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -268,10 +272,32 @@ class AgentLoop:
 
     def _get_context_window_size(self) -> int:
         """Look up the context window size for the current model."""
-        return self._get_context_window_size_for_model(self.model)
+        return self._get_context_window_size_for_model(
+            self.model,
+            override=self.context_window_override,
+        )
 
-    def _get_context_window_size_for_model(self, model: str | None) -> int:
+    def _get_background_context_window_size(self) -> int:
+        """Look up the context window size for the background model."""
+        return self._get_context_window_size_for_model(
+            self.background_model,
+            override=self.background_context_window_override,
+        )
+
+    def _get_context_window_size_for_model(
+        self,
+        model: str | None,
+        *,
+        override: int | None = None,
+    ) -> int:
         """Look up the context window size for a specific model string."""
+        if override is not None:
+            try:
+                coerced = int(override)
+            except (TypeError, ValueError):
+                coerced = 0
+            if coerced > 0:
+                return coerced
         model_lower = (model or "").lower()
         # Try exact match first, then substring match
         for key, size in self.MODEL_CONTEXT_WINDOWS.items():
@@ -2281,13 +2307,19 @@ class AgentLoop:
             or ""
         )
 
-        context_window = self._get_context_window_size_for_model(resolved_model)
+        context_window = self._get_context_window_size_for_model(
+            resolved_model,
+            override=self.background_context_window_override,
+        )
         get_window_fn = getattr(llm_adapter, "get_context_window", None)
         if callable(get_window_fn):
             try:
                 context_window = int(get_window_fn(resolved_model))
             except Exception:
-                context_window = self._get_context_window_size_for_model(resolved_model)
+                context_window = self._get_context_window_size_for_model(
+                    resolved_model,
+                    override=self.background_context_window_override,
+                )
         context_window = max(1, context_window)
 
         get_output_budget_fn = getattr(consolidator, "get_extraction_max_tokens", None)

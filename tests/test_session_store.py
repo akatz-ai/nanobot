@@ -659,6 +659,8 @@ async def test_router_resolves_main_and_background_providers_per_agent(
             created["background_provider"] = kwargs["background_provider"]
             created["model"] = kwargs["model"]
             created["background_model"] = kwargs["background_model"]
+            created["context_window_override"] = kwargs["context_window_override"]
+            created["background_context_window_override"] = kwargs["background_context_window_override"]
 
     class FakeProviderFactory:
         def __init__(self) -> None:
@@ -680,11 +682,15 @@ async def test_router_resolves_main_and_background_providers_per_agent(
                     "workspace": str(tmp_path / "workspace"),
                     "model": "anthropic-direct/claude-opus-4-6",
                     "backgroundModel": "anthropic/claude-haiku-4-5",
+                    "contextWindow": 272000,
+                    "backgroundContextWindow": 128000,
                 },
                 "profiles": {
                     "sqlite-agent": {
                         "model": "openai-codex/gpt-5.4",
                         "backgroundModel": "anthropic/claude-haiku-4-5",
+                        "contextWindow": 1000000,
+                        "backgroundContextWindow": 64000,
                         "sessionStore": "sqlite",
                     }
                 },
@@ -705,6 +711,8 @@ async def test_router_resolves_main_and_background_providers_per_agent(
     expected_workspace = str((tmp_path / "workspace" / "agents" / "sqlite-agent").resolve())
     assert created["model"] == "openai-codex/gpt-5.4"
     assert created["background_model"] == "anthropic/claude-haiku-4-5"
+    assert created["context_window_override"] == 1_000_000
+    assert created["background_context_window_override"] == 64_000
     assert created["provider"].model == "openai-codex/gpt-5.4"
     assert created["background_provider"].model == "anthropic/claude-haiku-4-5"
     assert factory.calls == [

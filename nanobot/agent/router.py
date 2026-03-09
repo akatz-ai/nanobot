@@ -143,6 +143,8 @@ class AgentRouter:
         return ResolvedAgentProfile(
             model=d.model,
             background_model=d.background_model,
+            context_window=d.context_window,
+            background_context_window=d.background_context_window,
             session_store=d.session_store,
             max_tokens=d.max_tokens,
             temperature=d.temperature,
@@ -181,6 +183,8 @@ class AgentRouter:
             workspace=workspace,
             model=profile.model,
             background_model=profile.background_model,
+            context_window_override=profile.context_window,
+            background_context_window_override=profile.background_context_window,
             temperature=profile.temperature,
             max_tokens=profile.max_tokens,
             max_iterations=profile.max_tool_iterations,

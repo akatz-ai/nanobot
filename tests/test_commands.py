@@ -161,6 +161,30 @@ def test_model_specific_provider_resolution_ignores_global_forced_provider():
     assert config.get_provider_name("openai-codex/gpt-5.4") == "openai_codex"
 
 
+def test_agent_profile_resolves_context_window_overrides() -> None:
+    config = Config.model_validate(
+        {
+            "agents": {
+                "defaults": {
+                    "model": "openai-codex/gpt-5.4",
+                    "contextWindow": 272000,
+                    "backgroundContextWindow": 128000,
+                },
+                "profiles": {
+                    "sqlite-test": {
+                        "contextWindow": 1000000,
+                        "backgroundContextWindow": 64000,
+                    }
+                },
+            }
+        }
+    )
+
+    profile = config.agents.profiles["sqlite-test"].resolve(config.agents.defaults)
+    assert profile.context_window == 1_000_000
+    assert profile.background_context_window == 64_000
+
+
 def test_build_provider_uses_requested_claude_model_for_anthropic_direct(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

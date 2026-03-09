@@ -96,6 +96,90 @@ def _get_worker_uptime() -> float | None:
         return None
 
 
+def _usage_snapshot_total(metadata: dict[str, Any]) -> int:
+    """Return the last persisted total_input_tokens for a session metadata blob."""
+    raw = metadata.get("usage_snapshot")
+    if not isinstance(raw, dict):
+        return 0
+    try:
+        return max(0, int(raw.get("total_input_tokens", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _collect_session_usage(loop: Any) -> dict[str, dict[str, Any]]:
+    """Collect persisted + in-memory usage info for each non-cron session."""
+    usage: dict[str, dict[str, Any]] = {}
+    for session_info in loop.sessions.list_sessions():
+        key = str(session_info.get("key", "") or "")
+        if not key or key.startswith("cron:"):
+            continue
+
+        tokens = int(loop._last_input_tokens.get(key, 0) or 0)
+        try:
+            session = loop.sessions.get_or_create(key)
+            tokens = max(tokens, _usage_snapshot_total(session.metadata))
+        except Exception:
+            logger.exception("SystemStatusDashboard: Failed loading session metadata for {}", key)
+
+        usage[key] = {
+            **session_info,
+            "tokens": max(0, tokens),
+        }
+    return usage
+
+
+def _select_agent_session(profile: Any, session_usage: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the session that best represents an agent's visible context."""
+    preferred_keys = [f"discord:{channel_id}" for channel_id in getattr(profile, "discord_channels", [])]
+    for key in preferred_keys:
+        if key in session_usage:
+            return session_usage[key]
+
+    if not session_usage:
+        return None
+
+    return max(
+        session_usage.values(),
+        key=lambda item: (int(item.get("tokens", 0) or 0), str(item.get("updated_at", "") or "")),
+    )
+
+
+def _channel_pct_bucket(utilization_pct: float) -> int:
+    """Round utilization to a stable 5% bucket for channel-name display."""
+    pct = max(0, min(100, int(utilization_pct * 100)))
+    return min(100, ((pct + 2) // 5) * 5)
+
+
+def _channel_base_name(agent_id: str) -> str:
+    """Build a Discord-safe lowercase base name from an agent id."""
+    chars: list[str] = []
+    last_dash = False
+    for ch in str(agent_id).lower():
+        if ch.isalnum():
+            chars.append(ch)
+            last_dash = False
+            continue
+        if ch in {"-", "_", " ", "."} and not last_dash:
+            chars.append("-")
+            last_dash = True
+    base = "".join(chars).strip("-")
+    return base or "agent"
+
+
+def _channel_display_name(agent_id: str, utilization_pct: float) -> str:
+    """Render the visible Discord channel name with a pct suffix."""
+    base = _channel_base_name(agent_id)
+    suffix = f"-{_channel_pct_bucket(utilization_pct)}pct"
+    max_base_len = max(1, 100 - len(suffix))
+    return f"{base[:max_base_len]}{suffix}"
+
+
+def _channel_topic(agent_id: str, model: str) -> str:
+    """Render the Discord topic from the configured model string."""
+    return f"agent {agent_id} · model: {model}"[:1024]
+
+
 @dataclass
 class AgentStatus:
     """Status data for a single agent."""
@@ -127,49 +211,31 @@ class SystemStatus:
 
 
 def collect_system_status(router: AgentRouter) -> SystemStatus:
-    """Collect current system status from the agent router.
-
-    This reads the in-memory state of each agent — no I/O or API calls needed.
-    """
+    """Collect current system status from persisted session snapshots + live state."""
     agent_statuses: list[AgentStatus] = []
 
     for agent_id, instance in router.agents.items():
         loop = instance.loop
+        profile = instance.profile
 
         context_window = loop._get_context_window_size()
         compaction_threshold = loop._compaction_token_threshold
+        session_usage = _collect_session_usage(loop)
+        active_count = len(session_usage)
+        selected = _select_agent_session(profile, session_usage)
+        best_tokens = int((selected or {}).get("tokens", 0) or 0)
 
-        # Find the most active session (highest token count)
-        best_tokens = 0
         best_summary: dict[str, Any] | None = None
-        active_count = 0
-
-        for session_info in loop.sessions.list_sessions():
-            key = session_info.get("key", "")
-            # Skip cron sessions
-            if key.startswith("cron:"):
-                continue
-
-            active_count += 1
-            tokens = loop._last_input_tokens.get(key, 0)
-            if tokens > best_tokens:
-                best_tokens = tokens
-
-            # Try to get usage summary from sidecar log
-            path_str = session_info.get("path")
-            if path_str:
-                summary = get_session_summary(Path(path_str))
-                if summary and summary.get("total_input_tokens", 0) > (
-                    best_summary or {}
-                ).get("total_input_tokens", 0):
-                    best_summary = summary
+        path_str = (selected or {}).get("path")
+        if path_str:
+            best_summary = get_session_summary(Path(path_str))
 
         utilization = best_tokens / context_window if context_window > 0 else 0
         is_idle = best_tokens == 0
 
         status = AgentStatus(
             agent_id=agent_id,
-            model=loop.model or "",
+            model=profile.model or loop.model or "",
             context_window=context_window,
             compaction_threshold=compaction_threshold,
             current_input_tokens=best_tokens,
@@ -305,6 +371,8 @@ class SystemStatusDashboard:
         self._task: asyncio.Task | None = None
         self._http: httpx.AsyncClient | None = None
         self._last_status: SystemStatus | None = None
+        self._last_channel_names: dict[str, str] = {}
+        self._last_channel_topics: dict[str, str] = {}
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -372,7 +440,62 @@ class SystemStatusDashboard:
         else:
             await self._create_message(components)
 
+        await self._sync_agent_channels(status)
+
     # ── Discord messaging ──────────────────────────────────────────────
+
+    async def _sync_agent_channels(self, status: SystemStatus) -> None:
+        """Update mapped Discord channel names/topics with model + context state."""
+        if not self._http:
+            return
+
+        status_by_agent = {agent.agent_id: agent for agent in status.agents}
+        for agent_id, instance in self.router.agents.items():
+            agent_status = status_by_agent.get(agent_id)
+            if not agent_status:
+                continue
+
+            desired_name = _channel_display_name(agent_id, agent_status.utilization_pct)
+            desired_topic = _channel_topic(agent_id, instance.profile.model or instance.loop.model or "")
+
+            for channel_id in instance.profile.discord_channels:
+                needs_name = self._last_channel_names.get(channel_id) != desired_name
+                needs_topic = self._last_channel_topics.get(channel_id) != desired_topic
+                if not needs_name and not needs_topic:
+                    continue
+                await self._update_channel(channel_id, name=desired_name if needs_name else None, topic=desired_topic if needs_topic else None)
+                if needs_name:
+                    self._last_channel_names[channel_id] = desired_name
+                if needs_topic:
+                    self._last_channel_topics[channel_id] = desired_topic
+
+    async def _update_channel(self, channel_id: str, *, name: str | None = None, topic: str | None = None) -> None:
+        """Patch a Discord channel's name/topic."""
+        if not self._http:
+            return
+        payload: dict[str, Any] = {}
+        if name is not None:
+            payload["name"] = name
+        if topic is not None:
+            payload["topic"] = topic
+        if not payload:
+            return
+
+        url = f"{DISCORD_API_BASE}/channels/{channel_id}"
+        try:
+            resp = await self._http.patch(
+                url,
+                headers={"Authorization": f"Bot {self.discord_token}"},
+                json=payload,
+            )
+            if resp.status_code == 429:
+                retry_after = resp.json().get("retry_after", 5)
+                logger.warning("SystemStatusDashboard: Channel update rate limited, retrying in {}s", retry_after)
+                await asyncio.sleep(retry_after)
+                return await self._update_channel(channel_id, name=name, topic=topic)
+            resp.raise_for_status()
+        except Exception:
+            logger.exception("SystemStatusDashboard: Failed updating channel {}", channel_id)
 
     async def _create_message(self, components: list[dict[str, Any]]) -> None:
         """Create the initial Components V2 message."""

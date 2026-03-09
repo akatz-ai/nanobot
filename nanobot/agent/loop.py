@@ -709,6 +709,8 @@ class AgentLoop:
                 media=media,
                 channel=channel,
                 chat_id=chat_id,
+                model=self.model,
+                background_model=self.background_model,
                 memory_context=memory_context,
                 resume_notice=resume_notice,
                 extra_system_messages=extra_system_messages,

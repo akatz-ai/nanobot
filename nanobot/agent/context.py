@@ -289,6 +289,8 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        model: str | None = None,
+        background_model: str | None = None,
         memory_context: str | None = None,
         resume_notice: str | None = None,
         extra_system_messages: list[str] | None = None,
@@ -303,6 +305,8 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             media: Optional list of local file paths for images/media.
             channel: Current channel (telegram, feishu, etc.).
             chat_id: Current chat/user ID.
+            model: Live main model for this turn.
+            background_model: Live background model for compaction/memory tasks.
             memory_context: Optional retrieved snippets for this turn only.
             resume_notice: Optional restart note injected as a separate system message.
             extra_system_messages: Optional additional per-turn system messages.
@@ -353,6 +357,8 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             turn_context = self._build_turn_context(
                 channel=channel,
                 chat_id=chat_id,
+                model=model,
+                background_model=background_model,
                 memory_context=memory_context,
             )
             prefixed_message = (
@@ -444,6 +450,8 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         self,
         channel: str | None,
         chat_id: str | None,
+        model: str | None,
+        background_model: str | None,
         memory_context: str | None,
     ) -> str:
         """Build per-turn session and retrieval context for a user message."""
@@ -454,6 +462,10 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         session_lines = [f"Time: {now} ({tz})"]
         if channel and chat_id:
             session_lines.insert(0, f"Channel: {channel} | Chat ID: {chat_id}")
+        if model:
+            session_lines.append(f"Active Model: {model}")
+        if background_model:
+            session_lines.append(f"Background Model: {background_model}")
         parts.append("[Current Session]\n" + "\n".join(session_lines))
 
         memory_block = self._build_retrieved_memory_block(memory_context)

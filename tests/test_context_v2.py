@@ -143,6 +143,29 @@ def _system_contents(messages: list[dict]) -> list[str]:
     return [msg["content"] for msg in messages if msg.get("role") == "system"]
 
 
+def test_v2_user_turn_context_includes_live_models(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_workspace(workspace)
+    builder = ContextBuilder(workspace)
+
+    messages = builder.build_messages(
+        history=[],
+        current_message="what model are you?",
+        channel="discord",
+        chat_id="123",
+        model="openai-codex/gpt-5.4",
+        background_model="anthropic-direct/claude-haiku-4-5",
+        memory_context="[fact] The default model is anthropic-direct/claude-opus-4-6.",
+    )
+
+    user_message = messages[-1]["content"]
+    assert isinstance(user_message, str)
+    assert "Active Model: openai-codex/gpt-5.4" in user_message
+    assert "Background Model: anthropic-direct/claude-haiku-4-5" in user_message
+    assert "what model are you?" in user_message
+
+
 def test_context_v1_vs_v2_comparison(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

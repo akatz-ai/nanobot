@@ -105,9 +105,10 @@ async def test_manage_agents_create_always_creates_webhook_and_model_topic(tmp_p
     result = json.loads(await tool.execute(action='create', agent_id='helper', display_name='Helper'))
 
     assert result['status'] == 'created'
-    assert result['webhook_enabled'] is True
+    assert result['agent']['webhook_enabled'] is True
     assert discord.created_channels[0]['name'] == 'helper'
     assert discord.created_channels[0]['topic'] == 'anthropic-direct/claude-opus-4-6'
+    assert result['channel']['topic'] == 'anthropic-direct/claude-opus-4-6'
     assert discord.created_webhooks[0]['name'] == 'Helper'
     assert discord.registered_webhooks[0]['display_name'] == 'Helper'
     profile = config.agents.profiles['helper']
@@ -122,9 +123,12 @@ async def test_manage_agents_clone_copies_profile_memory_skills_and_history(tmp_
     source_workspace = tmp_path / 'agents' / 'source'
     (source_workspace / 'memory' / 'history').mkdir(parents=True, exist_ok=True)
     (source_workspace / 'skills' / 'private-skill').mkdir(parents=True, exist_ok=True)
+    (source_workspace / 'sessions').mkdir(parents=True, exist_ok=True)
     (source_workspace / 'memory' / 'MEMORY.md').write_text('source memory', encoding='utf-8')
     (source_workspace / 'memory' / 'history' / '2026-03-09.md').write_text('history entry', encoding='utf-8')
     (source_workspace / 'skills' / 'private-skill' / 'SKILL.md').write_text('skill body', encoding='utf-8')
+    (source_workspace / 'sessions' / 'source-session.jsonl').write_text('{"role":"user","content":"hello"}\n', encoding='utf-8')
+    (source_workspace / 'sessions' / 'source-session.context.jsonl').write_text('ignored\n', encoding='utf-8')
 
     source_profile = config.agents.profiles['source'] = SimpleNamespace(
         model='openai-codex/gpt-5.4',
@@ -150,12 +154,14 @@ async def test_manage_agents_clone_copies_profile_memory_skills_and_history(tmp_
     profile_manager = _FakeProfileManager(config)
     tool = AgentManagerTool(router, profile_manager, _FakeChannelManager(discord), guild_id='guild-1')
 
-    result = json.loads(await tool.execute(action='clone', source_agent_id='source', agent_id='clone', display_name='Clone Agent', copy_history=True))
+    result = json.loads(await tool.execute(action='clone', source_agent_id='source', agent_id='clone', display_name='Clone Agent', copy_history=True, copy_sessions=True))
 
     assert result['status'] == 'cloned'
-    assert result['source_agent_id'] == 'source'
-    assert result['webhook_enabled'] is True
+    assert result['agent']['source_agent_id'] == 'source'
+    assert result['agent']['webhook_enabled'] is True
     assert discord.created_channels[0]['topic'] == 'openai-codex/gpt-5.4'
+    assert result['channel']['topic'] == 'openai-codex/gpt-5.4'
+    assert result['copied'] == {'memory': True, 'skills': True, 'history': True, 'sessions': True}
     clone_profile = config.agents.profiles['clone']
     assert clone_profile.model == 'openai-codex/gpt-5.4'
     assert clone_profile.background_model == 'openai-codex/gpt-5.3-codex-spark'
@@ -166,3 +172,5 @@ async def test_manage_agents_clone_copies_profile_memory_skills_and_history(tmp_
     assert (clone_workspace / 'memory' / 'MEMORY.md').read_text(encoding='utf-8') == 'source memory'
     assert (clone_workspace / 'memory' / 'history' / '2026-03-09.md').read_text(encoding='utf-8') == 'history entry'
     assert (clone_workspace / 'skills' / 'private-skill' / 'SKILL.md').read_text(encoding='utf-8') == 'skill body'
+    assert (clone_workspace / 'sessions' / 'source-session.jsonl').exists()
+    assert not (clone_workspace / 'sessions' / 'source-session.context.jsonl').exists()

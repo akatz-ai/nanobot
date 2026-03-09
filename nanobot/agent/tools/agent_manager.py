@@ -91,7 +91,11 @@ class AgentManagerTool(Tool):
                 },
                 "copy_history": {
                     "type": "boolean",
-                    "description": "For clone action: copy daily history and session history from the source agent.",
+                    "description": "For clone action: copy daily history from the source agent.",
+                },
+                "copy_sessions": {
+                    "type": "boolean",
+                    "description": "For clone action: copy persisted session files from the source agent (excluding sidecars and DB internals).",
                 },
             },
         }
@@ -134,6 +138,7 @@ class AgentManagerTool(Tool):
                 display_name=kwargs.get("display_name"),
                 avatar_url=kwargs.get("avatar_url"),
                 copy_history=bool(kwargs.get("copy_history", False)),
+                copy_sessions=bool(kwargs.get("copy_sessions", False)),
             )
         elif action == "remove":
             if not agent_id:
@@ -224,6 +229,7 @@ class AgentManagerTool(Tool):
         source_agent_id: str,
         target_agent_id: str,
         copy_history: bool,
+        copy_sessions: bool,
     ) -> None:
         """Copy key workspace artifacts from one agent to another."""
         source_workspace = self._router.get_agent(source_agent_id).workspace
@@ -261,6 +267,28 @@ class AgentManagerTool(Tool):
                         shutil.copytree(item, dst)
                     else:
                         target_history.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(item, dst)
+
+        if copy_sessions:
+            source_sessions = source_workspace / 'sessions'
+            target_sessions = target_workspace / 'sessions'
+            if source_sessions.exists():
+                for item in source_sessions.iterdir():
+                    # Skip sidecars, sqlite internals, and transient artifacts.
+                    if item.name.endswith((
+                        '.context.jsonl', '.usage.jsonl', '.extraction.jsonl',
+                        '.evidence.sqlite', '.evidence.sqlite-wal', '.evidence.sqlite-shm',
+                        '.db', '.db-wal', '.db-shm', '.sqlite', '.sqlite-wal', '.sqlite-shm',
+                        '.inbox.jsonl',
+                    )):
+                        continue
+                    dst = target_sessions / item.name
+                    if item.is_dir():
+                        if dst.exists():
+                            shutil.rmtree(dst)
+                        shutil.copytree(item, dst)
+                    else:
+                        target_sessions.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(item, dst)
 
     async def _action_create(
@@ -306,12 +334,22 @@ class AgentManagerTool(Tool):
 
         result = {
             "status": "created",
-            "agent_id": agent_id,
-            "model": resolved.model,
-            "discord_channel_id": discord_channel_id,
-            "channel_name": final_channel_name,
-            "display_name": resolved.display_name,
-            "webhook_enabled": webhook_url is not None,
+            "agent": {
+                "agent_id": agent_id,
+                "model": resolved.model,
+                "background_model": resolved.background_model,
+                "display_name": resolved.display_name,
+                "skills": resolved.skills,
+                "reasoning_effort": resolved.reasoning_effort,
+                "webhook_enabled": webhook_url is not None,
+                "discord_channels": [discord_channel_id] if discord_channel_id else [],
+                "discord_webhook_url": webhook_url,
+            },
+            "channel": {
+                "id": discord_channel_id,
+                "name": final_channel_name,
+                "topic": resolved.model,
+            },
         }
         logger.info("Agent '{}' created via manage_agents tool", agent_id)
         return json.dumps(result, indent=2)
@@ -328,6 +366,7 @@ class AgentManagerTool(Tool):
         display_name: str | None = None,
         avatar_url: str | None = None,
         copy_history: bool = False,
+        copy_sessions: bool = False,
     ) -> str:
         if self._router.get_agent(agent_id):
             return f"Error: Agent '{agent_id}' already exists."
@@ -375,20 +414,36 @@ class AgentManagerTool(Tool):
                 source_agent_id=source_agent_id,
                 target_agent_id=agent_id,
                 copy_history=copy_history,
+                copy_sessions=copy_sessions,
             )
         except ValueError as e:
             return f"Error starting cloned agent: {e}"
 
         result = {
             "status": "cloned",
-            "agent_id": agent_id,
-            "source_agent_id": source_agent_id,
-            "model": resolved.model,
-            "discord_channel_id": discord_channel_id,
-            "channel_name": final_channel_name,
-            "display_name": resolved.display_name,
-            "webhook_enabled": webhook_url is not None,
-            "copied_history": copy_history,
+            "agent": {
+                "agent_id": agent_id,
+                "source_agent_id": source_agent_id,
+                "model": resolved.model,
+                "background_model": resolved.background_model,
+                "display_name": resolved.display_name,
+                "skills": resolved.skills,
+                "reasoning_effort": resolved.reasoning_effort,
+                "webhook_enabled": webhook_url is not None,
+                "discord_channels": [discord_channel_id] if discord_channel_id else [],
+                "discord_webhook_url": webhook_url,
+            },
+            "channel": {
+                "id": discord_channel_id,
+                "name": final_channel_name,
+                "topic": resolved.model,
+            },
+            "copied": {
+                "memory": True,
+                "skills": True,
+                "history": copy_history,
+                "sessions": copy_sessions,
+            },
         }
         logger.info("Agent '{}' cloned from '{}' via manage_agents tool", agent_id, source_agent_id)
         return json.dumps(result, indent=2)

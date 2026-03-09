@@ -17,7 +17,10 @@ from nanobot.session.manager import (
     PruneResult,
     Session,
     SessionManager,
+    _PROMPT_PRUNE_MINIMUM_TOKENS,
+    _PROMPT_PRUNE_PROTECT_TOKENS,
     _DEFAULT_PROTECTED_TOOLS,
+    _tool_prune_placeholder,
     _sanitize_tool_pairs,
     _tool_content_chars,
 )
@@ -89,8 +92,6 @@ CREATE INDEX IF NOT EXISTS idx_compaction_session_latest
 CREATE INDEX IF NOT EXISTS idx_compaction_session_boundary
     ON compaction(session_key, boundary_seq DESC);
 """
-
-
 class LazyMessageList(list[dict[str, Any]]):
     """List-like session history that defers hydration until content access."""
 
@@ -1389,6 +1390,61 @@ class SQLiteSessionManager(SessionManager):
                 messages.append(payload)
         return messages
 
+    def _load_history_messages(
+        self,
+        session_key: str,
+        from_seq: int = 0,
+        *,
+        descending: bool = False,
+        render_pruned_placeholders: bool = True,
+    ) -> list[dict[str, Any]]:
+        order = "DESC" if descending else "ASC"
+        rows = self._conn.execute(
+            """
+            SELECT seq, raw_json, timestamp, tool_name, pruned_at, original_content_chars
+            FROM message
+            WHERE session_key = ? AND seq >= ?
+            ORDER BY seq
+            """.replace("ORDER BY seq", f"ORDER BY seq {order}"),
+            (session_key, max(0, int(from_seq))),
+        ).fetchall()
+
+        messages: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["raw_json"])
+            except json.JSONDecodeError as exc:
+                logger.warning("Skipping malformed SQLite message for {}: {}", session_key, exc)
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if render_pruned_placeholders and row["pruned_at"] and payload.get("role") == "tool":
+                payload = self._render_pruned_tool_placeholder(row, payload)
+            messages.append(payload)
+        return messages
+
+    @staticmethod
+    def _render_pruned_tool_placeholder(
+        row: sqlite3.Row,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        rendered = dict(payload)
+        tool_name = str(payload.get("name") or row["tool_name"] or "tool")
+        try:
+            seq = int(row["seq"])
+        except (TypeError, ValueError):
+            seq = -1
+        original_chars = int(
+            row["original_content_chars"] or _tool_content_chars(payload.get("content"))
+        )
+        rendered["content"] = _tool_prune_placeholder(
+            tool_name=tool_name,
+            message_index=seq if seq >= 0 else None,
+            timestamp=payload.get("timestamp") if isinstance(payload.get("timestamp"), str) else row["timestamp"],
+            original_chars=original_chars,
+        )
+        return rendered
+
     def _get_compaction_boundary(self, session_key: str) -> int:
         row = self._conn.execute(
             """
@@ -1488,7 +1544,11 @@ class SQLiteSessionManager(SessionManager):
         _ = (prune_protect_tokens, prune_minimum_tokens, context_window, protected_tools)
         with self._lock:
             boundary_seq = self._get_compaction_boundary(session.key)
-            prompt_window = self._load_messages(session.key, from_seq=boundary_seq)
+            prompt_window = self._load_history_messages(
+                session.key,
+                from_seq=boundary_seq,
+                render_pruned_placeholders=prune_tool_results,
+            )
 
         sliced = prompt_window[-max_messages:]
 
@@ -1567,12 +1627,12 @@ class SQLiteSessionManager(SessionManager):
         effective_protect = (
             prune_protect_tokens
             if prune_protect_tokens is not None
-            else max(10_000, int(context_window) // 5)
+            else _PROMPT_PRUNE_PROTECT_TOKENS
         )
         effective_minimum = (
             prune_minimum_tokens
             if prune_minimum_tokens is not None
-            else max(5_000, int(context_window) // 20)
+            else _PROMPT_PRUNE_MINIMUM_TOKENS
         )
         protected = {
             str(name)
@@ -1584,7 +1644,7 @@ class SQLiteSessionManager(SessionManager):
         with self._lock:
             rows = self._conn.execute(
                 """
-                SELECT id, seq, role, raw_json, tool_name, pruned_at
+                SELECT id, seq, role, raw_json, tool_name, timestamp, pruned_at, original_content_chars
                 FROM message
                 WHERE session_key = ? AND role IN ('user', 'tool')
                 ORDER BY seq DESC
@@ -1624,14 +1684,12 @@ class SQLiteSessionManager(SessionManager):
                 if total_tool_tokens <= max(0, int(effective_protect)):
                     continue
                 original_chars = _tool_content_chars(payload.get("content"))
-                placeholder = f"[Tool output cleared to save context — {original_chars} chars]"
-                pruned_payload = dict(payload)
-                pruned_payload["content"] = placeholder
-                saved = max(0, tool_tokens - estimate_message_tokens(pruned_payload))
+                placeholder_payload = self._render_pruned_tool_placeholder(row, payload)
+                saved = max(0, tool_tokens - estimate_message_tokens(placeholder_payload))
                 if saved <= 0:
                     continue
                 candidates.append(
-                    (int(row["id"]), int(row["seq"]), pruned_payload, original_chars, saved)
+                    (int(row["id"]), int(row["seq"]), placeholder_payload, original_chars, saved)
                 )
 
             total_saved = sum(saved for *_rest, saved in candidates)
@@ -1645,30 +1703,25 @@ class SQLiteSessionManager(SessionManager):
                 )
 
             now_iso = datetime.now().isoformat()
-            replacements: list[tuple[int, dict[str, Any]]] = []
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 for message_id, seq, payload, original_chars, _saved in candidates:
-                    raw_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
                     self._conn.execute(
                         """
                         UPDATE message
                         SET pruned_at = ?,
                             original_content_chars = ?,
                             pruned_tokens_saved = ?,
-                            raw_json = ?,
                             updated_at = ?
                         WHERE id = ?
                         """,
-                        (now_iso, original_chars, _saved, raw_json, now_iso, message_id),
+                        (now_iso, original_chars, _saved, now_iso, message_id),
                     )
-                    replacements.append((seq, payload))
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
 
-        self._apply_pruned_rows_to_cache(session_key, replacements)
         return PruneResult(
             messages_pruned=len(candidates),
             tokens_saved=total_saved,

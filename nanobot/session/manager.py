@@ -169,6 +169,9 @@ _DEFAULT_PROTECTED_TOOLS = {
     "memory_ingest",
 }
 
+_PROMPT_PRUNE_PROTECT_TOKENS = 40_000
+_PROMPT_PRUNE_MINIMUM_TOKENS = 20_000
+
 
 def _tool_content_chars(content: Any) -> int:
     if isinstance(content, str):
@@ -179,6 +182,38 @@ def _tool_content_chars(content: Any) -> int:
         return len(json.dumps(content, ensure_ascii=False))
     except TypeError:
         return len(str(content))
+
+
+def _format_prune_timestamp(timestamp: str | None) -> str:
+    if not timestamp:
+        return ""
+    try:
+        dt = datetime.fromisoformat(timestamp)
+    except (TypeError, ValueError):
+        return ""
+    hour = dt.strftime("%I").lstrip("0") or "0"
+    return f"{dt.strftime('%b')} {dt.day} {hour}:{dt.strftime('%M %p')}"
+
+
+def _tool_prune_placeholder(
+    *,
+    tool_name: str,
+    message_index: int | None,
+    timestamp: str | None,
+    original_chars: int,
+) -> str:
+    parts = [tool_name or "tool"]
+    if message_index is not None and message_index >= 0:
+        parts.append(f"message #{message_index}")
+    formatted_ts = _format_prune_timestamp(timestamp)
+    if formatted_ts:
+        parts.append(formatted_ts)
+    parts.append(f"{max(0, int(original_chars)):,} chars")
+    return (
+        "[Tool output pruned from prompt: "
+        + ", ".join(parts)
+        + ". Use session_search to retrieve details.]"
+    )
 
 
 def _prune_tool_results(
@@ -231,8 +266,11 @@ def _prune_tool_results(
             continue
 
         original_chars = _tool_content_chars(msg.get("content"))
-        placeholder = (
-            f"[Tool output cleared to save context — {original_chars} chars]"
+        placeholder = _tool_prune_placeholder(
+            tool_name=str(msg.get("name") or "tool"),
+            message_index=idx,
+            timestamp=msg.get("timestamp") if isinstance(msg.get("timestamp"), str) else None,
+            original_chars=original_chars,
         )
         placeholder_msg = dict(msg)
         placeholder_msg["content"] = placeholder
@@ -604,12 +642,12 @@ class Session:
             effective_protect = (
                 prune_protect_tokens
                 if prune_protect_tokens is not None
-                else max(10_000, int(context_window) // 5)
+                else _PROMPT_PRUNE_PROTECT_TOKENS
             )
             effective_minimum = (
                 prune_minimum_tokens
                 if prune_minimum_tokens is not None
-                else max(5_000, int(context_window) // 20)
+                else _PROMPT_PRUNE_MINIMUM_TOKENS
             )
             out, prune_result = _prune_tool_results(
                 out,

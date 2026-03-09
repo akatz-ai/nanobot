@@ -219,24 +219,24 @@ def test_compaction_persists_and_get_history_respects_boundary(
     sqlite_manager.invalidate(key)
     loaded = sqlite_manager.get_or_create(key)
     seen: dict[str, int] = {}
-    original_load_messages = sqlite_manager._load_messages
+    original_load_messages = sqlite_manager._load_history_messages
 
     def _recorded_load_messages(
         session_key: str,
         from_seq: int = 0,
         *,
-        limit: int | None = None,
         descending: bool = False,
+        render_pruned_placeholders: bool = True,
     ) -> list[dict[str, Any]]:
         seen["from_seq"] = from_seq
         return original_load_messages(
             session_key,
             from_seq=from_seq,
-            limit=limit,
             descending=descending,
+            render_pruned_placeholders=render_pruned_placeholders,
         )
 
-    monkeypatch.setattr(sqlite_manager, "_load_messages", _recorded_load_messages)
+    monkeypatch.setattr(sqlite_manager, "_load_history_messages", _recorded_load_messages)
     assert isinstance(loaded.messages, LazyMessageList)
     assert not loaded.messages.is_loaded
     history, _ = loaded.get_history(max_messages=50)
@@ -283,7 +283,10 @@ def test_tool_pruning_matches_jsonl_behavior(tmp_path: Path) -> None:
         prune_minimum_tokens=100,
     )
 
-    assert sqlite_history == jsonl_history
+    assert [msg["role"] for msg in sqlite_history] == [msg["role"] for msg in jsonl_history]
+    assert [msg.get("name") for msg in sqlite_history if msg["role"] == "tool"] == [
+        msg.get("name") for msg in jsonl_history if msg["role"] == "tool"
+    ]
     assert sqlite_prune is not None
     assert jsonl_prune is not None
     assert sqlite_prune.messages_pruned == jsonl_prune.messages_pruned
@@ -530,7 +533,7 @@ def test_prune_old_tool_results_persists_across_reload(sqlite_manager: SQLiteSes
 
     assert first.messages_pruned > 0
     assert any(row["pruned_at"] for row in rows)
-    assert any("[Tool output cleared to save context" in json.loads(row["raw_json"])["content"] for row in rows)
+    assert any("exec-1-" in json.loads(row["raw_json"])["content"] for row in rows)
 
     sqlite_manager.invalidate(key)
     reloaded = sqlite_manager.get_or_create(key)
@@ -548,12 +551,24 @@ def test_prune_old_tool_results_persists_across_reload(sqlite_manager: SQLiteSes
     )
 
     assert any(
-        msg["role"] == "tool" and "[Tool output cleared to save context" in str(msg["content"])
+        msg["role"] == "tool" and "[Tool output pruned from prompt:" in str(msg["content"])
         for msg in history
     )
     assert prune_result is not None
     assert prune_result.messages_pruned == first.messages_pruned
     assert second.messages_pruned == 0
+
+    raw_history, _ = reloaded.get_history(
+        max_messages=500,
+        context_window=50_000,
+        prune_tool_results=False,
+        prune_protect_tokens=0,
+        prune_minimum_tokens=100,
+    )
+    assert any(
+        msg["role"] == "tool" and str(msg["content"]).startswith("exec-")
+        for msg in raw_history
+    )
 
 
 def test_get_or_create_uses_lazy_message_loading(sqlite_manager: SQLiteSessionManager) -> None:

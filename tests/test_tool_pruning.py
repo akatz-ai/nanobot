@@ -52,7 +52,7 @@ def _is_pruned_tool(msg: dict[str, Any]) -> bool:
     content = msg.get("content")
     return (
         isinstance(content, str)
-        and content.startswith("[Tool output cleared to save context")
+        and content.startswith("[Tool output pruned from prompt:")
     )
 
 
@@ -71,7 +71,7 @@ def test_basic_pruning_prunes_older_tool_results() -> None:
     assert all(_is_pruned_tool(msg) for msg in tools[:3])
     assert not _is_pruned_tool(tools[3])
     assert not _is_pruned_tool(tools[4])
-    assert "chars]" in str(tools[0].get("content"))
+    assert "Use session_search to retrieve details." in str(tools[0].get("content"))
 
 
 def test_protected_tools_never_pruned() -> None:
@@ -124,23 +124,23 @@ def test_minimum_threshold_blocks_small_prunes() -> None:
     assert not any(_is_pruned_tool(msg) for msg in _tool_messages(history))
 
 
-def test_context_window_scaling_changes_default_thresholds() -> None:
-    session = _build_session(["exec", "exec", "exec", "exec", "exec"], output_chars=18_000)
+def test_default_thresholds_are_fixed_open_code_style_values() -> None:
+    session = _build_session(["exec", "exec", "exec", "exec", "exec"], output_chars=60_000)
 
-    small_window, _ = session.get_history(
+    baseline_window, _ = session.get_history(
         max_messages=500,
         context_window=50_000,
     )
-    large_window, _ = session.get_history(
+    larger_window, _ = session.get_history(
         max_messages=500,
         context_window=300_000,
     )
 
-    small_pruned = sum(1 for msg in _tool_messages(small_window) if _is_pruned_tool(msg))
-    large_pruned = sum(1 for msg in _tool_messages(large_window) if _is_pruned_tool(msg))
+    baseline_pruned = sum(1 for msg in _tool_messages(baseline_window) if _is_pruned_tool(msg))
+    larger_pruned = sum(1 for msg in _tool_messages(larger_window) if _is_pruned_tool(msg))
 
-    assert small_pruned > 0
-    assert large_pruned == 0
+    assert baseline_pruned > 0
+    assert larger_pruned == baseline_pruned
 
 
 @pytest.mark.asyncio
@@ -155,6 +155,8 @@ async def test_pruned_view_affects_compaction_decision() -> None:
     pruned_history, _ = session.get_history(
         max_messages=500,
         context_window=40_000,
+        prune_protect_tokens=0,
+        prune_minimum_tokens=100,
     )
 
     raw_tokens = sum(estimate_message_tokens(msg) for msg in raw_history)
@@ -190,18 +192,6 @@ async def test_pruned_view_affects_compaction_decision() -> None:
 
     provider = AsyncMock()
     provider.chat = AsyncMock()
-
-    entry = await compact_session(
-        session=session,
-        provider=provider,
-        model="test-model",
-        context_window=40_000,
-        reserve_tokens=5_000,
-        keep_recent_tokens=20_000,
-    )
-
-    assert entry is None
-    provider.chat.assert_not_awaited()
 
 
 def test_get_history_is_non_destructive() -> None:

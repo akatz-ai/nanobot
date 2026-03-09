@@ -190,9 +190,6 @@ async def test_pruned_view_affects_compaction_decision() -> None:
         last_input_tokens=decision_tokens,
     )
 
-    provider = AsyncMock()
-    provider.chat = AsyncMock()
-
 
 def test_get_history_is_non_destructive() -> None:
     session = _build_session(["exec", "exec", "exec", "exec", "exec"], output_chars=18_000)

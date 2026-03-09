@@ -23,7 +23,12 @@ from pydantic import BaseModel
 import yaml
 
 import nanobot
-from nanobot.config.loader import get_config_path, get_state_path, load_config_data
+from nanobot.agent.profile_manager import AgentProfileManager
+from nanobot.agent.workspace import init_agent_workspace
+from nanobot.bus.queue import MessageBus
+from nanobot.channels.discord import DiscordChannel
+from nanobot.config.loader import get_config_path, get_state_path, load_config, load_config_data
+from nanobot.config.state import StateStore
 from nanobot.session.context_log import load_context_log
 from nanobot.session.extraction_log import load_extraction_log
 from nanobot.session.usage_log import get_session_summary
@@ -111,6 +116,97 @@ def _agent_names() -> list[str]:
     cfg = _load_config()
     profiles = cfg.get("agents", {}).get("profiles", {})
     return list(profiles.keys())
+
+
+def _base_config_and_store() -> tuple[Any, StateStore]:
+    config_path = get_config_path()
+    base_config = load_config(config_path)
+    return base_config, StateStore.from_config_path(config_path)
+
+
+def _discord_channel_category_id() -> str | None:
+    state_path = get_state_path(get_config_path())
+    if not state_path.exists():
+        return None
+    state = StateStore(state_path).load()
+    return state.provisioning.discord.category_ids.get("AGENTS")
+
+
+def _build_dashboard_discord_channel(config: Any) -> DiscordChannel:
+    providers = config.providers
+    return DiscordChannel(
+        config.channels.discord,
+        MessageBus(),
+        groq_api_key=providers.groq.api_key or "",
+        openai_api_key=providers.openai.api_key or "",
+    )
+
+
+def _copy_dashboard_workspace(
+    *,
+    workspace_root: Path,
+    source_agent_id: str,
+    target_agent_id: str,
+    copy_history: bool,
+    copy_sessions: bool,
+) -> None:
+    source_workspace = workspace_root / "agents" / source_agent_id
+    target_workspace = workspace_root / "agents" / target_agent_id
+
+    for rel in [Path("memory/MEMORY.md")]:
+        src = source_workspace / rel
+        dst = target_workspace / rel
+        if src.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+    source_skills = source_workspace / "skills"
+    target_skills = target_workspace / "skills"
+    if source_skills.exists():
+        for item in source_skills.iterdir():
+            dst = target_skills / item.name
+            if item.is_dir():
+                if dst.exists():
+                    shutil.rmtree(dst)
+                shutil.copytree(item, dst)
+            else:
+                target_skills.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, dst)
+
+    if copy_history:
+        source_history = source_workspace / "memory" / "history"
+        target_history = target_workspace / "memory" / "history"
+        if source_history.exists():
+            for item in source_history.iterdir():
+                dst = target_history / item.name
+                if item.is_dir():
+                    if dst.exists():
+                        shutil.rmtree(dst)
+                    shutil.copytree(item, dst)
+                else:
+                    target_history.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(item, dst)
+
+    if copy_sessions:
+        source_sessions = source_workspace / "sessions"
+        target_sessions = target_workspace / "sessions"
+        if source_sessions.exists():
+            for item in source_sessions.iterdir():
+                if item.name.endswith((
+                    '.context.jsonl', '.usage.jsonl', '.extraction.jsonl',
+                    '.evidence.sqlite', '.evidence.sqlite-wal', '.evidence.sqlite-shm',
+                    '.db', '.db-wal', '.db-shm', '.sqlite', '.sqlite-wal', '.sqlite-shm',
+                    '.inbox.jsonl',
+                )):
+                    continue
+                dst = target_sessions / item.name
+                if item.is_dir():
+                    if dst.exists():
+                        shutil.rmtree(dst)
+                    shutil.copytree(item, dst)
+                else:
+                    target_sessions.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(item, dst)
 
 
 def _read_text(p: Path) -> str | None:
@@ -1373,6 +1469,183 @@ async def get_logs(
 @app.get("/api/config")
 async def config():
     return {"config": _sanitize_config_value("config", _load_config())}
+
+
+class AgentMutationRequest(BaseModel):
+    mode: str
+    agent_id: str
+    source_agent_id: str | None = None
+    model: str | None = None
+    background_model: str | None = None
+    system_identity: str | None = None
+    skills: list[str] | None = None
+    channel_name: str | None = None
+    display_name: str | None = None
+    avatar_url: str | None = None
+    copy_history: bool = False
+    copy_sessions: bool = False
+
+
+@app.post("/api/agents")
+async def create_or_clone_agent(payload: AgentMutationRequest):
+    mode = payload.mode.strip().lower()
+    if mode not in {"create", "clone"}:
+        raise HTTPException(status_code=400, detail="mode must be 'create' or 'clone'")
+
+    agent_id = payload.agent_id.strip()
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+
+    effective = _load_config()
+    existing_profiles = effective.get("agents", {}).get("profiles", {})
+    if agent_id in existing_profiles:
+        raise HTTPException(status_code=409, detail=f"Agent '{agent_id}' already exists")
+
+    base_config, state_store = _base_config_and_store()
+    profile_manager = AgentProfileManager(base_config, state_store)
+    workspace_root = Path(base_config.agents.defaults.workspace).expanduser()
+    guild_id = base_config.channels.discord.guild_id
+    if not base_config.channels.discord.enabled or not base_config.channels.discord.token:
+        raise HTTPException(status_code=400, detail="Discord is not configured for agent provisioning")
+    if not guild_id:
+        raise HTTPException(status_code=400, detail="Discord guild_id is not configured")
+
+    default_model = base_config.agents.defaults.model
+    channel_name = (payload.channel_name or agent_id).strip()
+    display_name = (payload.display_name or agent_id).strip()
+    category_id = _discord_channel_category_id()
+    discord = _build_dashboard_discord_channel(base_config)
+
+    if mode == "create":
+        model_topic = payload.model or default_model or ""
+        channel_id = await discord.create_guild_channel(
+            guild_id=guild_id,
+            name=channel_name,
+            topic=model_topic[:1024],
+            category_id=category_id,
+        )
+        if not channel_id:
+            raise HTTPException(status_code=502, detail="Failed to create Discord channel")
+
+        webhook_url = await discord.create_channel_webhook(
+            channel_id=channel_id,
+            name=display_name,
+            avatar_url=payload.avatar_url,
+        )
+
+        profile = profile_manager.create_profile(
+            agent_id,
+            model=payload.model,
+            background_model=payload.background_model,
+            skills=payload.skills,
+            system_identity=payload.system_identity,
+            discord_channels=[channel_id],
+            display_name=display_name,
+            avatar_url=payload.avatar_url,
+            discord_webhook_url=webhook_url,
+        )
+        init_agent_workspace(workspace_root, agent_id, payload.system_identity)
+        resolved = profile.resolve(base_config.agents.defaults)
+        return {
+            "status": "created",
+            "restart_required": True,
+            "agent": {
+                "agent_id": agent_id,
+                "model": resolved.model,
+                "background_model": resolved.background_model,
+                "display_name": resolved.display_name,
+                "skills": resolved.skills,
+                "reasoning_effort": resolved.reasoning_effort,
+                "webhook_enabled": webhook_url is not None,
+                "discord_channels": [channel_id],
+                "discord_webhook_url": webhook_url,
+            },
+            "channel": {
+                "id": channel_id,
+                "name": channel_name,
+                "topic": resolved.model,
+            },
+            "warnings": ["Gateway restart required for the new agent to become active."],
+        }
+
+    source_agent_id = (payload.source_agent_id or "").strip()
+    if not source_agent_id:
+        raise HTTPException(status_code=400, detail="source_agent_id is required for clone")
+    source_profile = existing_profiles.get(source_agent_id)
+    if not isinstance(source_profile, dict):
+        raise HTTPException(status_code=404, detail=f"Source agent '{source_agent_id}' not found")
+
+    clone_model = payload.model if payload.model is not None else _profile_value(source_profile, 'model', 'model') or default_model or ''
+    channel_id = await discord.create_guild_channel(
+        guild_id=guild_id,
+        name=channel_name,
+        topic=clone_model[:1024],
+        category_id=category_id,
+    )
+    if not channel_id:
+        raise HTTPException(status_code=502, detail="Failed to create Discord channel")
+
+    webhook_url = await discord.create_channel_webhook(
+        channel_id=channel_id,
+        name=display_name,
+        avatar_url=payload.avatar_url,
+    )
+
+    profile = profile_manager.create_profile(
+        agent_id,
+        model=clone_model,
+        background_model=payload.background_model if payload.background_model is not None else _profile_value(source_profile, 'backgroundModel', 'background_model'),
+        context_window=_profile_value(source_profile, 'contextWindow', 'context_window'),
+        background_context_window=_profile_value(source_profile, 'backgroundContextWindow', 'background_context_window'),
+        session_store=_profile_value(source_profile, 'sessionStore', 'session_store'),
+        max_tokens=_profile_value(source_profile, 'maxTokens', 'max_tokens'),
+        temperature=_profile_value(source_profile, 'temperature', 'temperature'),
+        max_tool_iterations=_profile_value(source_profile, 'maxToolIterations', 'max_tool_iterations'),
+        reasoning_effort=_profile_value(source_profile, 'reasoningEffort', 'reasoning_effort'),
+        skills=payload.skills if payload.skills is not None else list(_profile_value(source_profile, 'skills', 'skills') or []),
+        system_identity=payload.system_identity if payload.system_identity is not None else _profile_value(source_profile, 'systemIdentity', 'system_identity'),
+        discord_channels=[channel_id],
+        display_name=display_name,
+        avatar_url=payload.avatar_url if payload.avatar_url is not None else _profile_value(source_profile, 'avatarUrl', 'avatar_url'),
+        discord_webhook_url=webhook_url,
+    )
+    init_agent_workspace(workspace_root, agent_id, payload.system_identity or _profile_value(source_profile, 'systemIdentity', 'system_identity'))
+    _copy_dashboard_workspace(
+        workspace_root=workspace_root,
+        source_agent_id=source_agent_id,
+        target_agent_id=agent_id,
+        copy_history=payload.copy_history,
+        copy_sessions=payload.copy_sessions,
+    )
+    resolved = profile.resolve(base_config.agents.defaults)
+    return {
+        "status": "cloned",
+        "restart_required": True,
+        "agent": {
+            "agent_id": agent_id,
+            "source_agent_id": source_agent_id,
+            "model": resolved.model,
+            "background_model": resolved.background_model,
+            "display_name": resolved.display_name,
+            "skills": resolved.skills,
+            "reasoning_effort": resolved.reasoning_effort,
+            "webhook_enabled": webhook_url is not None,
+            "discord_channels": [channel_id],
+            "discord_webhook_url": webhook_url,
+        },
+        "channel": {
+            "id": channel_id,
+            "name": channel_name,
+            "topic": resolved.model,
+        },
+        "copied": {
+            "memory": True,
+            "skills": True,
+            "history": payload.copy_history,
+            "sessions": payload.copy_sessions,
+        },
+        "warnings": ["Gateway restart required for the cloned agent to become active."],
+    }
 
 
 @app.post("/api/restart")

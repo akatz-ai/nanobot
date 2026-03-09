@@ -11,6 +11,7 @@ ALLOWED_ROUTES = [
     "GET /api/version",
     "GET /api/overview",
     "GET /api/agents",
+    "POST /api/agents",
     "GET /api/agents/{name}/context/live",
     "GET /api/agents/{name}/memory",
     "GET /api/agents/{name}/sessions",

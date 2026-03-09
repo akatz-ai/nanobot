@@ -819,6 +819,89 @@ function confirmModal({ title, message, confirmText = 'Confirm', cancelText = 'C
     document.body.appendChild(overlay);
   });
 }
+function showAgentMutationModal({ mode, sourceAgent = null }) {
+  const isClone = mode === 'clone';
+  const form = html('form', { style: 'display:grid;gap:14px;' });
+  const field = (label, input) => html('label', { style: 'display:grid;gap:6px;font-size:13px;color:var(--text-secondary);' }, [html('span', {}, label), input]);
+  const mkInput = (value = '', placeholder = '') => html('input', { value, placeholder, style: 'width:100%;padding:10px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;color:var(--text-primary);' });
+  const mkTextarea = (value = '', placeholder = '') => html('textarea', { placeholder, style: 'width:100%;min-height:96px;padding:10px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;color:var(--text-primary);resize:vertical;' }, value);
+  const mkCheckbox = (checked = false) => html('input', { type: 'checkbox', checked });
+
+  const agentId = mkInput('', isClone ? 'agentshq-dev' : 'researcher');
+  const displayName = mkInput(isClone ? `${sourceAgent?.displayName || sourceAgent?.name || 'Clone'} Copy` : '', 'Display name');
+  const channelName = mkInput('', 'Defaults to agent_id');
+  const model = mkInput(isClone ? '' : '', isClone ? 'Optional override' : 'Optional override');
+  const backgroundModel = mkInput('', 'Optional background model');
+  const systemIdentity = mkTextarea('', isClone ? 'Optional override for cloned agent identity' : 'You are a specialist agent...');
+  const skills = mkInput('', 'comma,separated,skills');
+  const copyHistory = mkCheckbox(true);
+  const copySessions = mkCheckbox(false);
+  if (isClone) {
+    form.appendChild(field('Source Agent', html('div', { className: 'tag mono', style: 'padding:10px 12px;' }, sourceAgent?.name || '')));
+  }
+  form.appendChild(field('Agent ID', agentId));
+  form.appendChild(field('Display Name', displayName));
+  form.appendChild(field('Channel Name', channelName));
+  form.appendChild(field('Model', model));
+  form.appendChild(field('Background Model', backgroundModel));
+  form.appendChild(field('System Identity', systemIdentity));
+  form.appendChild(field('Skills', skills));
+  if (isClone) {
+    form.appendChild(html('label', { style: 'display:flex;gap:10px;align-items:center;color:var(--text-secondary);font-size:13px;' }, [copyHistory, html('span', {}, 'Copy daily history')]));
+    form.appendChild(html('label', { style: 'display:flex;gap:10px;align-items:center;color:var(--text-secondary);font-size:13px;' }, [copySessions, html('span', {}, 'Copy session files')]));
+  }
+  const status = html('div', { className: 'card-subtitle', style: 'min-height:20px;' }, '');
+  const submit = html('button', { className: 'btn btn-primary', type: 'submit', style: 'padding:10px 20px;font-weight:600;' }, isClone ? 'Clone Agent' : 'Create Agent');
+  const cancel = html('button', { className: 'btn btn-ghost', type: 'button', style: 'padding:10px 20px;', onClick: () => overlay.remove() }, 'Cancel');
+  form.appendChild(status);
+  form.appendChild(html('div', { style: 'display:flex;gap:10px;justify-content:flex-end;' }, [cancel, submit]));
+
+  const overlay = html('div', { className: 'modal-overlay open', onClick: (e) => { if (e.target === overlay) overlay.remove(); } }, [
+    html('div', { className: 'modal', style: 'width:640px;' }, [
+      html('div', { className: 'modal-header', style: 'margin-bottom:16px;' }, [
+        html('h2', { className: 'modal-title' }, isClone ? `Clone ${sourceAgent?.displayName || sourceAgent?.name || 'Agent'}` : 'Create Agent'),
+        html('button', { className: 'modal-close', onClick: () => overlay.remove() }, '×'),
+      ]),
+      form,
+    ]),
+  ]);
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    status.textContent = '';
+    submit.disabled = true;
+    submit.textContent = isClone ? 'Cloning…' : 'Creating…';
+    try {
+      const payload = {
+        mode,
+        agent_id: agentId.value.trim(),
+        display_name: displayName.value.trim() || null,
+        channel_name: channelName.value.trim() || null,
+        model: model.value.trim() || null,
+        background_model: backgroundModel.value.trim() || null,
+        system_identity: systemIdentity.value.trim() || null,
+        skills: skills.value.trim() ? skills.value.split(',').map((s) => s.trim()).filter(Boolean) : null,
+        copy_history: !!copyHistory.checked,
+        copy_sessions: !!copySessions.checked,
+      };
+      if (isClone) payload.source_agent_id = sourceAgent.name;
+      const result = await api('/api/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      status.textContent = result.warnings?.[0] || `${isClone ? 'Clone' : 'Create'} succeeded.`;
+      await rerender();
+      setTimeout(() => overlay.remove(), 600);
+    } catch (error) {
+      status.textContent = error.message;
+      submit.disabled = false;
+      submit.textContent = isClone ? 'Clone Agent' : 'Create Agent';
+    }
+  });
+
+  document.body.appendChild(overlay);
+}
 function sessionDetailPath(agent, key, suffix = '') { return `/api/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(key)}${suffix}`; }
 function stopIntegrationPoller(id) {
   if (!integrationPollers[id]) return;
@@ -992,7 +1075,7 @@ async function renderAgents(token) {
     const agents = data.agents || [];
     updateNavBadges(agents.length, null);
     container.innerHTML = '';
-    container.appendChild(renderPageHeader('Agents', 'Manage agents, inspect context, memory, sessions, and identity.', [html('button', { className: 'btn btn-secondary btn-sm', onClick: () => rerender() }, '↻ Refresh')]));
+    container.appendChild(renderPageHeader('Agents', 'Manage agents, inspect context, memory, sessions, and identity.', [html('button', { className: 'btn btn-primary btn-sm', onClick: () => showAgentMutationModal({ mode: 'create' }) }, '+ New Agent'), html('button', { className: 'btn btn-secondary btn-sm', onClick: () => rerender() }, '↻ Refresh')]));
     if (!agents.length) {
       container.appendChild(renderEmpty('◎', 'No configured agents', 'Add agent profiles to config.json and their workspaces will appear here.'));
       return;
@@ -1009,6 +1092,7 @@ async function renderAgents(token) {
         ]),
         html('span', { className: 'pill pill-green' }, [html('span', { className: 'dot' }), 'Online']),
         html('div', { className: 'actions' }, [
+          html('button', { className: 'btn btn-ghost btn-icon', title: 'Clone agent', onClick: (event) => { event.stopPropagation(); showAgentMutationModal({ mode: 'clone', sourceAgent: agent }); } }, '⧉'),
           html('button', { className: 'btn btn-ghost btn-icon', title: 'Open detail', onClick: (event) => { event.stopPropagation(); navigate('agent-detail', { agent: agent.name, agentTab: 'context', contextTurnIndex: null }); } }, '⚙'),
           html('button', { className: 'btn btn-ghost btn-icon', title: 'View Memory', onClick: (event) => { event.stopPropagation(); navigate('agent-detail', { agent: agent.name, agentTab: 'memory' }); } }, '◆'),
         ]),

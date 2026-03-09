@@ -700,7 +700,7 @@ def _usage_snapshot_tokens(
         return None
     if value <= 0:
         return None
-    if abs(len(session.messages) - message_index) > max(0, int(max_message_lag)):
+    if abs(session.get_message_count() - message_index) > max(0, int(max_message_lag)):
         return None
     return value
 
@@ -740,13 +740,13 @@ async def compact_session(
     """Run structured compaction and persist a CompactionEntry when successful."""
     last_input_tokens = _usage_snapshot_tokens(session)
     baseline_messages, _ = session.get_history(
-        max_messages=max(1, len(session.messages)),
+        max_messages=max(1, session.get_visible_message_count()),
         prune_tool_results=False,
         context_window=context_window,
     )
     baseline_tokens = sum(estimate_message_tokens(msg) for msg in baseline_messages)
     pressure_messages, _ = session.get_history(
-        max_messages=max(1, len(session.messages)),
+        max_messages=max(1, session.get_visible_message_count()),
         context_window=context_window,
     )
     post_prune_tokens = sum(estimate_message_tokens(msg) for msg in pressure_messages)

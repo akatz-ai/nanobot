@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS session (
     metadata_json TEXT NOT NULL DEFAULT '{}',
     message_count INTEGER NOT NULL DEFAULT 0,
     last_consolidated_seq INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 0,
     storage_version INTEGER NOT NULL DEFAULT 1,
     jsonl_path TEXT,
     jsonl_migrated_at TEXT
@@ -249,6 +250,12 @@ class SQLiteSessionManager(SessionManager):
             self._conn.commit()
 
     def _ensure_compat_schema_locked(self) -> None:
+        session_columns = {
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(session)").fetchall()
+        }
+        if "revision" not in session_columns:
+            self._conn.execute("ALTER TABLE session ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
         columns = {
             str(row["name"])
             for row in self._conn.execute("PRAGMA table_info(message)").fetchall()
@@ -261,6 +268,12 @@ class SQLiteSessionManager(SessionManager):
         with self._lock:
             cached = self._cache.get(key)
             if cached is not None:
+                if self._cached_session_needs_reload_locked(cached):
+                    reloaded = self._load_session_metadata_locked(key)
+                    if reloaded is not None:
+                        self._bind_sqlite_session(reloaded)
+                        self._cache[key] = reloaded
+                        return reloaded
                 return cached
 
             session = self._load_session_metadata_locked(key)
@@ -284,7 +297,64 @@ class SQLiteSessionManager(SessionManager):
 
         with self._lock:
             self._bind_sqlite_session(session)
-            self._rewrite_session_locked(session, rewrite_messages=self._messages_changed(session), rewrite_compactions=self._compactions_changed(session))
+            rewrite_messages = self._messages_changed(session)
+            rewrite_compactions = self._compactions_changed(session)
+            metadata_changed = session._persisted_metadata_sig != session._metadata_signature()
+            last_consolidated_changed = (
+                session._persisted_last_consolidated != session.last_consolidated
+            )
+            if not (
+                rewrite_messages
+                or rewrite_compactions
+                or metadata_changed
+                or last_consolidated_changed
+            ):
+                self._cache[session.key] = session
+                return
+            self._rewrite_session_locked(
+                session,
+                rewrite_messages=rewrite_messages,
+                rewrite_compactions=rewrite_compactions,
+            )
+            self._cache[session.key] = session
+
+    def save_state(self, session: Session) -> None:
+        """Persist row-level session state without rewriting messages/compactions."""
+        session.validate_compaction_invariants()
+        session.bind_path(self._get_session_path(session.key))
+
+        with self._lock:
+            self._bind_sqlite_session(session)
+            if self._messages_changed(session) or self._compactions_changed(session):
+                self.save(session)
+                return
+
+            metadata_changed = session._persisted_metadata_sig != session._metadata_signature()
+            last_consolidated_changed = (
+                session._persisted_last_consolidated != session.last_consolidated
+            )
+            if not (metadata_changed or last_consolidated_changed):
+                self._cache[session.key] = session
+                return
+
+            now = datetime.now()
+            now_iso = now.isoformat()
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._upsert_session_row_locked(
+                    session,
+                    updated_at=now_iso,
+                    preserve_existing_message_count=True,
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+            session.updated_at = now
+            session._persisted_last_consolidated = session.last_consolidated
+            session._persisted_metadata_sig = session._metadata_signature()
+            self._sync_session_tracking(session)
             self._cache[session.key] = session
 
     def list_sessions(self) -> list[dict[str, Any]]:
@@ -360,7 +430,7 @@ class SQLiteSessionManager(SessionManager):
     def _load_session_metadata_locked(self, key: str) -> Session | None:
         row = self._conn.execute(
             """
-            SELECT key, created_at, updated_at, metadata_json, message_count, last_consolidated_seq
+            SELECT key, created_at, updated_at, metadata_json, message_count, last_consolidated_seq, revision
             FROM session
             WHERE key = ?
             """,
@@ -368,6 +438,7 @@ class SQLiteSessionManager(SessionManager):
         ).fetchone()
         if row is None:
             return None
+        row = self._repair_session_counts_locked(row)
 
         compactions: list[dict[str, Any]] = []
         for compaction_row in self._conn.execute(
@@ -468,6 +539,10 @@ class SQLiteSessionManager(SessionManager):
         session.checkpoint = MethodType(self._session_checkpoint, session)
         session.append_compaction = MethodType(self._session_append_compaction, session)
         session.clear = MethodType(self._session_clear, session)
+        session.get_message_count = MethodType(self._session_get_message_count, session)
+        session.get_visible_message_count = MethodType(
+            self._session_get_visible_message_count, session
+        )
         session.get_history = MethodType(self._session_get_history, session)
         session.detect_resume_state = MethodType(self._session_detect_resume_state, session)
         setattr(session, "_sqlite_bound", True)
@@ -508,6 +583,7 @@ class SQLiteSessionManager(SessionManager):
                     session,
                     updated_at=now_iso,
                     jsonl_path=str(session._path) if session._path else None,
+                    bump_revision=False,
                 )
                 for seq, entry in enumerate(entries, start=start_seq):
                     columns = self._message_columns(entry, seq=seq, now_iso=now_iso)
@@ -551,7 +627,7 @@ class SQLiteSessionManager(SessionManager):
                 self._conn.execute(
                     """
                     UPDATE session
-                    SET updated_at = ?, message_count = ?
+                    SET updated_at = ?, message_count = ?, revision = revision + 1
                     WHERE key = ?
                     """,
                     (now_iso, start_seq + len(entries), session.key),
@@ -602,6 +678,8 @@ class SQLiteSessionManager(SessionManager):
                     session,
                     updated_at=now_iso,
                     jsonl_path=str(session._path) if session._path else None,
+                    preserve_existing_message_count=True,
+                    bump_revision=False,
                 )
                 self._conn.execute(
                     """
@@ -627,7 +705,7 @@ class SQLiteSessionManager(SessionManager):
                     ),
                 )
                 self._conn.execute(
-                    "UPDATE session SET updated_at = ? WHERE key = ?",
+                    "UPDATE session SET updated_at = ?, revision = revision + 1 WHERE key = ?",
                     (now_iso, session.key),
                 )
                 self._conn.commit()
@@ -679,6 +757,24 @@ class SQLiteSessionManager(SessionManager):
         session._persisted_compactions_sig = session._compactions_signature()
         self._sync_session_tracking(session)
 
+    def _session_get_message_count(self, session: Session) -> int:
+        with self._lock:
+            if self._session_has_local_changes_locked(session):
+                return len(session.messages)
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS count FROM message WHERE session_key = ?",
+                (session.key,),
+            ).fetchone()
+            return int(row["count"]) if row is not None else 0
+
+    def _session_get_visible_message_count(self, session: Session) -> int:
+        with self._lock:
+            if self._session_has_local_changes_locked(session):
+                return Session.get_visible_message_count(session)
+            total_count = session.get_message_count()
+            boundary = self._get_compaction_boundary(session.key)
+            return max(0, total_count - boundary)
+
     def _rewrite_session_locked(
         self,
         session: Session,
@@ -699,6 +795,7 @@ class SQLiteSessionManager(SessionManager):
                 updated_at=now_iso,
                 jsonl_path=jsonl_path,
                 jsonl_migrated_at=jsonl_migrated_at,
+                preserve_existing_message_count=not rewrite_messages,
             )
 
             if rewrite_messages:
@@ -796,14 +893,32 @@ class SQLiteSessionManager(SessionManager):
         last_consolidated: int | None = None,
         jsonl_path: str | None = None,
         jsonl_migrated_at: str | None = None,
+        preserve_existing_message_count: bool = False,
+        bump_revision: bool = True,
     ) -> None:
+        existing = self._conn.execute(
+            "SELECT message_count, revision FROM session WHERE key = ?",
+            (session.key,),
+        ).fetchone()
         created_at = session.created_at.isoformat()
         metadata_json = json.dumps(
             metadata if metadata is not None else session.metadata,
             ensure_ascii=False,
             sort_keys=True,
         )
-        resolved_message_count = len(session.messages) if message_count is None else int(message_count)
+        resolved_message_count: int
+        if message_count is not None:
+            resolved_message_count = int(message_count)
+        elif preserve_existing_message_count:
+            resolved_message_count = (
+                int(existing["message_count"])
+                if existing is not None and existing["message_count"] is not None
+                else len(session.messages)
+            )
+        else:
+            resolved_message_count = len(session.messages)
+        existing_revision = int(existing["revision"]) if existing is not None else 0
+        resolved_revision = existing_revision + 1 if bump_revision else existing_revision
         resolved_last_consolidated = (
             session.last_consolidated
             if last_consolidated is None
@@ -818,16 +933,18 @@ class SQLiteSessionManager(SessionManager):
                 metadata_json,
                 message_count,
                 last_consolidated_seq,
+                revision,
                 storage_version,
                 jsonl_path,
                 jsonl_migrated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             ON CONFLICT(key) DO UPDATE SET
                 updated_at = excluded.updated_at,
                 metadata_json = excluded.metadata_json,
                 message_count = excluded.message_count,
                 last_consolidated_seq = excluded.last_consolidated_seq,
+                revision = excluded.revision,
                 storage_version = excluded.storage_version,
                 jsonl_path = COALESCE(excluded.jsonl_path, session.jsonl_path),
                 jsonl_migrated_at = COALESCE(excluded.jsonl_migrated_at, session.jsonl_migrated_at)
@@ -839,10 +956,65 @@ class SQLiteSessionManager(SessionManager):
                 metadata_json,
                 max(0, resolved_message_count),
                 max(0, resolved_last_consolidated),
+                max(0, resolved_revision),
                 jsonl_path,
                 jsonl_migrated_at,
             ),
         )
+
+    def _repair_session_counts_locked(self, row: sqlite3.Row) -> sqlite3.Row:
+        """Repair derived session counters against canonical message rows."""
+        key = str(row["key"])
+        actual_count_row = self._conn.execute(
+            "SELECT COUNT(*) AS count FROM message WHERE session_key = ?",
+            (key,),
+        ).fetchone()
+        actual_count = int(actual_count_row["count"]) if actual_count_row is not None else 0
+        stored_count = int(row["message_count"]) if row["message_count"] is not None else 0
+        stored_last_consolidated = (
+            int(row["last_consolidated_seq"]) if row["last_consolidated_seq"] is not None else 0
+        )
+        repaired_last_consolidated = max(0, min(stored_last_consolidated, actual_count))
+
+        if stored_count != actual_count or stored_last_consolidated != repaired_last_consolidated:
+            self._conn.execute(
+                """
+                UPDATE session
+                SET message_count = ?, last_consolidated_seq = ?, revision = revision + 1
+                WHERE key = ?
+                """,
+                (actual_count, repaired_last_consolidated, key),
+            )
+            self._conn.execute(
+                """
+                UPDATE compaction
+                SET boundary_seq = ?
+                WHERE session_key = ? AND boundary_seq > ?
+                """,
+                (actual_count, key, actual_count),
+            )
+            self._conn.commit()
+            logger.warning(
+                "Repaired SQLite session counters for {}: message_count {} -> {}, "
+                "last_consolidated {} -> {}",
+                key,
+                stored_count,
+                actual_count,
+                stored_last_consolidated,
+                repaired_last_consolidated,
+            )
+            refreshed = self._conn.execute(
+                """
+                SELECT key, created_at, updated_at, metadata_json, message_count, last_consolidated_seq, revision
+                FROM session
+                WHERE key = ?
+                """,
+                (key,),
+            ).fetchone()
+            if refreshed is not None:
+                return refreshed
+
+        return row
 
     def _messages_changed(self, session: Session) -> bool:
         current_sig = self._messages_signature(session.messages)
@@ -871,10 +1043,80 @@ class SQLiteSessionManager(SessionManager):
     def _sync_session_tracking(self, session: Session) -> None:
         setattr(session, "_sqlite_message_sig", self._messages_signature(session.messages))
         setattr(session, "_sqlite_compaction_sig", session._compactions_signature())
+        setattr(session, "_sqlite_revision", self._session_revision_locked(session.key))
+        setattr(session, "_sqlite_row_fingerprint", self._session_row_fingerprint_locked(session.key))
+
+    def _session_has_local_changes_locked(self, session: Session) -> bool:
+        return (
+            getattr(session, "_sqlite_message_sig", "") != self._messages_signature(session.messages)
+            or getattr(session, "_sqlite_compaction_sig", "") != session._compactions_signature()
+            or session._persisted_metadata_sig != session._metadata_signature()
+            or session._persisted_last_consolidated != session.last_consolidated
+        )
+
+    def _cached_session_needs_reload_locked(self, session: Session) -> bool:
+        persisted_revision = self._session_revision_locked(session.key)
+        cached_revision = getattr(session, "_sqlite_revision", None)
+        if (
+            persisted_revision is not None
+            and cached_revision is not None
+            and persisted_revision != cached_revision
+        ):
+            if self._session_has_local_changes_locked(session):
+                logger.warning(
+                    "Detected external SQLite session revision update for {} but kept cached state "
+                    "because the in-memory session has local changes",
+                    session.key,
+                )
+                return False
+            return True
+        persisted = self._session_row_fingerprint_locked(session.key)
+        cached = getattr(session, "_sqlite_row_fingerprint", None)
+        if persisted is None or cached is None or persisted == cached:
+            return False
+        if self._session_has_local_changes_locked(session):
+            logger.warning(
+                "Detected external SQLite session update for {} but kept cached state "
+                "because the in-memory session has local changes",
+                session.key,
+            )
+            return False
+        return True
+
+    def _session_revision_locked(self, key: str) -> int | None:
+        row = self._conn.execute(
+            "SELECT revision FROM session WHERE key = ?",
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return int(row["revision"]) if row["revision"] is not None else 0
+
+    def _session_row_fingerprint_locked(self, key: str) -> tuple[str, int, int] | None:
+        row = self._conn.execute(
+            """
+            SELECT updated_at, message_count, last_consolidated_seq
+            FROM session
+            WHERE key = ?
+            """,
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return (
+            str(row["updated_at"] or ""),
+            int(row["message_count"] or 0),
+            int(row["last_consolidated_seq"] or 0),
+        )
 
     @staticmethod
     def _messages_signature(messages: list[dict[str, Any]]) -> str:
         if isinstance(messages, LazyMessageList):
+            if messages.is_loaded:
+                try:
+                    return json.dumps(list(messages), ensure_ascii=False, sort_keys=True)
+                except TypeError:
+                    return repr(list(messages))
             return messages.signature()
         try:
             return json.dumps(messages, ensure_ascii=False, sort_keys=True)

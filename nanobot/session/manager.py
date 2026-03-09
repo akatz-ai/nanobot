@@ -509,6 +509,16 @@ class Session:
                 len(self.messages),
             )
             self.last_consolidated = len(self.messages)
+
+    def get_message_count(self) -> int:
+        """Return total persisted/in-memory message count for this session."""
+        return len(self.messages)
+
+    def get_visible_message_count(self) -> int:
+        """Return the prompt-visible message count after compaction boundary."""
+        last_compaction = self.get_last_compaction()
+        boundary = last_compaction.first_kept_index if last_compaction else 0
+        return max(0, self.get_message_count() - boundary)
     
     def get_history(
         self,
@@ -860,6 +870,10 @@ class SessionManager:
 
         session.mark_persisted()
         self._cache[session.key] = session
+
+    def save_state(self, session: Session) -> None:
+        """Persist session row/state changes without requiring a history rewrite."""
+        self.save(session)
     
     def save_all(self) -> int:
         """Flush all cached sessions to disk.

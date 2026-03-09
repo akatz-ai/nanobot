@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -20,6 +21,57 @@ def _fetch_all(db_path: Path, query: str, params: tuple[Any, ...] = ()) -> list[
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(query, params).fetchall()
+
+
+def _insert_message_rows(
+    db_path: Path,
+    *,
+    session_key: str,
+    start_seq: int,
+    count: int,
+) -> None:
+    now = datetime.now().isoformat()
+    with sqlite3.connect(db_path) as conn:
+        for seq in range(start_seq, start_seq + count):
+            payload = {"role": "user", "content": f"ext-{seq}", "timestamp": now}
+            conn.execute(
+                """
+                INSERT INTO message (
+                    session_key,
+                    seq,
+                    role,
+                    raw_json,
+                    timestamp,
+                    tool_call_id,
+                    tool_name,
+                    has_tool_calls,
+                    pruned_at,
+                    original_content_chars,
+                    pruned_tokens_saved,
+                    approx_tokens,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_key,
+                    seq,
+                    "user",
+                    json.dumps(payload),
+                    now,
+                    None,
+                    None,
+                    0,
+                    None,
+                    None,
+                    None,
+                    None,
+                    now,
+                    now,
+                ),
+            )
+        conn.commit()
 
 
 def _populate_basic(session) -> None:
@@ -614,3 +666,226 @@ def test_rewrite_does_not_destroy_unloaded_lazy_messages(sqlite_manager: SQLiteS
     # Hydrate and verify content
     assert final.messages[0]["content"] == "message 0"
     assert final.messages[49]["content"] == "message 49"
+
+
+def test_save_all_skips_clean_cached_sessions_and_preserves_external_message_count(
+    tmp_path: Path,
+) -> None:
+    key = "cli:stale-clean"
+    writer = SQLiteSessionManager(tmp_path)
+    session = writer.get_or_create(key)
+    session.checkpoint([{"role": "user", "content": f"msg-{i}"} for i in range(5)])
+
+    stale_manager = SQLiteSessionManager(tmp_path)
+    stale = stale_manager.get_or_create(key)
+    assert isinstance(stale.messages, LazyMessageList)
+    assert not stale.messages.is_loaded
+    assert len(stale.messages) == 5
+
+    _insert_message_rows(stale_manager.db_path, session_key=key, start_seq=5, count=15)
+    with sqlite3.connect(stale_manager.db_path) as conn:
+        conn.execute(
+            "UPDATE session SET message_count = ?, updated_at = ? WHERE key = ?",
+            (20, datetime.now().isoformat(), key),
+        )
+        conn.commit()
+
+    stale_manager.save_all()
+
+    row = _fetch_all(
+        stale_manager.db_path,
+        """
+        SELECT message_count, (SELECT COUNT(*) FROM message WHERE session_key = ?) AS actual_count
+        FROM session
+        WHERE key = ?
+        """,
+        (key, key),
+    )[0]
+
+    assert row["message_count"] == 20
+    assert row["actual_count"] == 20
+
+
+def test_get_or_create_repairs_message_count_drift_from_actual_rows(
+    tmp_path: Path,
+) -> None:
+    key = "cli:repair-drift"
+    manager = SQLiteSessionManager(tmp_path)
+    session = manager.get_or_create(key)
+    session.checkpoint([{"role": "user", "content": f"msg-{i}"} for i in range(5)])
+
+    _insert_message_rows(manager.db_path, session_key=key, start_seq=5, count=15)
+    with sqlite3.connect(manager.db_path) as conn:
+        conn.execute(
+            "UPDATE session SET message_count = ?, last_consolidated_seq = ? WHERE key = ?",
+            (5, 99, key),
+        )
+        conn.commit()
+
+    manager.invalidate(key)
+    loaded = manager.get_or_create(key)
+    history, _ = loaded.get_history(max_messages=max(1, len(loaded.messages)), prune_tool_results=False)
+    row = _fetch_all(
+        manager.db_path,
+        "SELECT message_count, last_consolidated_seq FROM session WHERE key = ?",
+        (key,),
+    )[0]
+
+    assert isinstance(loaded.messages, LazyMessageList)
+    assert not loaded.messages.is_loaded
+    assert len(loaded.messages) == 20
+    assert len(history) == 20
+    assert row["message_count"] == 20
+    assert row["last_consolidated_seq"] == 20
+
+
+def test_get_or_create_reloads_clean_cached_session_when_db_fingerprint_changes(
+    tmp_path: Path,
+) -> None:
+    key = "cli:reload-clean-cache"
+    manager_a = SQLiteSessionManager(tmp_path)
+    manager_b = SQLiteSessionManager(tmp_path)
+
+    session_a = manager_a.get_or_create(key)
+    session_a.checkpoint([{"role": "user", "content": "u0"}, {"role": "assistant", "content": "a0"}])
+
+    cached_b = manager_b.get_or_create(key)
+    assert isinstance(cached_b.messages, LazyMessageList)
+    assert len(cached_b.messages) == 2
+
+    session_a.checkpoint([{"role": "user", "content": "u1"}, {"role": "assistant", "content": "a1"}])
+
+    refreshed_b = manager_b.get_or_create(key)
+    history, _ = refreshed_b.get_history(max_messages=max(1, len(refreshed_b.messages)), prune_tool_results=False)
+    revision = _fetch_all(
+        manager_a.db_path,
+        "SELECT revision FROM session WHERE key = ?",
+        (key,),
+    )[0]["revision"]
+
+    assert refreshed_b is not cached_b
+    assert len(refreshed_b.messages) == 4
+    assert [msg["content"] for msg in history] == ["u0", "a0", "u1", "a1"]
+    assert getattr(refreshed_b, "_sqlite_revision", None) == revision
+
+
+def test_sqlite_session_count_helpers_use_visible_window_after_compaction(
+    tmp_path: Path,
+) -> None:
+    key = "cli:count-helpers"
+    manager = SQLiteSessionManager(tmp_path)
+    session = manager.get_or_create(key)
+    session.checkpoint(
+        [{"role": "user" if idx % 2 == 0 else "assistant", "content": f"msg-{idx}"} for idx in range(20)]
+    )
+    session.append_compaction(
+        summary="summary",
+        first_kept_index=12,
+        tokens_before=100,
+        file_ops={"read_files": [], "modified_files": []},
+    )
+
+    manager.invalidate(key)
+    loaded = manager.get_or_create(key)
+
+    assert loaded.get_message_count() == 20
+    assert loaded.get_visible_message_count() == 8
+
+
+def test_sqlite_session_revision_increments_on_persisted_mutations(
+    tmp_path: Path,
+) -> None:
+    key = "cli:revision"
+    manager = SQLiteSessionManager(tmp_path)
+    session = manager.get_or_create(key)
+
+    initial_revision = _fetch_all(
+        manager.db_path,
+        "SELECT revision FROM session WHERE key = ?",
+        (key,),
+    )[0]["revision"]
+
+    session.checkpoint([{"role": "user", "content": "u0"}])
+    after_checkpoint = _fetch_all(
+        manager.db_path,
+        "SELECT revision FROM session WHERE key = ?",
+        (key,),
+    )[0]["revision"]
+
+    session.metadata["tag"] = "x"
+    manager.save(session)
+    after_metadata_save = _fetch_all(
+        manager.db_path,
+        "SELECT revision FROM session WHERE key = ?",
+        (key,),
+    )[0]["revision"]
+
+    session.append_compaction(
+        summary="summary",
+        first_kept_index=1,
+        tokens_before=50,
+        file_ops={"read_files": [], "modified_files": []},
+    )
+    after_compaction = _fetch_all(
+        manager.db_path,
+        "SELECT revision FROM session WHERE key = ?",
+        (key,),
+    )[0]["revision"]
+
+    assert after_checkpoint > initial_revision
+    assert after_metadata_save > after_checkpoint
+    assert after_compaction > after_metadata_save
+
+
+def test_save_state_persists_metadata_and_cursor_without_rewriting_messages(
+    tmp_path: Path,
+) -> None:
+    key = "cli:save-state"
+    manager = SQLiteSessionManager(tmp_path)
+    session = manager.get_or_create(key)
+    session.checkpoint([{"role": "user", "content": f"msg-{i}"} for i in range(4)])
+    baseline_revision = _fetch_all(
+        manager.db_path,
+        "SELECT revision, message_count FROM session WHERE key = ?",
+        (key,),
+    )[0]
+
+    session.metadata["flag"] = "on"
+    session.last_consolidated = 3
+    manager.save_state(session)
+
+    row = _fetch_all(
+        manager.db_path,
+        "SELECT revision, message_count, last_consolidated_seq, metadata_json FROM session WHERE key = ?",
+        (key,),
+    )[0]
+    messages = _fetch_all(
+        manager.db_path,
+        "SELECT COUNT(*) AS count FROM message WHERE session_key = ?",
+        (key,),
+    )[0]
+
+    assert row["message_count"] == 4
+    assert messages["count"] == 4
+    assert row["last_consolidated_seq"] == 3
+    assert json.loads(row["metadata_json"])["flag"] == "on"
+    assert row["revision"] > baseline_revision["revision"]
+
+
+def test_save_state_falls_back_to_full_save_when_messages_changed(
+    tmp_path: Path,
+) -> None:
+    key = "cli:save-state-fallback"
+    manager = SQLiteSessionManager(tmp_path)
+    session = manager.get_or_create(key)
+    session.checkpoint([{"role": "user", "content": "before"}])
+
+    manager.invalidate(key)
+    loaded = manager.get_or_create(key)
+    loaded.messages[0]["content"] = "after"
+
+    manager.save_state(loaded)
+
+    manager.invalidate(key)
+    reloaded = manager.get_or_create(key)
+    assert reloaded.messages[0]["content"] == "after"

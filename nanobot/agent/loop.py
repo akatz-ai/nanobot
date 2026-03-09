@@ -921,7 +921,7 @@ class AgentLoop:
                         logger.exception("MEMORY.md compaction failed (non-fatal)")
 
                     self._refresh_estimated_token_snapshot(session)
-                    self.sessions.save(session)
+                    self.sessions.save_state(session)
 
                     compaction_event.set_post_compaction_context(
                         first_kept_index=entry.first_kept_index,
@@ -1030,7 +1030,7 @@ class AgentLoop:
         """Refresh token snapshot from visible prompt window after compaction."""
         context_window = self._get_context_window_size()
         visible_history, _ = session.get_history(
-            max_messages=max(1, len(session.messages)),
+            max_messages=max(1, session.get_visible_message_count()),
             context_window=context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
         )
@@ -1038,7 +1038,7 @@ class AgentLoop:
         self._last_input_tokens[session.key] = estimated_tokens
         session.metadata["usage_snapshot"] = {
             "total_input_tokens": estimated_tokens,
-            "message_index": len(session.messages),
+            "message_index": session.get_message_count(),
             "source": "estimated_visible_history",
         }
 
@@ -1185,7 +1185,7 @@ class AgentLoop:
                     ):
                         _overflow_retry_used = True
                         visible_history, _ = session.get_history(
-                            max_messages=max(1, len(session.messages)),
+                            max_messages=max(1, session.get_visible_message_count()),
                             context_window=self._get_context_window_size(),
                             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
                         )
@@ -1224,7 +1224,7 @@ class AgentLoop:
                 ):
                     _overflow_retry_used = True
                     visible_history, _ = session.get_history(
-                        max_messages=max(1, len(session.messages)),
+                        max_messages=max(1, session.get_visible_message_count()),
                         context_window=self._get_context_window_size(),
                         protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
                     )
@@ -1264,7 +1264,7 @@ class AgentLoop:
                         self._last_input_tokens[session.key] = total_input
                         session.metadata["usage_snapshot"] = {
                             "total_input_tokens": int(total_input),
-                            "message_index": len(session.messages),
+                            "message_index": session.get_message_count(),
                         }
                         context_window = self._get_context_window_size()
                         utilization = round(total_input / context_window * 100, 1) if context_window else 0
@@ -1594,7 +1594,7 @@ class AgentLoop:
         context_window = self._get_context_window_size()
         def _build_resume_prompt(trim_if_needed: bool) -> list[dict[str, Any]]:
             history, _ = session.get_history(
-                max_messages=max(1, len(session.messages)),
+                max_messages=max(1, session.get_visible_message_count()),
                 context_window=context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
@@ -1617,7 +1617,7 @@ class AgentLoop:
             build_messages=_build_resume_prompt,
         )
         _, prune_result = session.get_history(
-            max_messages=max(1, len(session.messages)),
+            max_messages=max(1, session.get_visible_message_count()),
             context_window=context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
         )
@@ -1625,7 +1625,7 @@ class AgentLoop:
             built_messages=initial_messages,
             memory_context=None,
             resume_notice=self._RESUME_SYSTEM_MESSAGE,
-            user_message_index=len(session.messages),
+            user_message_index=session.get_message_count(),
             prune_result=prune_result,
         )
         self._get_usage_logger(session).new_turn()
@@ -1637,7 +1637,7 @@ class AgentLoop:
         )
 
         self._save_turn(session, all_msgs, len(initial_messages))
-        self.sessions.save(session)
+        self.sessions.save_state(session)
 
         suppress_final_reply = False
         if message_tool := self.tools.get("message"):
@@ -1804,13 +1804,13 @@ class AgentLoop:
             memory_context = await self._retrieve_memory_context(session, msg.content)
             context_window = self._get_context_window_size()
             history, prune_result = session.get_history(
-                max_messages=max(1, len(session.messages)),
+                max_messages=max(1, session.get_visible_message_count()),
                 context_window=context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
             def _build_system_prompt(trim_if_needed: bool) -> list[dict[str, Any]]:
                 history, _ = session.get_history(
-                    max_messages=max(1, len(session.messages)),
+                    max_messages=max(1, session.get_visible_message_count()),
                     context_window=context_window,
                     protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
                 )
@@ -1834,7 +1834,7 @@ class AgentLoop:
                 build_messages=_build_system_prompt,
             )
             history, prune_result = session.get_history(
-                max_messages=max(1, len(session.messages)),
+                max_messages=max(1, session.get_visible_message_count()),
                 context_window=context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
@@ -1842,7 +1842,7 @@ class AgentLoop:
                 built_messages=initial_messages,
                 memory_context=memory_context,
                 resume_notice=resume_notice,
-                user_message_index=len(session.messages),
+                user_message_index=session.get_message_count(),
                 prune_result=prune_result,
             )
             self._get_usage_logger(session).new_turn()
@@ -1854,7 +1854,7 @@ class AgentLoop:
                 checkpoint_start=turn_start,
                 rebuild_messages=lambda: self._build_messages_with_prompt_budget(
                     history=session.get_history(
-                        max_messages=max(1, len(session.messages)),
+                        max_messages=max(1, session.get_visible_message_count()),
                         context_window=context_window,
                         protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
                     )[0],
@@ -1867,7 +1867,7 @@ class AgentLoop:
                 ),
             )
             self._save_turn(session, all_msgs, turn_start)
-            self.sessions.save(session)
+            self.sessions.save_state(session)
             return OutboundMessage(channel=channel, chat_id=chat_id,
                                   content=final_content or "Background task completed.")
 
@@ -1949,12 +1949,12 @@ class AgentLoop:
                 _token_count = int(self._last_input_tokens.get(session.key, 0) or 0)
 
             baseline_messages, _ = session.get_history(
-                max_messages=max(1, len(session.messages)),
+                max_messages=max(1, session.get_visible_message_count()),
                 context_window=_context_window,
                 prune_tool_results=False,
             )
             pressure_messages, _ = session.get_history(
-                max_messages=max(1, len(session.messages)),
+                max_messages=max(1, session.get_visible_message_count()),
                 context_window=_context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
@@ -1981,7 +1981,7 @@ class AgentLoop:
                 session.key,
                 _token_count,
                 threshold,
-                len(session.messages),
+                session.get_message_count(),
                 len(pressure_messages),
             )
             if _needs_compaction:
@@ -2033,7 +2033,7 @@ class AgentLoop:
                     )
                 )
         if legacy_present:
-            self.sessions.save(session)
+            self.sessions.save_state(session)
 
         if pending_events:
             delivered_text = self._build_inbox_delivery(pending_events)
@@ -2049,13 +2049,13 @@ class AgentLoop:
 
         memory_context = await self._retrieve_memory_context(session, msg.content)
         history, prune_result = session.get_history(
-            max_messages=max(1, len(session.messages)),
+            max_messages=max(1, session.get_visible_message_count()),
             context_window=_context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
         )
         def _build_live_prompt(trim_if_needed: bool) -> list[dict[str, Any]]:
             history, _ = session.get_history(
-                max_messages=max(1, len(session.messages)),
+                max_messages=max(1, session.get_visible_message_count()),
                 context_window=_context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
@@ -2080,7 +2080,7 @@ class AgentLoop:
             build_messages=_build_live_prompt,
         )
         history, prune_result = session.get_history(
-            max_messages=max(1, len(session.messages)),
+            max_messages=max(1, session.get_visible_message_count()),
             context_window=_context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
         )
@@ -2098,7 +2098,7 @@ class AgentLoop:
             built_messages=initial_messages,
             memory_context=memory_context,
             resume_notice=resume_notice,
-            user_message_index=len(session.messages),
+            user_message_index=session.get_message_count(),
             prune_result=prune_result,
         )
         self._get_usage_logger(session).new_turn()
@@ -2120,7 +2120,7 @@ class AgentLoop:
             checkpoint_start=turn_start,
             rebuild_messages=lambda: self._build_messages_with_prompt_budget(
                 history=session.get_history(
-                    max_messages=max(1, len(session.messages)),
+                    max_messages=max(1, session.get_visible_message_count()),
                     context_window=_context_window,
                     protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
                 )[0],
@@ -2137,7 +2137,7 @@ class AgentLoop:
             final_content = "I've completed processing but have no response to give."
 
         self._save_turn(session, all_msgs, turn_start)
-        self.sessions.save(session)
+        self.sessions.save_state(session)
 
         suppress_final_reply = False
         if message_tool := self.tools.get("message"):
@@ -2513,7 +2513,7 @@ class AgentLoop:
                                     compaction_event_id=compaction_event_id,
                                 )
                                 session.last_consolidated = batch_end
-                                self.sessions.save(session)
+                                self.sessions.save_state(session)
                                 continue
 
                             batch_entries = getattr(result, "entries", None)
@@ -2551,7 +2551,7 @@ class AgentLoop:
 
                             session.last_consolidated = batch_end
                             # Persist per-batch checkpoint so failures are resumable.
-                            self.sessions.save(session)
+                            self.sessions.save_state(session)
                             completed_batches += 1
 
                         if accumulated_entries and hasattr(self._memory_module.hybrid, "rewrite_memory_md"):

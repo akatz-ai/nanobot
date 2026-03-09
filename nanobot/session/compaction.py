@@ -791,7 +791,7 @@ async def compact_session(
     if plan.summary_end <= plan.summary_start:
         return None
 
-    summary_messages = list(session.messages[plan.summary_start:plan.summary_end])
+    summary_messages = session.get_messages_slice(plan.summary_start, plan.summary_end)
     try:
         summary = await generate_compaction_summary(
             summary_messages,
@@ -801,9 +801,10 @@ async def compact_session(
         )
         if plan.is_split_turn and plan.turn_start_index is not None:
             if plan.turn_start_index < plan.first_kept_index:
-                split_prefix_messages = session.messages[
-                    plan.turn_start_index: plan.first_kept_index
-                ]
+                split_prefix_messages = session.get_messages_slice(
+                    plan.turn_start_index,
+                    plan.first_kept_index,
+                )
                 split_prefix = await generate_turn_prefix_summary(
                     split_prefix_messages,
                     provider,

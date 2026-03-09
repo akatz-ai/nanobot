@@ -792,6 +792,68 @@ def test_sqlite_session_count_helpers_use_visible_window_after_compaction(
     assert loaded.get_visible_message_count() == 8
 
 
+def test_sqlite_visible_bounds_and_slices_do_not_force_full_hydration(
+    tmp_path: Path,
+) -> None:
+    key = "cli:visible-slice"
+    manager = SQLiteSessionManager(tmp_path)
+    session = manager.get_or_create(key)
+    session.checkpoint(
+        [{"role": "user" if idx % 2 == 0 else "assistant", "content": f"msg-{idx}"} for idx in range(20)]
+    )
+    session.append_compaction(
+        summary="summary",
+        first_kept_index=12,
+        tokens_before=100,
+        file_ops={"read_files": [], "modified_files": []},
+    )
+
+    manager.invalidate(key)
+    loaded = manager.get_or_create(key)
+
+    assert isinstance(loaded.messages, LazyMessageList)
+    assert not loaded.messages.is_loaded
+    assert loaded.get_visible_bounds() == (12, 20)
+    assert loaded.get_messages_slice(12, 15) == [
+        {"role": "user", "content": "msg-12", "timestamp": loaded.get_message_at(12)["timestamp"]},
+        {"role": "assistant", "content": "msg-13", "timestamp": loaded.get_message_at(13)["timestamp"]},
+        {"role": "user", "content": "msg-14", "timestamp": loaded.get_message_at(14)["timestamp"]},
+    ]
+    assert not loaded.messages.is_loaded
+
+
+def test_sqlite_get_message_at_returns_exact_index_only(
+    tmp_path: Path,
+) -> None:
+    key = "cli:exact-index"
+    manager = SQLiteSessionManager(tmp_path)
+    session = manager.get_or_create(key)
+    session.checkpoint(
+        [{"role": "user" if idx % 2 == 0 else "assistant", "content": f"msg-{idx}"} for idx in range(6)]
+    )
+
+    row = _fetch_all(
+        manager.db_path,
+        "SELECT raw_json FROM message WHERE session_key = ? AND seq = 3",
+        (key,),
+    )[0]
+    payload = json.loads(row["raw_json"])
+    payload["role"] = "corrupted"
+    with sqlite3.connect(manager.db_path) as conn:
+        conn.execute(
+            "UPDATE message SET raw_json = ? WHERE session_key = ? AND seq = 3",
+            (json.dumps(payload), key),
+        )
+        conn.commit()
+
+    manager.invalidate(key)
+    loaded = manager.get_or_create(key)
+
+    assert loaded.get_message_at(2)["content"] == "msg-2"
+    assert loaded.get_message_at(3)["role"] == "corrupted"
+    assert loaded.get_message_at(10) is None
+
+
 def test_sqlite_session_revision_increments_on_persisted_mutations(
     tmp_path: Path,
 ) -> None:

@@ -6,12 +6,12 @@ title: "Compaction Orchestration V2 \u2014 explicit cut plans, persisted batch s
 status: active
 priority: 1
 created_at: '2026-03-09T06:05:04Z'
-updated_at: '2026-03-09T06:16:27Z'
+updated_at: '2026-03-09T06:27:33Z'
 ---
 
 ## Tasks
 - [x] compaction-orchestration-v2.0 Persist explicit compaction plan metadata (summary range, extraction range, cut-point type) as first-class state {claim_by=codex@/data/projects/nanobot claim_at=2026-03-09T06:14:14Z}
-- [>] compaction-orchestration-v2.1 Make compaction/extraction failure semantics explicit and resumable without cursor drift {deps=[compaction-orchestration-v2.0] claim_by=codex@/data/projects/nanobot claim_at=2026-03-09T06:14:14Z}
-- [>] compaction-orchestration-v2.2 Add stable query/build helpers for compaction-visible history independent of Session.messages length {deps=[compaction-orchestration-v2.1] claim_by=codex@/data/projects/nanobot claim_at=2026-03-09T06:14:14Z}
+- [x] compaction-orchestration-v2.1 Make compaction/extraction failure semantics explicit and resumable without cursor drift {deps=[compaction-orchestration-v2.0] claim_by=codex@/data/projects/nanobot claim_at=2026-03-09T06:14:14Z}
+- [x] compaction-orchestration-v2.2 Add stable query/build helpers for compaction-visible history independent of Session.messages length {deps=[compaction-orchestration-v2.1] claim_by=codex@/data/projects/nanobot claim_at=2026-03-09T06:14:14Z}
 
 ## Notes

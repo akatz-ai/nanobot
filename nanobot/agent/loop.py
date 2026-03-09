@@ -523,8 +523,9 @@ class AgentLoop:
         try:
             index = self._get_evidence_index(session)
             ts = None
-            if message_index < len(session.messages):
-                ts = session.messages[message_index].get("timestamp")
+            message = session.get_message_at(message_index)
+            if message is not None:
+                ts = message.get("timestamp")
             index.add(
                 message_index=message_index,
                 tool_name=tool_name,
@@ -838,12 +839,13 @@ class AgentLoop:
                 previous_boundary = previous_entry.first_kept_index if previous_entry else 0
 
                 memory_md_chars = len(self.context.memory.read_long_term() or "")
+                visible_start, visible_end = session.get_visible_bounds()
                 compaction_event.set_pre_compaction_context(
                     system_prompt_chars=len(self.context.build_system_prompt() or ""),
                     memory_md_chars=memory_md_chars,
                     history_chars=0,
-                    conversation_messages=max(0, len(session.messages) - previous_boundary),
-                    conversation_start_index=previous_boundary,
+                    conversation_messages=max(0, visible_end - visible_start),
+                    conversation_start_index=visible_start,
                 )
 
                 if input_tokens > 0:
@@ -884,8 +886,9 @@ class AgentLoop:
                         extract_end = int(extract_end_raw)
                     except (TypeError, ValueError):
                         extract_end = entry.first_kept_index
-                    extract_start = max(0, min(extract_start, len(session.messages)))
-                    extract_end = max(extract_start, min(extract_end, len(session.messages)))
+                    total_messages = session.get_message_count()
+                    extract_start = max(0, min(extract_start, total_messages))
+                    extract_end = max(extract_start, min(extract_end, total_messages))
 
                     extraction_ok = True
                     self._active_compaction_event = compaction_event
@@ -927,7 +930,7 @@ class AgentLoop:
                         first_kept_index=entry.first_kept_index,
                         new_last_consolidated=session.last_consolidated,
                         keep_count=self._CONSOLIDATION_KEEP_COUNT,
-                        visible_messages=max(0, len(session.messages) - entry.first_kept_index),
+                        visible_messages=session.get_visible_message_count(),
                         total_items_extracted=compaction_event.data["result"].get("total_items", 0)
                         if compaction_event.data.get("result")
                         else 0,
@@ -1943,7 +1946,7 @@ class AgentLoop:
             self._consolidating.add(session.key)
             try:
                 async with lock:
-                    snapshot = list(session.messages)
+                    snapshot = session.get_messages_slice()
                     if snapshot:
                         previous = session.get_last_compaction()
                         previous_summary = previous.summary if previous else None
@@ -2398,8 +2401,9 @@ class AgentLoop:
                 except (TypeError, ValueError):
                     explicit_range = None
                 else:
-                    start = max(0, min(start, len(session.messages)))
-                    end = max(start, min(end, len(session.messages)))
+                    total_messages = session.get_message_count()
+                    start = max(0, min(start, total_messages))
+                    end = max(start, min(end, total_messages))
                     if end > start:
                         explicit_range = (start, end)
 
@@ -2413,7 +2417,7 @@ class AgentLoop:
                         "Hybrid consolidation for {}: archive_all={}, keep_count={}, "
                         "total_messages={}, last_consolidated={}",
                         session.key, archive_all, keep_count,
-                        len(session.messages), session.last_consolidated,
+                        session.get_message_count(), session.last_consolidated,
                     )
                     if not archive_all:
                         if explicit_range is not None:
@@ -2425,19 +2429,20 @@ class AgentLoop:
                                 end_index,
                             )
                         else:
-                            if len(session.messages) <= keep_count:
+                            total_messages = session.get_message_count()
+                            if total_messages <= keep_count:
                                 logger.info(
                                     "Hybrid consolidation no-op: total_messages ({}) <= keep_count ({})",
-                                    len(session.messages), keep_count,
+                                    total_messages, keep_count,
                                 )
                                 return True
-                            if len(session.messages) - session.last_consolidated <= 0:
+                            if total_messages - session.last_consolidated <= 0:
                                 logger.info(
                                     "Hybrid consolidation no-op: nothing unconsolidated",
                                 )
                                 return True
                             start_index = session.last_consolidated
-                            end_index = len(session.messages) - keep_count
+                            end_index = total_messages - keep_count
                         if end_index <= start_index:
                             logger.info(
                                 "Hybrid consolidation no-op: end_index ({}) <= start_index ({})",
@@ -2652,7 +2657,7 @@ class AgentLoop:
                         logger.info(
                             "Hybrid memory consolidation done: {} messages, batches={}, skipped={}, "
                             "last_consolidated={}{}",
-                            len(session.messages),
+                            session.get_message_count(),
                             completed_batches,
                             skipped_batches,
                             session.last_consolidated,
@@ -2661,7 +2666,7 @@ class AgentLoop:
                         return True
                     else:
                         start_index = 0
-                        end_index = len(session.messages)
+                        end_index = session.get_message_count()
                         target_last_consolidated = 0
 
                     logger.info(
@@ -2715,7 +2720,7 @@ class AgentLoop:
                     )
                     logger.info(
                         "Hybrid memory consolidation done: {} messages, last_consolidated={}",
-                        len(session.messages),
+                        session.get_message_count(),
                         session.last_consolidated,
                     )
                     return True
@@ -2726,24 +2731,25 @@ class AgentLoop:
             graph_window_messages: list[dict[str, Any]] = []
             if self._memory_module and self._memory_module.consolidator:
                 if archive_all:
-                    graph_window_messages = list(session.messages)
+                    graph_window_messages = session.get_messages_slice()
                 elif explicit_range is not None:
                     start_index, end_index = explicit_range
-                    graph_window_messages = list(session.messages[start_index:end_index])
+                    graph_window_messages = session.get_messages_slice(start_index, end_index)
                 else:
                     keep_count = self._CONSOLIDATION_KEEP_COUNT
-                    if len(session.messages) > keep_count and len(session.messages) > session.last_consolidated:
+                    total_messages = session.get_message_count()
+                    if total_messages > keep_count and total_messages > session.last_consolidated:
                         start_index = session.last_consolidated
-                        end_index = len(session.messages) - keep_count
+                        end_index = total_messages - keep_count
                         if end_index > start_index:
-                            graph_window_messages = list(session.messages[start_index:end_index])
+                            graph_window_messages = session.get_messages_slice(start_index, end_index)
 
             if explicit_range is not None and not archive_all:
                 start_index, end_index = explicit_range
                 if end_index <= start_index:
                     return True
                 temp_session = Session(key=session.key)
-                temp_session.messages = list(session.messages[start_index:end_index])
+                temp_session.messages = session.get_messages_slice(start_index, end_index)
                 success = await MemoryStore(self.workspace).consolidate(
                     temp_session,
                     self.provider,

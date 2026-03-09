@@ -521,6 +521,31 @@ class Session:
         last_compaction = self.get_last_compaction()
         boundary = last_compaction.first_kept_index if last_compaction else 0
         return max(0, self.get_message_count() - boundary)
+
+    def get_visible_bounds(self) -> tuple[int, int]:
+        """Return ``(start, end)`` bounds for the currently visible session window."""
+        total = self.get_message_count()
+        last_compaction = self.get_last_compaction()
+        boundary = last_compaction.first_kept_index if last_compaction else 0
+        start = max(0, min(boundary, total))
+        return start, total
+
+    def get_messages_slice(
+        self,
+        start: int = 0,
+        end: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return a concrete slice of persisted/in-memory messages."""
+        return list(self.messages[start:end])
+
+    def get_message_at(self, index: int) -> dict[str, Any] | None:
+        """Return a single message by absolute session index."""
+        if index < 0:
+            return None
+        try:
+            return self.messages[index]
+        except IndexError:
+            return None
     
     def get_history(
         self,

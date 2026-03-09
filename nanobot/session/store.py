@@ -696,6 +696,9 @@ class SQLiteSessionManager(SessionManager):
         session.get_visible_message_count = MethodType(
             self._session_get_visible_message_count, session
         )
+        session.get_visible_bounds = MethodType(self._session_get_visible_bounds, session)
+        session.get_messages_slice = MethodType(self._session_get_messages_slice, session)
+        session.get_message_at = MethodType(self._session_get_message_at, session)
         session.get_history = MethodType(self._session_get_history, session)
         session.detect_resume_state = MethodType(self._session_detect_resume_state, session)
         setattr(session, "_sqlite_bound", True)
@@ -927,6 +930,81 @@ class SQLiteSessionManager(SessionManager):
             total_count = session.get_message_count()
             boundary = self._get_compaction_boundary(session.key)
             return max(0, total_count - boundary)
+
+    def _session_get_visible_bounds(self, session: Session) -> tuple[int, int]:
+        with self._lock:
+            if self._session_has_local_changes_locked(session):
+                return Session.get_visible_bounds(session)
+            total_count = session.get_message_count()
+            boundary = self._get_compaction_boundary(session.key)
+            start = max(0, min(boundary, total_count))
+            return start, total_count
+
+    def _session_get_messages_slice(
+        self,
+        session: Session,
+        start: int = 0,
+        end: int | None = None,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            if self._session_has_local_changes_locked(session):
+                return Session.get_messages_slice(session, start, end)
+            total_count = session.get_message_count()
+            safe_start = max(0, min(int(start), total_count))
+            safe_end = total_count if end is None else max(safe_start, min(int(end), total_count))
+            if safe_end <= safe_start:
+                return []
+            rows = self._conn.execute(
+                """
+                SELECT raw_json
+                FROM message
+                WHERE session_key = ? AND seq >= ? AND seq < ?
+                ORDER BY seq ASC
+                """,
+                (session.key, safe_start, safe_end),
+            ).fetchall()
+            messages: list[dict[str, Any]] = []
+            for row in rows:
+                raw = row["raw_json"]
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    logger.warning(
+                        "Skipping malformed SQLite message for {} slice lookup: {}",
+                        session.key,
+                        exc,
+                    )
+                    continue
+                if isinstance(payload, dict):
+                    messages.append(payload)
+            return messages
+
+    def _session_get_message_at(self, session: Session, index: int) -> dict[str, Any] | None:
+        if index < 0:
+            return None
+        with self._lock:
+            if self._session_has_local_changes_locked(session):
+                return Session.get_message_at(session, index)
+            row = self._conn.execute(
+                """
+                SELECT raw_json
+                FROM message
+                WHERE session_key = ? AND seq = ?
+                """,
+                (session.key, int(index)),
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                payload = json.loads(row["raw_json"])
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "Skipping malformed SQLite message for {} exact lookup: {}",
+                    session.key,
+                    exc,
+                )
+                return None
+            return payload if isinstance(payload, dict) else None
 
     def _rewrite_session_locked(
         self,

@@ -476,17 +476,39 @@ class Session:
             entry.first_kept_index = clamped_index
             self.compactions[-1] = entry.to_dict()
 
+        # Also clamp last_consolidated to stay within bounds — compaction may
+        # have trimmed the session while last_consolidated still pointed at
+        # the pre-trim message count.
+        if self.last_consolidated > len(self.messages):
+            logger.warning(
+                "Clamped last_consolidated for {}: {} -> {} (messages={})",
+                self.key,
+                self.last_consolidated,
+                len(self.messages),
+                len(self.messages),
+            )
+            self.last_consolidated = len(self.messages)
+
         return entry
 
     def validate_compaction_invariants(self) -> None:
-        """Validate cursor invariants before persistence."""
+        """Validate and repair cursor invariants before persistence."""
         if self.last_consolidated < 0:
-            raise ValueError("last_consolidated must be >= 0")
-        if self.last_consolidated > len(self.messages):
-            raise ValueError(
-                "Invalid last_consolidated="
-                f"{self.last_consolidated} for message_count={len(self.messages)}"
+            logger.warning(
+                "Clamped negative last_consolidated for {}: {} -> 0",
+                self.key,
+                self.last_consolidated,
             )
+            self.last_consolidated = 0
+        if self.last_consolidated > len(self.messages):
+            logger.warning(
+                "Clamped last_consolidated for {} at save: {} -> {} (messages={})",
+                self.key,
+                self.last_consolidated,
+                len(self.messages),
+                len(self.messages),
+            )
+            self.last_consolidated = len(self.messages)
     
     def get_history(
         self,

@@ -145,39 +145,10 @@ def _select_agent_session(profile: Any, session_usage: dict[str, dict[str, Any]]
     )
 
 
-def _channel_pct_bucket(utilization_pct: float) -> int:
-    """Round utilization to a stable 5% bucket for channel-name display."""
-    pct = max(0, min(100, int(utilization_pct * 100)))
-    return min(100, ((pct + 2) // 5) * 5)
-
-
-def _channel_base_name(agent_id: str) -> str:
-    """Build a Discord-safe lowercase base name from an agent id."""
-    chars: list[str] = []
-    last_dash = False
-    for ch in str(agent_id).lower():
-        if ch.isalnum():
-            chars.append(ch)
-            last_dash = False
-            continue
-        if ch in {"-", "_", " ", "."} and not last_dash:
-            chars.append("-")
-            last_dash = True
-    base = "".join(chars).strip("-")
-    return base or "agent"
-
-
-def _channel_display_name(agent_id: str, utilization_pct: float) -> str:
-    """Render the visible Discord channel name with a pct suffix."""
-    base = _channel_base_name(agent_id)
-    suffix = f"-{_channel_pct_bucket(utilization_pct)}pct"
-    max_base_len = max(1, 100 - len(suffix))
-    return f"{base[:max_base_len]}{suffix}"
-
-
 def _channel_topic(agent_id: str, model: str) -> str:
     """Render the Discord topic from the configured model string."""
-    return f"agent {agent_id} · model: {model}"[:1024]
+    _ = agent_id
+    return str(model or "")[:1024]
 
 
 @dataclass
@@ -371,7 +342,6 @@ class SystemStatusDashboard:
         self._task: asyncio.Task | None = None
         self._http: httpx.AsyncClient | None = None
         self._last_status: SystemStatus | None = None
-        self._last_channel_names: dict[str, str] = {}
         self._last_channel_topics: dict[str, str] = {}
 
     # ── Lifecycle ──────────────────────────────────────────────────────
@@ -455,43 +425,33 @@ class SystemStatusDashboard:
             if not agent_status:
                 continue
 
-            desired_name = _channel_display_name(agent_id, agent_status.utilization_pct)
             desired_topic = _channel_topic(agent_id, instance.profile.model or instance.loop.model or "")
-            bucket = _channel_pct_bucket(agent_status.utilization_pct)
             logger.info(
-                "SystemStatusDashboard: agent={} model='{}' tokens={} context_window={} utilization={:.2f}% bucket={} desired_name='{}'",
+                "SystemStatusDashboard: agent={} model='{}' tokens={} context_window={} utilization={:.2f}% topic='{}'",
                 agent_id,
                 instance.profile.model or instance.loop.model or "",
                 agent_status.current_input_tokens,
                 agent_status.context_window,
                 agent_status.utilization_pct * 100,
-                bucket,
-                desired_name,
+                desired_topic,
             )
 
             for channel_id in instance.profile.discord_channels:
-                needs_name = self._last_channel_names.get(channel_id) != desired_name
                 needs_topic = self._last_channel_topics.get(channel_id) != desired_topic
-                if not needs_name and not needs_topic:
+                if not needs_topic:
                     logger.debug(
-                        "SystemStatusDashboard: channel {} already up to date (name='{}')",
+                        "SystemStatusDashboard: channel {} already up to date (topic='{}')",
                         channel_id,
-                        desired_name,
+                        desired_topic,
                     )
                     continue
                 logger.info(
-                    "SystemStatusDashboard: updating channel {} name_changed={} topic_changed={} name='{}' topic='{}'",
+                    "SystemStatusDashboard: updating channel {} topic='{}'",
                     channel_id,
-                    needs_name,
-                    needs_topic,
-                    desired_name,
                     desired_topic,
                 )
-                await self._update_channel(channel_id, name=desired_name if needs_name else None, topic=desired_topic if needs_topic else None)
-                if needs_name:
-                    self._last_channel_names[channel_id] = desired_name
-                if needs_topic:
-                    self._last_channel_topics[channel_id] = desired_topic
+                await self._update_channel(channel_id, topic=desired_topic)
+                self._last_channel_topics[channel_id] = desired_topic
 
     async def _update_channel(self, channel_id: str, *, name: str | None = None, topic: str | None = None) -> None:
         """Patch a Discord channel's name/topic."""

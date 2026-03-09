@@ -1,10 +1,6 @@
 from types import SimpleNamespace
 
-from nanobot.discord.system_status import (
-    _channel_display_name,
-    _channel_topic,
-    collect_system_status,
-)
+from nanobot.discord.system_status import _channel_topic, collect_system_status
 
 
 class _FakeSessions:
@@ -100,11 +96,5 @@ def test_collect_system_status_prefers_higher_live_tokens_over_snapshot():
     assert round(agent.utilization_pct, 2) == 0.30
 
 
-def test_channel_display_name_uses_5pct_bucket_suffix():
-    assert _channel_display_name("nanobot-dev", 0.18) == "nanobot-dev-20pct"
-    assert _channel_display_name("nanobot dev", 0.22) == "nanobot-dev-20pct"
-    assert _channel_display_name("nanobot_dev", 0.24) == "nanobot-dev-25pct"
-
-
-def test_channel_topic_uses_configured_model_string():
-    assert _channel_topic("nanobot-dev", "openai-codex/gpt-5.4") == "agent nanobot-dev · model: openai-codex/gpt-5.4"
+def test_channel_topic_uses_model_string_only():
+    assert _channel_topic("nanobot-dev", "openai-codex/gpt-5.4") == "openai-codex/gpt-5.4"

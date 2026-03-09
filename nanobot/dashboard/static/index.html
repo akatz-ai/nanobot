@@ -821,45 +821,211 @@ function confirmModal({ title, message, confirmText = 'Confirm', cancelText = 'C
 }
 function showAgentMutationModal({ mode, sourceAgent = null }) {
   const isClone = mode === 'clone';
-  const form = html('form', { style: 'display:grid;gap:14px;' });
-  const field = (label, input) => html('label', { style: 'display:grid;gap:6px;font-size:13px;color:var(--text-secondary);' }, [html('span', {}, label), input]);
-  const mkInput = (value = '', placeholder = '') => html('input', { value, placeholder, style: 'width:100%;padding:10px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;color:var(--text-primary);' });
-  const mkTextarea = (value = '', placeholder = '') => html('textarea', { placeholder, style: 'width:100%;min-height:96px;padding:10px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;color:var(--text-primary);resize:vertical;' }, value);
-  const mkCheckbox = (checked = false) => html('input', { type: 'checkbox', checked });
+  const TEMPLATES = [
+    { id: 'researcher', icon: '🔍', name: 'Researcher', desc: 'Deep investigation, source verification, competitive analysis', identity: 'You are a research specialist. You dig deep into topics, cross-reference sources, and deliver actionable intelligence — not surface-level summaries. You\'re skeptical by default and you source everything.', skills: ['memory', 'knowledge-base', 'deep-research'] },
+    { id: 'coder', icon: '💻', name: 'Coder', desc: 'Software development, debugging, code review', identity: 'You are a senior software engineer. You write clean, well-tested code. You read existing code before modifying it, propose changes before implementing when scope is large, and always consider edge cases.', skills: ['memory', 'github', 'codex', 'claude-code'] },
+    { id: 'writer', icon: '✍️', name: 'Writer', desc: 'Content creation, editing, copywriting', identity: 'You are a skilled writer and editor. You craft clear, engaging content tailored to the audience. You pay attention to tone, structure, and flow. You suggest improvements rather than just executing.', skills: ['memory', 'knowledge-base'] },
+    { id: 'assistant', icon: '🤖', name: 'Assistant', desc: 'General-purpose helper for a specific domain', identity: 'You are a helpful, knowledgeable assistant. You provide clear, actionable answers and proactively offer relevant context. You ask clarifying questions when the request is ambiguous.', skills: ['memory', 'knowledge-base', 'github'] },
+    { id: 'custom', icon: '⚡', name: 'Custom', desc: 'Start from scratch with your own identity', identity: '', skills: ['memory'] },
+  ];
+  const KNOWN_MODELS = [
+    { value: '', label: 'Default (inherit from instance)' },
+    { value: 'anthropic-direct/claude-opus-4-6', label: 'Claude Opus 4' },
+    { value: 'anthropic-direct/claude-sonnet-4-6', label: 'Claude Sonnet 4' },
+    { value: 'anthropic-direct/claude-haiku-4-5', label: 'Claude Haiku 4' },
+    { value: 'openai-codex/gpt-5.4', label: 'GPT-5.4 (Codex)' },
+    { value: 'openai/gpt-4.1', label: 'GPT-4.1' },
+    { value: 'openai/o3', label: 'o3' },
+    { value: '_custom', label: '— Custom model ID —' },
+  ];
+  const KNOWN_SKILLS = ['memory', 'knowledge-base', 'github', 'codex', 'claude-code', 'deep-research', 'oracle', 'agent-browser', 'threads', 'image-gen', 'tmux', 'weather'];
 
-  const agentId = mkInput('', isClone ? 'agentshq-dev' : 'researcher');
-  const displayName = mkInput(isClone ? `${sourceAgent?.displayName || sourceAgent?.name || 'Clone'} Copy` : '', 'Display name');
-  const channelName = mkInput('', 'Defaults to agent_id');
-  const model = mkInput(isClone ? '' : '', isClone ? 'Optional override' : 'Optional override');
-  const backgroundModel = mkInput('', 'Optional background model');
-  const systemIdentity = mkTextarea('', isClone ? 'Optional override for cloned agent identity' : 'You are a specialist agent...');
-  const skills = mkInput('', 'comma,separated,skills');
-  const copyHistory = mkCheckbox(true);
-  const copySessions = mkCheckbox(false);
-  if (isClone) {
-    form.appendChild(field('Source Agent', html('div', { className: 'tag mono', style: 'padding:10px 12px;' }, sourceAgent?.name || '')));
+  /* --- helpers --- */
+  const sectionSep = () => html('div', { style: 'border-top:1px solid var(--border-subtle);margin:4px 0;' });
+  const sectionHead = (title, subtitle) => html('div', { style: 'margin-bottom:2px;' }, [
+    html('div', { style: 'font-size:13px;font-weight:600;color:var(--text-primary);' }, title),
+    subtitle ? html('div', { style: 'font-size:11px;color:var(--text-muted);margin-top:2px;' }, subtitle) : null,
+  ]);
+  const fieldWrap = (label, hint, input) => html('div', { style: 'display:grid;gap:5px;' }, [
+    html('label', { style: 'font-size:12px;font-weight:500;color:var(--text-secondary);' }, label),
+    input,
+    hint ? html('div', { style: 'font-size:11px;color:var(--text-muted);line-height:1.4;' }, hint) : null,
+  ]);
+  const mkInput = (value = '', placeholder = '') => html('input', { value, placeholder, style: 'width:100%;padding:9px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:13px;' });
+  const mkTextarea = (value = '', placeholder = '', rows = 4) => html('textarea', { placeholder, rows, style: 'width:100%;padding:10px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);resize:vertical;font-size:13px;line-height:1.5;font-family:inherit;' }, value);
+  const mkSelect = (options, selectedValue = '') => {
+    const sel = html('select', { style: 'width:100%;padding:9px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:13px;cursor:pointer;appearance:auto;' });
+    options.forEach(opt => {
+      const o = html('option', { value: opt.value }, opt.label);
+      if (opt.value === selectedValue) o.selected = true;
+      sel.appendChild(o);
+    });
+    return sel;
+  };
+  const mkCheckbox = (label, checked = false) => {
+    const cb = html('input', { type: 'checkbox', checked, style: 'accent-color:var(--accent-green);width:16px;height:16px;cursor:pointer;' });
+    return html('label', { style: 'display:flex;gap:10px;align-items:center;color:var(--text-secondary);font-size:13px;cursor:pointer;padding:4px 0;' }, [cb, html('span', {}, label)]);
+  };
+
+  /* --- state --- */
+  let selectedSkills = new Set(isClone ? [] : ['memory']);
+  const form = html('form', { style: 'display:grid;gap:16px;' });
+
+  /* --- Template picker (create only) --- */
+  let templateRow = null;
+  if (!isClone) {
+    const cards = TEMPLATES.map(t => {
+      const card = html('div', {
+        style: `display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px 8px;border-radius:10px;border:2px solid var(--border-subtle);cursor:pointer;transition:all 0.15s;min-width:0;text-align:center;`,
+        onClick: () => {
+          templateRow.querySelectorAll('div[data-tid]').forEach(c => c.style.borderColor = 'var(--border-subtle)');
+          card.style.borderColor = 'var(--accent-green)';
+          if (t.id !== 'custom') {
+            agentId.value = t.id;
+            displayName.value = t.name;
+            systemIdentity.value = t.identity;
+          } else {
+            agentId.value = '';
+            displayName.value = '';
+            systemIdentity.value = '';
+          }
+          selectedSkills = new Set(t.skills);
+          renderSkillChips();
+          charCount.textContent = `${systemIdentity.value.length} chars`;
+        },
+      });
+      card.dataset.tid = t.id;
+      card.addEventListener('mouseenter', () => { if (card.style.borderColor !== 'var(--accent-green)') card.style.borderColor = 'var(--border)'; });
+      card.addEventListener('mouseleave', () => { if (card.style.borderColor !== 'var(--accent-green)') card.style.borderColor = 'var(--border-subtle)'; });
+      card.appendChild(html('div', { style: 'font-size:24px;' }, t.icon));
+      card.appendChild(html('div', { style: 'font-size:12px;font-weight:600;color:var(--text-primary);' }, t.name));
+      card.appendChild(html('div', { style: 'font-size:10px;color:var(--text-muted);line-height:1.3;' }, t.desc));
+      return card;
+    });
+    templateRow = html('div', { style: 'display:grid;grid-template-columns:repeat(5,1fr);gap:8px;' }, cards);
   }
-  form.appendChild(field('Agent ID', agentId));
-  form.appendChild(field('Display Name', displayName));
-  form.appendChild(field('Channel Name', channelName));
-  form.appendChild(field('Model', model));
-  form.appendChild(field('Background Model', backgroundModel));
-  form.appendChild(field('System Identity', systemIdentity));
-  form.appendChild(field('Skills', skills));
-  if (isClone) {
-    form.appendChild(html('label', { style: 'display:flex;gap:10px;align-items:center;color:var(--text-secondary);font-size:13px;' }, [copyHistory, html('span', {}, 'Copy daily history')]));
-    form.appendChild(html('label', { style: 'display:flex;gap:10px;align-items:center;color:var(--text-secondary);font-size:13px;' }, [copySessions, html('span', {}, 'Copy session files')]));
+
+  /* --- Source agent preview (clone only) --- */
+  let sourcePreview = null;
+  if (isClone && sourceAgent) {
+    sourcePreview = html('div', { style: 'display:flex;align-items:center;gap:14px;padding:14px 16px;background:var(--bg-hover);border-radius:10px;border:1px solid var(--border-subtle);' }, [
+      html('div', { style: 'font-size:28px;' }, '🤖'),
+      html('div', { style: 'flex:1;min-width:0;' }, [
+        html('div', { style: 'font-size:14px;font-weight:600;color:var(--text-primary);' }, sourceAgent.displayName || sourceAgent.name),
+        html('div', { style: 'font-size:12px;color:var(--text-muted);margin-top:2px;' }, [
+          html('span', { className: 'mono' }, sourceAgent.name),
+          sourceAgent.model ? html('span', { style: 'margin-left:10px;' }, `· ${sourceAgent.model.split('/').pop()}`) : null,
+        ]),
+      ]),
+      html('span', { className: 'pill pill-green', style: 'font-size:10px;' }, 'Source'),
+    ]);
   }
-  const status = html('div', { className: 'card-subtitle', style: 'min-height:20px;' }, '');
-  const submit = html('button', { className: 'btn btn-primary', type: 'submit', style: 'padding:10px 20px;font-weight:600;' }, isClone ? 'Clone Agent' : 'Create Agent');
+
+  /* --- Form fields --- */
+  const agentId = mkInput('', isClone ? 'my-new-agent' : 'researcher');
+  const displayName = mkInput(isClone ? `${sourceAgent?.displayName || sourceAgent?.name || ''} Copy` : '', 'How the agent appears in Discord');
+  const channelName = mkInput('', 'Auto-generated from Agent ID if blank');
+  const modelSelect = mkSelect(KNOWN_MODELS, '');
+  const customModelInput = mkInput('', 'provider/model-name');
+  customModelInput.style.display = 'none';
+  const modelWrapper = html('div', { style: 'display:grid;gap:6px;' }, [modelSelect, customModelInput]);
+  modelSelect.addEventListener('change', () => {
+    customModelInput.style.display = modelSelect.value === '_custom' ? '' : 'none';
+  });
+  const bgModelSelect = mkSelect(KNOWN_MODELS, '');
+  const bgCustomModelInput = mkInput('', 'provider/model-name');
+  bgCustomModelInput.style.display = 'none';
+  const bgModelWrapper = html('div', { style: 'display:grid;gap:6px;' }, [bgModelSelect, bgCustomModelInput]);
+  bgModelSelect.addEventListener('change', () => {
+    bgCustomModelInput.style.display = bgModelSelect.value === '_custom' ? '' : 'none';
+  });
+  const systemIdentity = mkTextarea('', 'Describe who this agent is, what it specializes in, and how it should behave...', 5);
+  const charCount = html('span', { style: 'font-size:11px;color:var(--text-muted);text-align:right;' }, '0 chars');
+  systemIdentity.addEventListener('input', () => { charCount.textContent = `${systemIdentity.value.length} chars`; });
+
+  /* --- Skills chips --- */
+  const skillsContainer = html('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;' });
+  function renderSkillChips() {
+    skillsContainer.innerHTML = '';
+    KNOWN_SKILLS.forEach(sk => {
+      const active = selectedSkills.has(sk);
+      const chip = html('button', {
+        type: 'button',
+        style: `padding:5px 12px;border-radius:20px;font-size:12px;cursor:pointer;transition:all 0.15s;border:1px solid ${active ? 'var(--accent-green)' : 'var(--border)'};background:${active ? 'rgba(74,222,128,0.12)' : 'var(--bg-surface)'};color:${active ? 'var(--accent-green)' : 'var(--text-muted)'};font-weight:${active ? '600' : '400'};`,
+        onClick: () => { active ? selectedSkills.delete(sk) : selectedSkills.add(sk); renderSkillChips(); },
+      }, `${active ? '✓ ' : ''}${sk}`);
+      skillsContainer.appendChild(chip);
+    });
+  }
+  renderSkillChips();
+
+  /* --- Clone options --- */
+  const copyHistoryCb = isClone ? mkCheckbox('Copy daily history files', true) : null;
+  const copySessionsCb = isClone ? mkCheckbox('Copy session conversation files', false) : null;
+
+  /* --- Assemble form --- */
+  if (!isClone && templateRow) {
+    form.appendChild(sectionHead('Start from a template', 'Pick a preset or start custom'));
+    form.appendChild(templateRow);
+    form.appendChild(sectionSep());
+  }
+  if (isClone && sourcePreview) {
+    form.appendChild(sectionHead('Cloning from', 'The new agent will inherit this agent\'s configuration'));
+    form.appendChild(sourcePreview);
+    form.appendChild(sectionSep());
+  }
+
+  form.appendChild(sectionHead('Basics', 'How your agent is identified'));
+  form.appendChild(html('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:12px;' }, [
+    fieldWrap('Agent ID *', 'Unique identifier (lowercase, no spaces)', agentId),
+    fieldWrap('Display Name', 'Shown in Discord messages', displayName),
+  ]));
+  form.appendChild(fieldWrap('Channel Name', 'Discord channel name — defaults to Agent ID', channelName));
+
+  form.appendChild(sectionSep());
+  form.appendChild(sectionHead('Model', isClone ? 'Override the source agent\'s model, or leave default' : 'Which LLM powers this agent'));
+  form.appendChild(html('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:12px;' }, [
+    fieldWrap('Primary Model', 'Used for conversations and complex tasks', modelWrapper),
+    fieldWrap('Background Model', 'Used for memory extraction and background tasks', bgModelWrapper),
+  ]));
+
+  form.appendChild(sectionSep());
+  form.appendChild(sectionHead('Identity', 'Define the agent\'s personality and expertise'));
+  form.appendChild(html('div', { style: 'display:grid;gap:5px;' }, [
+    html('div', { style: 'display:flex;justify-content:space-between;align-items:center;' }, [
+      html('label', { style: 'font-size:12px;font-weight:500;color:var(--text-secondary);' }, 'System Identity'),
+      charCount,
+    ]),
+    systemIdentity,
+    html('div', { style: 'font-size:11px;color:var(--text-muted);line-height:1.4;' }, isClone ? 'Leave blank to inherit the source agent\'s identity' : 'Describe the agent\'s role, personality, and working style. Be specific — generic prompts produce generic agents.'),
+  ]));
+
+  form.appendChild(sectionSep());
+  form.appendChild(sectionHead('Skills', 'Toggle capabilities this agent should have'));
+  form.appendChild(skillsContainer);
+
+  if (isClone) {
+    form.appendChild(sectionSep());
+    form.appendChild(sectionHead('Clone Options', 'What to copy from the source agent'));
+    form.appendChild(copyHistoryCb);
+    form.appendChild(copySessionsCb);
+  }
+
+  /* --- Footer --- */
+  const status = html('div', { style: 'min-height:20px;font-size:12px;color:var(--text-muted);' }, '');
+  const submit = html('button', { className: 'btn btn-primary', type: 'submit', style: 'padding:10px 24px;font-weight:600;font-size:14px;' }, isClone ? '⧉ Clone Agent' : '+ Create Agent');
   const cancel = html('button', { className: 'btn btn-ghost', type: 'button', style: 'padding:10px 20px;', onClick: () => overlay.remove() }, 'Cancel');
+  form.appendChild(sectionSep());
   form.appendChild(status);
   form.appendChild(html('div', { style: 'display:flex;gap:10px;justify-content:flex-end;' }, [cancel, submit]));
 
   const overlay = html('div', { className: 'modal-overlay open', onClick: (e) => { if (e.target === overlay) overlay.remove(); } }, [
-    html('div', { className: 'modal', style: 'width:640px;' }, [
-      html('div', { className: 'modal-header', style: 'margin-bottom:16px;' }, [
-        html('h2', { className: 'modal-title' }, isClone ? `Clone ${sourceAgent?.displayName || sourceAgent?.name || 'Agent'}` : 'Create Agent'),
+    html('div', { className: 'modal', style: 'width:680px;' }, [
+      html('div', { className: 'modal-header', style: 'margin-bottom:8px;' }, [
+        html('div', {}, [
+          html('h2', { className: 'modal-title' }, isClone ? 'Clone Agent' : 'Create New Agent'),
+          html('div', { style: 'font-size:12px;color:var(--text-muted);margin-top:4px;' }, isClone ? 'Create a copy of an existing agent with optional overrides' : 'Add a new AI agent to your network'),
+        ]),
         html('button', { className: 'modal-close', onClick: () => overlay.remove() }, '×'),
       ]),
       form,
@@ -868,21 +1034,25 @@ function showAgentMutationModal({ mode, sourceAgent = null }) {
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
+    if (!agentId.value.trim()) { status.textContent = '⚠ Agent ID is required'; status.style.color = 'var(--accent-amber)'; return; }
     status.textContent = '';
+    status.style.color = 'var(--text-muted)';
     submit.disabled = true;
     submit.textContent = isClone ? 'Cloning…' : 'Creating…';
     try {
+      const resolvedModel = modelSelect.value === '_custom' ? customModelInput.value.trim() : modelSelect.value;
+      const resolvedBgModel = bgModelSelect.value === '_custom' ? bgCustomModelInput.value.trim() : bgModelSelect.value;
       const payload = {
         mode,
         agent_id: agentId.value.trim(),
         display_name: displayName.value.trim() || null,
         channel_name: channelName.value.trim() || null,
-        model: model.value.trim() || null,
-        background_model: backgroundModel.value.trim() || null,
+        model: resolvedModel || null,
+        background_model: resolvedBgModel || null,
         system_identity: systemIdentity.value.trim() || null,
-        skills: skills.value.trim() ? skills.value.split(',').map((s) => s.trim()).filter(Boolean) : null,
-        copy_history: !!copyHistory.checked,
-        copy_sessions: !!copySessions.checked,
+        skills: selectedSkills.size > 0 ? [...selectedSkills] : null,
+        copy_history: isClone ? !!copyHistoryCb.querySelector('input').checked : false,
+        copy_sessions: isClone ? !!copySessionsCb.querySelector('input').checked : false,
       };
       if (isClone) payload.source_agent_id = sourceAgent.name;
       const result = await api('/api/agents', {
@@ -890,13 +1060,15 @@ function showAgentMutationModal({ mode, sourceAgent = null }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      status.textContent = result.warnings?.[0] || `${isClone ? 'Clone' : 'Create'} succeeded.`;
+      status.textContent = `✓ ${isClone ? 'Clone' : 'Agent'} created successfully`;
+      status.style.color = 'var(--accent-green)';
       await rerender();
-      setTimeout(() => overlay.remove(), 600);
+      setTimeout(() => overlay.remove(), 800);
     } catch (error) {
-      status.textContent = error.message;
+      status.textContent = `⚠ ${error.message}`;
+      status.style.color = 'var(--accent-amber)';
       submit.disabled = false;
-      submit.textContent = isClone ? 'Clone Agent' : 'Create Agent';
+      submit.textContent = isClone ? '⧉ Clone Agent' : '+ Create Agent';
     }
   });
 

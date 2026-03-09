@@ -457,12 +457,36 @@ class SystemStatusDashboard:
 
             desired_name = _channel_display_name(agent_id, agent_status.utilization_pct)
             desired_topic = _channel_topic(agent_id, instance.profile.model or instance.loop.model or "")
+            bucket = _channel_pct_bucket(agent_status.utilization_pct)
+            logger.info(
+                "SystemStatusDashboard: agent={} model='{}' tokens={} context_window={} utilization={:.2f}% bucket={} desired_name='{}'",
+                agent_id,
+                instance.profile.model or instance.loop.model or "",
+                agent_status.current_input_tokens,
+                agent_status.context_window,
+                agent_status.utilization_pct * 100,
+                bucket,
+                desired_name,
+            )
 
             for channel_id in instance.profile.discord_channels:
                 needs_name = self._last_channel_names.get(channel_id) != desired_name
                 needs_topic = self._last_channel_topics.get(channel_id) != desired_topic
                 if not needs_name and not needs_topic:
+                    logger.debug(
+                        "SystemStatusDashboard: channel {} already up to date (name='{}')",
+                        channel_id,
+                        desired_name,
+                    )
                     continue
+                logger.info(
+                    "SystemStatusDashboard: updating channel {} name_changed={} topic_changed={} name='{}' topic='{}'",
+                    channel_id,
+                    needs_name,
+                    needs_topic,
+                    desired_name,
+                    desired_topic,
+                )
                 await self._update_channel(channel_id, name=desired_name if needs_name else None, topic=desired_topic if needs_topic else None)
                 if needs_name:
                     self._last_channel_names[channel_id] = desired_name
@@ -494,6 +518,11 @@ class SystemStatusDashboard:
                 await asyncio.sleep(retry_after)
                 return await self._update_channel(channel_id, name=name, topic=topic)
             resp.raise_for_status()
+            logger.info(
+                "SystemStatusDashboard: Updated channel {} payload={}",
+                channel_id,
+                payload,
+            )
         except Exception:
             logger.exception("SystemStatusDashboard: Failed updating channel {}", channel_id)
 

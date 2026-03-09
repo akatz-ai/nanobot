@@ -81,6 +81,11 @@ def build_basic_config(
     config.channels.discord.usage_dashboard.message_id = ""
     config.channels.discord.usage_dashboard.poll_interval_s = 600
 
+    config.channels.discord.codex_usage.enabled = True
+    config.channels.discord.codex_usage.channel_id = channel_ids["codex-usage"]
+    config.channels.discord.codex_usage.message_id = ""
+    config.channels.discord.codex_usage.poll_interval_s = 600
+
     config.channels.discord.system_status.enabled = True
     config.channels.discord.system_status.channel_id = channel_ids["system-status"]
     config.channels.discord.system_status.message_id = ""

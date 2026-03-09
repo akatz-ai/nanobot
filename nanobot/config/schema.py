@@ -85,6 +85,7 @@ class DiscordConfig(Base):
     intents: int = 37377  # GUILDS + GUILD_MESSAGES + DIRECT_MESSAGES + MESSAGE_CONTENT
     guild_id: str = ""  # Guild ID for dynamic channel creation
     usage_dashboard: DiscordUsageDashboardConfig = Field(default_factory=DiscordUsageDashboardConfig)
+    codex_usage: DiscordUsageDashboardConfig = Field(default_factory=DiscordUsageDashboardConfig)
     system_status: DiscordSystemStatusConfig = Field(default_factory=DiscordSystemStatusConfig)
 
 
@@ -441,6 +442,7 @@ class DiscordState(Base):
     """Runtime Discord channel state."""
 
     usage_dashboard: DiscordDashboardState = Field(default_factory=DiscordDashboardState)
+    codex_usage: DiscordDashboardState = Field(default_factory=DiscordDashboardState)
     system_status: DiscordDashboardState = Field(default_factory=DiscordDashboardState)
 
 

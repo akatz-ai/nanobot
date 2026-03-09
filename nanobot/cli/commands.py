@@ -514,6 +514,7 @@ def gateway_worker(
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
     from nanobot.discord.usage_dashboard import UsageDashboard
+    from nanobot.discord.codex_usage_dashboard import CodexUsageDashboard
     from nanobot.discord.system_status import SystemStatusDashboard
     from nanobot.config.state import StateStore
     from nanobot.discord.server_setup import setup_basic_server
@@ -775,6 +776,19 @@ def gateway_worker(
     if usage_dashboard:
         console.print(f"[green]✓[/green] Usage dashboard: channel={dash_cfg.channel_id}, interval={dash_cfg.poll_interval_s}s")
 
+    # Create Codex usage dashboard if configured
+    codex_usage_dashboard: CodexUsageDashboard | None = None
+    codex_cfg = dc.codex_usage
+    if dc.enabled and codex_cfg.enabled and codex_cfg.channel_id and dc.token:
+        codex_usage_dashboard = CodexUsageDashboard(
+            discord_token=dc.token,
+            channel_id=codex_cfg.channel_id,
+            poll_interval_s=codex_cfg.poll_interval_s,
+            message_id=codex_cfg.message_id or None,
+            config_path=str(config_path),
+        )
+        console.print(f"[green]✓[/green] Codex usage: channel={codex_cfg.channel_id}, interval={codex_cfg.poll_interval_s}s")
+
     # Create system status dashboard if configured
     system_status_dashboard: SystemStatusDashboard | None = None
     status_cfg = dc.system_status
@@ -826,6 +840,8 @@ def gateway_worker(
             await heartbeat.start()
             if usage_dashboard:
                 await usage_dashboard.start()
+            if codex_usage_dashboard:
+                await codex_usage_dashboard.start()
             if system_status_dashboard:
                 await system_status_dashboard.start()
             # Fire restart notifications in the background
@@ -839,6 +855,8 @@ def gateway_worker(
         finally:
             if system_status_dashboard:
                 await system_status_dashboard.close()
+            if codex_usage_dashboard:
+                await codex_usage_dashboard.close()
             if usage_dashboard:
                 await usage_dashboard.close()
             heartbeat.stop()

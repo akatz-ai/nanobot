@@ -16,6 +16,7 @@ BASIC_TEXT_CHANNELS: dict[str, tuple[str, str]] = {
     "general": ("AGENTS", "General-purpose AI assistant"),
     "system-status": ("STATUS", "System notifications and health"),
     "claude-usage": ("STATUS", "Claude API usage dashboard widget"),
+    "codex-usage": ("STATUS", "OpenAI Codex usage dashboard widget"),
 }
 GENERAL_WEBHOOK_NAME = "nanobot-general"
 

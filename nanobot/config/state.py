@@ -153,6 +153,13 @@ def _apply_discord_provisioning(merged: dict[str, Any], state: State) -> None:
         usage_cfg.setdefault("pollIntervalS", 600)
         usage_cfg["channelId"] = usage_channel_id
 
+    codex_usage_channel_id = discord.channel_ids.get("codex-usage")
+    if codex_usage_channel_id:
+        codex_usage_cfg = discord_config.setdefault("codexUsage", {})
+        codex_usage_cfg.setdefault("enabled", True)
+        codex_usage_cfg.setdefault("pollIntervalS", 600)
+        codex_usage_cfg["channelId"] = codex_usage_channel_id
+
     status_channel_id = discord.channel_ids.get("system-status")
     if status_channel_id:
         status_cfg = discord_config.setdefault("systemStatus", {})

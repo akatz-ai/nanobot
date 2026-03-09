@@ -1034,6 +1034,10 @@ async def channels():
                 "usage_dashboard",
                 discord_cfg.get("usageDashboard") or discord_cfg.get("usage_dashboard") or {},
             ),
+            "codex_usage": _sanitize_config_value(
+                "codex_usage",
+                discord_cfg.get("codexUsage") or discord_cfg.get("codex_usage") or {},
+            ),
             "system_status": _sanitize_config_value(
                 "system_status",
                 discord_cfg.get("systemStatus") or discord_cfg.get("system_status") or {},

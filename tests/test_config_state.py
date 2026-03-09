@@ -8,6 +8,7 @@ from nanobot.config.schema import AgentProfile
 from nanobot.config.state import StateStore
 from nanobot.discord.system_status import SystemStatusDashboard
 from nanobot.discord.usage_dashboard import UsageDashboard
+from nanobot.discord.codex_usage_dashboard import CodexUsageDashboard
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -49,6 +50,7 @@ def test_load_config_overlays_runtime_state_and_tombstones(tmp_path: Path) -> No
             "channels": {
                 "discord": {
                     "usageDashboard": {"messageId": "msg-usage"},
+                    "codexUsage": {"messageId": "msg-codex"},
                     "systemStatus": {"messageId": "msg-status"},
                 }
             },
@@ -57,6 +59,7 @@ def test_load_config_overlays_runtime_state_and_tombstones(tmp_path: Path) -> No
                     "channelIds": {
                         "general": "chan-general",
                         "claude-usage": "chan-usage",
+                        "codex-usage": "chan-codex",
                         "system-status": "chan-status",
                     },
                     "webhookUrls": {"general": "https://discord.test/webhook"},
@@ -74,6 +77,8 @@ def test_load_config_overlays_runtime_state_and_tombstones(tmp_path: Path) -> No
     assert profiles["general"]["discordWebhookUrl"] == "https://discord.test/webhook"
     assert merged["channels"]["discord"]["usageDashboard"]["channelId"] == "chan-usage"
     assert merged["channels"]["discord"]["usageDashboard"]["messageId"] == "msg-usage"
+    assert merged["channels"]["discord"]["codexUsage"]["channelId"] == "chan-codex"
+    assert merged["channels"]["discord"]["codexUsage"]["messageId"] == "msg-codex"
     assert merged["channels"]["discord"]["systemStatus"]["channelId"] == "chan-status"
     assert merged["channels"]["discord"]["systemStatus"]["messageId"] == "msg-status"
 
@@ -81,6 +86,7 @@ def test_load_config_overlays_runtime_state_and_tombstones(tmp_path: Path) -> No
     assert "helper" in config.agents.profiles
     assert "legacy" not in config.agents.profiles
     assert config.channels.discord.usage_dashboard.message_id == "msg-usage"
+    assert config.channels.discord.codex_usage.message_id == "msg-codex"
 
 
 def test_agent_profile_manager_persists_runtime_state_without_mutating_base(tmp_path: Path) -> None:
@@ -140,6 +146,14 @@ def test_dashboards_persist_message_ids_to_state(tmp_path: Path) -> None:
     usage.message_id = "usage-msg"
     usage._persist_message_id()
 
+    codex = CodexUsageDashboard(
+        discord_token="discord",
+        channel_id="chan-codex",
+        config_path=str(config_path),
+    )
+    codex.message_id = "codex-msg"
+    codex._persist_message_id()
+
     system = SystemStatusDashboard(
         router=SimpleNamespace(),
         discord_token="discord",
@@ -151,4 +165,5 @@ def test_dashboards_persist_message_ids_to_state(tmp_path: Path) -> None:
 
     state_data = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert state_data["channels"]["discord"]["usageDashboard"]["messageId"] == "usage-msg"
+    assert state_data["channels"]["discord"]["codexUsage"]["messageId"] == "codex-msg"
     assert state_data["channels"]["discord"]["systemStatus"]["messageId"] == "status-msg"

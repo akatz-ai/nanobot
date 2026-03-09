@@ -1,0 +1,324 @@
+{
+  "session": "/home/ubuntu/.nanobot/workspace/agents/nanobot-dev/sessions/discord_1476048732343763189.jsonl",
+  "window": {
+    "context_start": 7180,
+    "extract_start": 7190,
+    "extract_end": 7230
+  },
+  "existing_memories_count": 0,
+  "api_usage": {
+    "input_tokens": 4403,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1360,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "api_elapsed": 11.45,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "Evidence index persists across `/new` command — SQLite connection closes but file stays on disk, allowing new sessions to search previous conversation history",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "evidence_index",
+        "/new_command",
+        "session_search"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Phase 2 memory improvement: Extraction Decoupling — decouple memory extraction from compaction events, run on schedule (~20 user turns, /new, idle flush), track extraction watermark in session metadata to prevent silent memory loss from failed extraction batches",
+      "type": "goal",
+      "importance": 0.9,
+      "entities": [
+        "extraction_decoupling",
+        "Phase2",
+        "memory_improvements"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Phase 2 includes smarter routing: extraction prompt categorizes items as shared (memory graph, all agents) vs agent-specific (memory graph, agent-scoped), stopping shared facts from being dumped into MEMORY.md",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "extraction",
+        "shared_facts",
+        "agent_specific",
+        "MEMORY.md"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Phase 2 includes catch-up before compaction: check if extraction is behind before compaction cuts messages, run catch-up pass to prevent compacting away unextracted content",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "extraction",
+        "compaction",
+        "watermark"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Phase 3 memory improvement: MEMORY.md Compaction — after extraction runs, if MEMORY.md exceeds 10K tokens, use Haiku to distill to ~5K tokens, keeping only agent-private preferences and active context, removing shared facts that went to the graph",
+      "type": "goal",
+      "importance": 0.85,
+      "entities": [
+        "MEMORY.md_compaction",
+        "Phase3",
+        "Haiku",
+        "memory_improvements"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Extraction window design: provide Haiku with context overlap (5 messages before watermark, read-only) plus extraction window (new messages to extract from), explicitly marking zones so Haiku knows what not to extract from",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "extraction_pipeline",
+        "context_window",
+        "watermark",
+        "Haiku"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Extraction input token budget capped at ~12K tokens per batch to keep Haiku focused; batch large windows (e.g., 60 messages) into smaller chunks with overlapping context",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "extraction_pipeline",
+        "token_budget",
+        "batching"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Extraction deduplication: use deterministic code with cosine similarity thresholds (0.85 min, 0.95 for reinforcement) to match extracted items against memory graph, supporting add/reinforce/supersede/relate actions based on similarity and recency",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "deduplication",
+        "memory_graph",
+        "cosine_similarity",
+        "extraction"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Extraction watermark only advances on full batch success; on any failure (LLM call, JSON parsing, graph writes), watermark stays put for retry to prevent data loss",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "extraction_watermark",
+        "error_handling",
+        "reliability"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Haiku will be given awareness of existing memory graph contents during extraction to provide context about what is already known, reducing noise and improving consistency of extraction decisions",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "Haiku",
+        "extraction",
+        "memory_graph",
+        "context_awareness"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Plan: build test/simulation scripts using Haiku API (similar to Claude code OAuth calling) to test extraction pipeline in isolation before implementing in codebase — run over conversation history (via JSONL), simulate full behavior, test deduplication against memory graph, run fuzz tests and scenarios",
+      "type": "goal",
+      "importance": 0.85,
+      "entities": [
+        "testing",
+        "Haiku",
+        "extraction_pipeline",
+        "simulation"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "Evidence index persists across `/new` command — SQLite connection closes but file stays on disk, allowing new sessions to search previous conversation history",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "evidence_index",
+        "/new_command",
+        "session_search"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Phase 2 memory improvement: Extraction Decoupling — decouple memory extraction from compaction events, run on schedule (~20 user turns, /new, idle flush), track extraction watermark in session metadata to prevent silent memory loss from failed extraction batches",
+      "type": "goal",
+      "importance": 0.9,
+      "entities": [
+        "extraction_decoupling",
+        "Phase2",
+        "memory_improvements"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Phase 2 includes smarter routing: extraction prompt categorizes items as shared (memory graph, all agents) vs agent-specific (memory graph, agent-scoped), stopping shared facts from being dumped into MEMORY.md",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "extraction",
+        "shared_facts",
+        "agent_specific",
+        "MEMORY.md"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Phase 2 includes catch-up before compaction: check if extraction is behind before compaction cuts messages, run catch-up pass to prevent compacting away unextracted content",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "extraction",
+        "compaction",
+        "watermark"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Phase 3 memory improvement: MEMORY.md Compaction — after extraction runs, if MEMORY.md exceeds 10K tokens, use Haiku to distill to ~5K tokens, keeping only agent-private preferences and active context, removing shared facts that went to the graph",
+      "type": "goal",
+      "importance": 0.85,
+      "entities": [
+        "MEMORY.md_compaction",
+        "Phase3",
+        "Haiku",
+        "memory_improvements"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Extraction window design: provide Haiku with context overlap (5 messages before watermark, read-only) plus extraction window (new messages to extract from), explicitly marking zones so Haiku knows what not to extract from",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "extraction_pipeline",
+        "context_window",
+        "watermark",
+        "Haiku"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Extraction input token budget capped at ~12K tokens per batch to keep Haiku focused; batch large windows (e.g., 60 messages) into smaller chunks with overlapping context",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "extraction_pipeline",
+        "token_budget",
+        "batching"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Extraction deduplication: use deterministic code with cosine similarity thresholds (0.85 min, 0.95 for reinforcement) to match extracted items against memory graph, supporting add/reinforce/supersede/relate actions based on similarity and recency",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "deduplication",
+        "memory_graph",
+        "cosine_similarity",
+        "extraction"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Extraction watermark only advances on full batch success; on any failure (LLM call, JSON parsing, graph writes), watermark stays put for retry to prevent data loss",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "extraction_watermark",
+        "error_handling",
+        "reliability"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Haiku will be given awareness of existing memory graph contents during extraction to provide context about what is already known, reducing noise and improving consistency of extraction decisions",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "Haiku",
+        "extraction",
+        "memory_graph",
+        "context_awareness"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Plan: build test/simulation scripts using Haiku API (similar to Claude code OAuth calling) to test extraction pipeline in isolation before implementing in codebase — run over conversation history (via JSONL), simulate full behavior, test deduplication against memory graph, run fuzz tests and scenarios",
+      "type": "goal",
+      "importance": 0.85,
+      "entities": [
+        "testing",
+        "Haiku",
+        "extraction_pipeline",
+        "simulation"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ]
+}

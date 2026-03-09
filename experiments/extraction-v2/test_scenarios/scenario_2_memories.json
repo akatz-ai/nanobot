@@ -1,0 +1,38 @@
+[
+  {
+    "content": "Memory graph uses LanceDB with openai/text-embedding-3-small at 512 dimensions for vector storage",
+    "memory_type": "fact",
+    "importance": 0.85,
+    "scope": "shared"
+  },
+  {
+    "content": "Extraction dedup thresholds: 0.95 similarity = reinforce (identical), 0.85 similarity = review (related but potentially different)",
+    "memory_type": "decision",
+    "importance": 0.8,
+    "scope": "shared"
+  },
+  {
+    "content": "Extraction triggers: every 20 user turns, /new command, compaction catch-up, 30-minute idle flush",
+    "memory_type": "procedure",
+    "importance": 0.9,
+    "scope": "shared"
+  },
+  {
+    "content": "Watermark advancement guardrail: last_extracted_index only advances after ALL items in batch successfully saved to graph",
+    "memory_type": "procedure",
+    "importance": 0.95,
+    "scope": "shared"
+  },
+  {
+    "content": "Background extraction model is claude-haiku-3-5 (Haiku 3.5)",
+    "memory_type": "fact",
+    "importance": 0.75,
+    "scope": "shared"
+  },
+  {
+    "content": "Nanobot uses XML-tagged transcript format for Haiku extraction: <transcript>, <context_section>, <extraction_section>",
+    "memory_type": "decision",
+    "importance": 0.85,
+    "scope": "shared"
+  }
+]

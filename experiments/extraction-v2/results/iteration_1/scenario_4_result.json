@@ -1,0 +1,164 @@
+{
+  "scenario_id": 4,
+  "title": "Scenario 4: Ambiguous/Noisy Conversation",
+  "message_count": 18,
+  "existing_memory_count": 0,
+  "extracted_count": 5,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "React Native app has a token refresh race condition on the client side that occurs when the app resumes from background and multiple requests simultaneously attempt to refresh an expired token",
+      "type": "fact",
+      "importance": 0.9,
+      "entities": [
+        "React Native app",
+        "token refresh",
+        "race condition"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Planned fix for token refresh race condition: implement a promise-based mutex/lock to ensure only one token refresh is in-flight at a time, with subsequent requests queuing and waiting for the same promise result",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "token refresh",
+        "promise-based lock"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Currently using AsyncStorage for token storage, which is unencrypted; plan to migrate to expo-secure-store for encrypted token storage",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "AsyncStorage",
+        "expo-secure-store",
+        "token storage"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "User plans to implement the token refresh mutex and AsyncStorage to expo-secure-store migration tomorrow morning",
+      "type": "goal",
+      "importance": 0.75,
+      "entities": [
+        "token refresh",
+        "expo-secure-store"
+      ],
+      "scope": "shared",
+      "decay": "normal"
+    },
+    {
+      "action": "add",
+      "content": "App minimum supported iOS version is iOS 16 and Android minimum is API 29 (Android 10); these requirements are set in stone",
+      "type": "fact",
+      "importance": 0.8,
+      "entities": [
+        "iOS 16",
+        "Android API 29",
+        "minimum supported versions"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "React Native app has a token refresh race condition on the client side that occurs when the app resumes from background and multiple requests simultaneously attempt to refresh an expired token",
+      "type": "fact",
+      "importance": 0.9,
+      "entities": [
+        "React Native app",
+        "token refresh",
+        "race condition"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Planned fix for token refresh race condition: implement a promise-based mutex/lock to ensure only one token refresh is in-flight at a time, with subsequent requests queuing and waiting for the same promise result",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "token refresh",
+        "promise-based lock"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Currently using AsyncStorage for token storage, which is unencrypted; plan to migrate to expo-secure-store for encrypted token storage",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "AsyncStorage",
+        "expo-secure-store",
+        "token storage"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "User plans to implement the token refresh mutex and AsyncStorage to expo-secure-store migration tomorrow morning",
+      "type": "goal",
+      "importance": 0.75,
+      "entities": [
+        "token refresh",
+        "expo-secure-store"
+      ],
+      "scope": "shared",
+      "decay": "normal"
+    },
+    {
+      "action": "add",
+      "content": "App minimum supported iOS version is iOS 16 and Android minimum is API 29 (Android 10); these requirements are set in stone",
+      "type": "fact",
+      "importance": 0.8,
+      "entities": [
+        "iOS 16",
+        "Android API 29",
+        "minimum supported versions"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 3.46,
+  "api_usage": {
+    "input_tokens": 1291,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 528,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": false,
+    "score": 0.6666666666666666,
+    "checks_passed": 4,
+    "checks_total": 6,
+    "summary": "4/6 checks passed (score=67%)",
+    "issues": [
+      "Count 5 outside expected range [1,3]",
+      "Count 5 too high for noisy conversation"
+    ]
+  },
+  "passed": false,
+  "prompt_size_chars": 2731
+}

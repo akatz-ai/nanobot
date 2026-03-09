@@ -1,0 +1,33 @@
+{
+  "scenario_id": 8,
+  "title": "Scenario 8: Very Short Window / Pure Greetings (Edge Case)",
+  "message_count": 6,
+  "existing_memory_count": 0,
+  "extracted_count": 0,
+  "extracted_items": [],
+  "deduped_items": [],
+  "parse_error": null,
+  "api_elapsed": 0.66,
+  "api_usage": {
+    "input_tokens": 1118,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 9,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 1.0,
+    "checks_passed": 3,
+    "checks_total": 3,
+    "summary": "3/3 checks passed (score=100%)",
+    "issues": []
+  },
+  "passed": true,
+  "prompt_size_chars": 426
+}

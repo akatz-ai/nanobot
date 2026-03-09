@@ -1,0 +1,223 @@
+{
+  "scenario_id": 7,
+  "title": "Scenario 7: Multi-Topic Conversation",
+  "message_count": 18,
+  "existing_memory_count": 0,
+  "extracted_count": 8,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "CI/CD pipeline uses GitHub Actions with the following stages: lint → test → build docker image → push to GHCR → deploy to Fly.io. Deployment to Fly.io only occurs on main branch.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "GitHub Actions",
+        "GHCR",
+        "Fly.io"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Test matrix configuration: Python 3.11 and 3.12 must both be supported and validated by CI pipeline.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Python",
+        "testing"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Frontend stack: Next.js 14 with App Router, TypeScript required for all files (no plain JavaScript allowed).",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "Next.js",
+        "TypeScript"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "UI component library: shadcn/ui with Tailwind CSS. MUI and Chakra explicitly not used.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "shadcn/ui",
+        "Tailwind CSS"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "API rate limiting: per-user tiered limits of 100 requests per minute for free tier and 1000 requests per minute for paid tier.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "rate limiting"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Rate limit implementation: Redis with sliding window algorithm using ZSET, leveraging existing Redis job queue infrastructure.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Redis"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Feature flag naming convention: {team}_{feature_name}_{state} where state is one of: enabled, disabled, rollout. Example: payments_new_checkout_enabled. Enforced in LaunchDarkly.",
+      "type": "procedure",
+      "importance": 0.85,
+      "entities": [
+        "feature flags",
+        "LaunchDarkly"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Feature flag management platform: LaunchDarkly.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "LaunchDarkly"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "CI/CD pipeline uses GitHub Actions with the following stages: lint → test → build docker image → push to GHCR → deploy to Fly.io. Deployment to Fly.io only occurs on main branch.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "GitHub Actions",
+        "GHCR",
+        "Fly.io"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Test matrix configuration: Python 3.11 and 3.12 must both be supported and validated by CI pipeline.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Python",
+        "testing"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Frontend stack: Next.js 14 with App Router, TypeScript required for all files (no plain JavaScript allowed).",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "Next.js",
+        "TypeScript"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "UI component library: shadcn/ui with Tailwind CSS. MUI and Chakra explicitly not used.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "shadcn/ui",
+        "Tailwind CSS"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "API rate limiting: per-user tiered limits of 100 requests per minute for free tier and 1000 requests per minute for paid tier.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "rate limiting"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Rate limit implementation: Redis with sliding window algorithm using ZSET, leveraging existing Redis job queue infrastructure.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Redis"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Feature flag naming convention: {team}_{feature_name}_{state} where state is one of: enabled, disabled, rollout. Example: payments_new_checkout_enabled. Enforced in LaunchDarkly.",
+      "type": "procedure",
+      "importance": 0.85,
+      "entities": [
+        "feature flags",
+        "LaunchDarkly"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Feature flag management platform: LaunchDarkly.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "LaunchDarkly"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 4.51,
+  "api_usage": {
+    "input_tokens": 1657,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 790,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 1.0,
+    "checks_passed": 6,
+    "checks_total": 6,
+    "summary": "6/6 checks passed (score=100%)",
+    "issues": []
+  },
+  "passed": true,
+  "prompt_size_chars": 2549
+}

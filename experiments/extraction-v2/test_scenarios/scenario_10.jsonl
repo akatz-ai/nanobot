@@ -1,0 +1,18 @@
+{"role": "user", "content": "I want to customize how you (the nanobot agent) operate. Some things are specific to you, others are project-wide facts.", "timestamp": "2026-03-10T15:00:00"}
+{"role": "assistant", "content": "Happy to hear your preferences. What would you like to customize?", "timestamp": "2026-03-10T15:00:10"}
+{"role": "user", "content": "First, a project-wide fact: the main GitHub org for our work is github.com/acme-corp. All repos live there.", "timestamp": "2026-03-10T15:01:00"}
+{"role": "assistant", "content": "Noted. GitHub org: github.com/acme-corp — all repos under that org.", "timestamp": "2026-03-10T15:01:10"}
+{"role": "user", "content": "The primary programming language across the org is Python. We use TypeScript for frontend only.", "timestamp": "2026-03-10T15:02:00"}
+{"role": "assistant", "content": "Python as the primary org language, TypeScript for frontend only. Got it.", "timestamp": "2026-03-10T15:02:10"}
+{"role": "user", "content": "Now, for you specifically as my coding assistant: I want you to always run tests after making code changes, without me asking. Don't skip tests.", "timestamp": "2026-03-10T15:03:00"}
+{"role": "assistant", "content": "Got it — I'll always run the test suite after code changes, proactively.", "timestamp": "2026-03-10T15:03:10"}
+{"role": "user", "content": "Also, when you write commit messages, follow the conventional commits format: feat/fix/chore/docs/refactor/test. Always include a scope in parentheses.", "timestamp": "2026-03-10T15:04:00"}
+{"role": "assistant", "content": "Conventional commits with scope: `type(scope): message`. Always. Got it.", "timestamp": "2026-03-10T15:04:10"}
+{"role": "user", "content": "Another project fact: we have a staging environment at staging.acme-corp.com and production at acme-corp.com. The staging DB is separate from prod — never mix them.", "timestamp": "2026-03-10T15:05:00"}
+{"role": "assistant", "content": "Environments: staging.acme-corp.com (separate DB) and acme-corp.com (prod). Never cross-contaminate DBs.", "timestamp": "2026-03-10T15:05:15"}
+{"role": "user", "content": "For you specifically: I prefer short, direct responses. Don't use bullet points unless there are 3 or more items. No preamble.", "timestamp": "2026-03-10T15:06:00"}
+{"role": "assistant", "content": "Short and direct. Bullets only for 3+ items. No preamble.", "timestamp": "2026-03-10T15:06:08"}
+{"role": "user", "content": "Project-wide: the on-call rotation is every 2 weeks. Slack channel for alerts is #platform-alerts.", "timestamp": "2026-03-10T15:07:00"}
+{"role": "assistant", "content": "On-call: 2-week rotation. Alerts channel: #platform-alerts.", "timestamp": "2026-03-10T15:07:10"}
+{"role": "user", "content": "And for you: when I ask you to 'review' code, that means check for security issues first, then correctness, then style. In that order.", "timestamp": "2026-03-10T15:08:00"}
+{"role": "assistant", "content": "Code review priority: security → correctness → style.", "timestamp": "2026-03-10T15:08:08"}

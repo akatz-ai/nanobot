@@ -1,0 +1,32 @@
+[
+  {
+    "content": "comfygit project is deployed on Heroku",
+    "memory_type": "fact",
+    "importance": 0.8,
+    "scope": "shared"
+  },
+  {
+    "content": "comfygit API is currently on v2",
+    "memory_type": "fact",
+    "importance": 0.85,
+    "scope": "shared"
+  },
+  {
+    "content": "comfygit uses Redis for job queue processing",
+    "memory_type": "fact",
+    "importance": 0.75,
+    "scope": "shared"
+  },
+  {
+    "content": "comfygit database is AWS RDS (PostgreSQL)",
+    "memory_type": "fact",
+    "importance": 0.8,
+    "scope": "shared"
+  },
+  {
+    "content": "comfygit workflow endpoint is /workflows",
+    "memory_type": "fact",
+    "importance": 0.7,
+    "scope": "shared"
+  }
+]

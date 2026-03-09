@@ -1,0 +1,111 @@
+{
+  "scenario_id": 5,
+  "title": "Scenario 5: Code-Heavy Session (Primary Failure Mode)",
+  "message_count": 17,
+  "existing_memory_count": 0,
+  "extracted_count": 3,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "JWT tokens must use RS256 (asymmetric signing) for this project, not HS256. Public key can be distributed for verification without exposing the private key.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "JWT",
+        "RS256",
+        "auth"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Authentication architecture uses stateless JWT — tokens are verified by signature without server-side session storage.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "JWT",
+        "auth",
+        "architecture"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Auth config requirements: AUTH_PROVIDER is 'internal', sessions last 24 hours, refresh tokens last 30 days, MFA is required, rate limiting is 60 requests/minute.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "auth",
+        "config"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "JWT tokens must use RS256 (asymmetric signing) for this project, not HS256. Public key can be distributed for verification without exposing the private key.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "JWT",
+        "RS256",
+        "auth"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Authentication architecture uses stateless JWT — tokens are verified by signature without server-side session storage.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "JWT",
+        "auth",
+        "architecture"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Auth config requirements: AUTH_PROVIDER is 'internal', sessions last 24 hours, refresh tokens last 30 days, MFA is required, rate limiting is 60 requests/minute.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "auth",
+        "config"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 2.21,
+  "api_usage": {
+    "input_tokens": 1647,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 311,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 1.0,
+    "checks_passed": 5,
+    "checks_total": 5,
+    "summary": "5/5 checks passed (score=100%)",
+    "issues": []
+  },
+  "passed": true,
+  "prompt_size_chars": 1689
+}

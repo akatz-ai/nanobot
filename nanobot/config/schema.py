@@ -232,6 +232,7 @@ class AgentDefaults(Base):
     workspace: str = "~/.nanobot/workspace"
     model: str = "anthropic/claude-opus-4-5"
     provider: str = "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
+    session_store: Literal["jsonl", "sqlite"] = "jsonl"
     background_model: str | None = None  # Optional cheaper model for compaction/consolidation tasks.
     max_tokens: int = 100_000
     temperature: float = 0.1
@@ -245,6 +246,7 @@ class AgentProfile(Base):
 
     model: str | None = None
     background_model: str | None = None
+    session_store: Literal["jsonl", "sqlite"] | None = None
     max_tokens: int | None = None
     temperature: float | None = None
     max_tool_iterations: int | None = None
@@ -264,6 +266,11 @@ class AgentProfile(Base):
                 self.background_model
                 if self.background_model is not None
                 else defaults.background_model
+            ),
+            session_store=(
+                self.session_store
+                if self.session_store is not None
+                else defaults.session_store
             ),
             max_tokens=self.max_tokens if self.max_tokens is not None else defaults.max_tokens,
             temperature=self.temperature if self.temperature is not None else defaults.temperature,
@@ -287,6 +294,7 @@ class ResolvedAgentProfile(Base):
 
     model: str
     background_model: str | None = None
+    session_store: Literal["jsonl", "sqlite"] = "jsonl"
     max_tokens: int
     temperature: float
     max_tool_iterations: int

@@ -1,0 +1,16 @@
+{"role": "user", "content": "Let's talk about the deployment setup for the comfygit project. We need to update some things.", "timestamp": "2026-03-03T09:00:00"}
+{"role": "assistant", "content": "Sure, what needs updating?", "timestamp": "2026-03-03T09:00:08"}
+{"role": "user", "content": "First off, we migrated from Heroku to Fly.io last week. The old Heroku config is gone, all environments are now on Fly.io.", "timestamp": "2026-03-03T09:01:00"}
+{"role": "assistant", "content": "Got it. I'll update my notes. Fly.io is a better fit for containerized apps anyway — better pricing and native Docker support. What regions are you deploying to?", "timestamp": "2026-03-03T09:01:15"}
+{"role": "user", "content": "iad (US East) as primary. We might add sin (Singapore) later for Asia coverage but that's not decided yet.", "timestamp": "2026-03-03T09:02:00"}
+{"role": "assistant", "content": "iad as primary region noted. I'll leave the Singapore expansion as a future consideration.", "timestamp": "2026-03-03T09:02:12"}
+{"role": "user", "content": "Also, the API is now on v3. We fully deprecated v2 last month. Anyone still calling v2 endpoints gets a 410 Gone response.", "timestamp": "2026-03-03T09:03:00"}
+{"role": "assistant", "content": "Important update. API v3 is current, v2 is deprecated and returns 410. I'll make sure that's clear. Is there a migration guide for v2 → v3?", "timestamp": "2026-03-03T09:03:18"}
+{"role": "user", "content": "Yes, the migration guide is at docs.comfygit.org/migration/v3. The main breaking changes are authentication (moved to OAuth2 PKCE) and the workflow endpoint was renamed from /workflows to /environments.", "timestamp": "2026-03-03T09:04:00"}
+{"role": "assistant", "content": "Noted: v3 migration guide at docs.comfygit.org/migration/v3. Key changes: auth moved to OAuth2 PKCE, /workflows → /environments endpoint rename.", "timestamp": "2026-03-03T09:04:20"}
+{"role": "user", "content": "And we're no longer using Redis for job queuing. We switched to PostgreSQL-backed queuing with pgqueue. Redis was overkill for our scale.", "timestamp": "2026-03-03T09:05:00"}
+{"role": "assistant", "content": "PostgreSQL-backed queuing with pgqueue — simpler stack, one fewer service to manage. Good call. Are you using the pgqueue Python library or a custom implementation?", "timestamp": "2026-03-03T09:05:18"}
+{"role": "user", "content": "The pgqueue Python library. It's simple and handles our load fine — we're processing maybe 500 jobs/day.", "timestamp": "2026-03-03T09:06:00"}
+{"role": "assistant", "content": "500 jobs/day is well within pgqueue's capabilities. Postgres handles that trivially.", "timestamp": "2026-03-03T09:06:10"}
+{"role": "user", "content": "One more thing — the database. We moved from RDS to Neon (serverless Postgres). Much cheaper for our usage pattern.", "timestamp": "2026-03-03T09:07:00"}
+{"role": "assistant", "content": "Neon is excellent for variable workloads — the branching feature is also great for staging environments. Database is now Neon serverless Postgres, migrated from RDS.", "timestamp": "2026-03-03T09:07:20"}

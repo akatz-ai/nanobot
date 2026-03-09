@@ -1,0 +1,14 @@
+{"role": "user", "content": "Let's continue working on the nanobot memory system. I want to check in on the extraction pipeline we've been building.", "timestamp": "2026-03-02T14:00:00"}
+{"role": "assistant", "content": "Sure! The extraction pipeline is coming along well. We have the Haiku-based extraction working with the XML-tagged transcript format. What aspect do you want to focus on?", "timestamp": "2026-03-02T14:00:10"}
+{"role": "user", "content": "I want to make sure the dedup logic is solid. We're using LanceDB with text-embedding-3-small at 512 dimensions, right?", "timestamp": "2026-03-02T14:01:00"}
+{"role": "assistant", "content": "Yes, exactly. LanceDB with openai/text-embedding-3-small at 512 dimensions. The dedup thresholds we settled on are 0.95 for identical (reinforce only) and 0.85 for related (needs review).", "timestamp": "2026-03-02T14:01:15"}
+{"role": "user", "content": "Right. And the extraction runs every 20 user turns, plus on /new and before compaction as a catch-up step.", "timestamp": "2026-03-02T14:02:00"}
+{"role": "assistant", "content": "Correct. The trigger conditions are: 20 completed user turns since last extraction, compaction catch-up (messages about to leave window), session end via /new, and idle flush after 30 minutes.", "timestamp": "2026-03-02T14:02:20"}
+{"role": "user", "content": "One thing I want to revisit — the extraction model. We're using Haiku 3.5, but I'm wondering if Haiku 4.5 would be better now.", "timestamp": "2026-03-02T14:03:00"}
+{"role": "assistant", "content": "Haiku 4.5 would be a meaningful upgrade — better instruction following and less likely to hallucinate. Since extraction is a background operation and cost is low per run, the upgrade makes sense. Should we switch?", "timestamp": "2026-03-02T14:03:20"}
+{"role": "user", "content": "Yes, let's use Haiku 4.5 going forward for extraction. The background_model config should be updated to claude-haiku-4-5.", "timestamp": "2026-03-02T14:04:00"}
+{"role": "assistant", "content": "Got it. I'll update the background_model config to claude-haiku-4-5 for the extraction pipeline.", "timestamp": "2026-03-02T14:04:15"}
+{"role": "user", "content": "Also, I confirmed yesterday that the watermark only advances after successful write to the graph. That's the critical rule we need to enforce.", "timestamp": "2026-03-02T14:05:00"}
+{"role": "assistant", "content": "Yes, that's fundamental. The watermark (`last_extracted_index`) must only advance after ALL items from the batch are successfully committed to the graph. Any failure keeps the watermark in place for retry at the next trigger.", "timestamp": "2026-03-02T14:05:20"}
+{"role": "user", "content": "Good. And the memory graph is on LanceDB — that part isn't changing.", "timestamp": "2026-03-02T14:06:00"}
+{"role": "assistant", "content": "Correct, LanceDB stays. It handles the vector + graph edge storage well.", "timestamp": "2026-03-02T14:06:10"}

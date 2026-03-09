@@ -1,0 +1,197 @@
+{
+  "scenario_id": 3,
+  "title": "Scenario 3: Supersede/Update (Outdated Memories)",
+  "message_count": 16,
+  "existing_memory_count": 5,
+  "extracted_count": 6,
+  "extracted_items": [
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit project is deployed on Heroku",
+      "content": "comfygit project is deployed on Fly.io (migrated from Heroku last week). Primary region: iad (US East). Containerized deployment with native Docker support.",
+      "type": "fact",
+      "importance": 0.9,
+      "entities": [
+        "comfygit",
+        "Fly.io",
+        "iad"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit API is currently on v2",
+      "content": "comfygit API is on v3 (v2 fully deprecated last month). v2 endpoints return 410 Gone response. Migration guide: docs.comfygit.org/migration/v3",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "comfygit",
+        "API v3"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "comfygit API v3 breaking changes: authentication moved to OAuth2 PKCE; workflow endpoint renamed from /workflows to /environments",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "comfygit",
+        "API v3",
+        "OAuth2 PKCE"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit uses Redis for job queue processing",
+      "content": "comfygit uses PostgreSQL-backed job queuing with pgqueue Python library (switched from Redis). Processes ~500 jobs/day. Redis was deprecated as overkill for current scale.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "comfygit",
+        "pgqueue",
+        "PostgreSQL"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit database is AWS RDS (PostgreSQL)",
+      "content": "comfygit database is Neon (serverless PostgreSQL), migrated from AWS RDS. More cost-effective for variable workload pattern.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "comfygit",
+        "Neon",
+        "PostgreSQL"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit workflow endpoint is /workflows",
+      "content": "comfygit workflow endpoint is /environments (renamed from /workflows in API v3)",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "comfygit",
+        "API v3"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit project is deployed on Heroku",
+      "content": "comfygit project is deployed on Fly.io (migrated from Heroku last week). Primary region: iad (US East). Containerized deployment with native Docker support.",
+      "type": "fact",
+      "importance": 0.9,
+      "entities": [
+        "comfygit",
+        "Fly.io",
+        "iad"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit API is currently on v2",
+      "content": "comfygit API is on v3 (v2 fully deprecated last month). v2 endpoints return 410 Gone response. Migration guide: docs.comfygit.org/migration/v3",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "comfygit",
+        "API v3"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "comfygit API v3 breaking changes: authentication moved to OAuth2 PKCE; workflow endpoint renamed from /workflows to /environments",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "comfygit",
+        "API v3",
+        "OAuth2 PKCE"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit uses Redis for job queue processing",
+      "content": "comfygit uses PostgreSQL-backed job queuing with pgqueue Python library (switched from Redis). Processes ~500 jobs/day. Redis was deprecated as overkill for current scale.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "comfygit",
+        "pgqueue",
+        "PostgreSQL"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit database is AWS RDS (PostgreSQL)",
+      "content": "comfygit database is Neon (serverless PostgreSQL), migrated from AWS RDS. More cost-effective for variable workload pattern.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "comfygit",
+        "Neon",
+        "PostgreSQL"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit workflow endpoint is /workflows",
+      "content": "comfygit workflow endpoint is /environments (renamed from /workflows in API v3)",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "comfygit",
+        "API v3"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 4.19,
+  "api_usage": {
+    "input_tokens": 1701,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 769,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 1.0,
+    "checks_passed": 7,
+    "checks_total": 7,
+    "summary": "7/7 checks passed (score=100%)",
+    "issues": []
+  },
+  "passed": true,
+  "prompt_size_chars": 2698
+}

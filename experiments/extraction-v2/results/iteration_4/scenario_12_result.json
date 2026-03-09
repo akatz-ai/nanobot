@@ -1,0 +1,201 @@
+{
+  "scenario_id": 12,
+  "title": "Scenario 12: Taste Signal Extraction — Architecture & Code Review Corrections",
+  "message_count": 20,
+  "existing_memory_count": 0,
+  "extracted_count": 7,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "[architecture] Always check existing utilities and services before adding new dependencies. Do not pull in a new package if existing code can do the job.",
+      "type": "taste",
+      "importance": 0.95,
+      "entities": [
+        "dependencies",
+        "architecture"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Notification service uses specific exception types (NotificationDeliveryError, NotificationConfigError) instead of broad Exception catching. Errors must be surfaced to users via API responses, not just logged.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "notification-service",
+        "error-handling"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Notification delivery failures use HTTP 502; configuration errors use HTTP 400.",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "notification-service",
+        "http-status-codes"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Notification service implements configurable retry logic with defaults: max_retries=3, base_delay=1.0, backoff_factor=2.0. Retries can be overridden via environment variables or config file.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "notification-service",
+        "retry-logic"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "[api] All API responses must be JSON objects with 'status' as the first field. Never return bare strings or unstructured responses. Success responses include status and relevant data. Error responses use {\"status\": \"error\", \"error\": {\"code\": \"...\", \"message\": \"...\"}}.",
+      "type": "taste",
+      "importance": 0.95,
+      "entities": [
+        "api-design"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Created utils/responses.py with shared response helpers (success_response(), error_response()) to enforce consistent JSON response structure across all API routers.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "utils",
+        "api-design"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "[code-style] Test coverage must include every error case and error response code. Tests must assert on full response body structure (JSON format, status field presence, error code/message fields) not just HTTP status codes.",
+      "type": "taste",
+      "importance": 0.9,
+      "entities": [
+        "testing",
+        "code-style"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "[architecture] Always check existing utilities and services before adding new dependencies. Do not pull in a new package if existing code can do the job.",
+      "type": "taste",
+      "importance": 0.95,
+      "entities": [
+        "dependencies",
+        "architecture"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Notification service uses specific exception types (NotificationDeliveryError, NotificationConfigError) instead of broad Exception catching. Errors must be surfaced to users via API responses, not just logged.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "notification-service",
+        "error-handling"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Notification delivery failures use HTTP 502; configuration errors use HTTP 400.",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "notification-service",
+        "http-status-codes"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Notification service implements configurable retry logic with defaults: max_retries=3, base_delay=1.0, backoff_factor=2.0. Retries can be overridden via environment variables or config file.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "notification-service",
+        "retry-logic"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "[api] All API responses must be JSON objects with 'status' as the first field. Never return bare strings or unstructured responses. Success responses include status and relevant data. Error responses use {\"status\": \"error\", \"error\": {\"code\": \"...\", \"message\": \"...\"}}.",
+      "type": "taste",
+      "importance": 0.95,
+      "entities": [
+        "api-design"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Created utils/responses.py with shared response helpers (success_response(), error_response()) to enforce consistent JSON response structure across all API routers.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "utils",
+        "api-design"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "[code-style] Test coverage must include every error case and error response code. Tests must assert on full response body structure (JSON format, status field presence, error code/message fields) not just HTTP status codes.",
+      "type": "taste",
+      "importance": 0.9,
+      "entities": [
+        "testing",
+        "code-style"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 5.56,
+  "api_usage": {
+    "input_tokens": 2148,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 765,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 1.0,
+    "checks_passed": 9,
+    "checks_total": 9,
+    "summary": "9/9 checks passed (score=100%)",
+    "issues": []
+  },
+  "passed": true,
+  "prompt_size_chars": 3802
+}

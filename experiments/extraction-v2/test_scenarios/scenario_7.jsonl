@@ -1,0 +1,18 @@
+{"role": "user", "content": "I have a few different topics I want to cover today. First, we need to finalize the CI/CD setup for the platform.", "timestamp": "2026-03-07T13:00:00"}
+{"role": "assistant", "content": "Sure, let's go through them. What's the CI/CD situation?", "timestamp": "2026-03-07T13:00:10"}
+{"role": "user", "content": "We're using GitHub Actions. The pipeline should be: lint → test → build docker image → push to GHCR → deploy to Fly.io on main branch only.", "timestamp": "2026-03-07T13:01:00"}
+{"role": "assistant", "content": "Clean pipeline. GHCR for the registry is a good choice — integrated with GitHub auth and free for public repos. Fly.io deploy on main only makes sense for safety.", "timestamp": "2026-03-07T13:01:20"}
+{"role": "user", "content": "Also, test runs should use matrix testing: Python 3.11 and 3.12. We need to support both versions.", "timestamp": "2026-03-07T13:02:00"}
+{"role": "assistant", "content": "Matrix testing across Python 3.11 and 3.12 noted. Good practice to validate compatibility across both.", "timestamp": "2026-03-07T13:02:15"}
+{"role": "user", "content": "Good. Now second topic: the frontend. We decided to go with Next.js 14 using the App Router. TypeScript only, no plain JS files allowed.", "timestamp": "2026-03-07T13:03:00"}
+{"role": "assistant", "content": "Next.js 14 with App Router and TypeScript-strict — modern stack. Are you using any specific component library?", "timestamp": "2026-03-07T13:03:18"}
+{"role": "user", "content": "shadcn/ui with Tailwind CSS. The design system is based on those two. No MUI or Chakra.", "timestamp": "2026-03-07T13:04:00"}
+{"role": "assistant", "content": "shadcn/ui + Tailwind is a clean combination — unstyled primitives you own, not a heavy component library you fight. Good choice.", "timestamp": "2026-03-07T13:04:15"}
+{"role": "user", "content": "Third topic: the API rate limiting strategy. We want per-user rate limits: 100 requests per minute for free tier, 1000 for paid tier.", "timestamp": "2026-03-07T13:05:00"}
+{"role": "assistant", "content": "Tiered rate limits make sense. Are you using Redis for the rate limit counters, or something else?", "timestamp": "2026-03-07T13:05:15"}
+{"role": "user", "content": "Redis with sliding window algorithm. We already have Redis running for the job queue so it's no extra cost.", "timestamp": "2026-03-07T13:06:00"}
+{"role": "assistant", "content": "Reusing Redis for rate limiting is efficient. Sliding window via Redis ZSET is the standard implementation — more accurate than fixed window.", "timestamp": "2026-03-07T13:06:18"}
+{"role": "user", "content": "Exactly. Last topic: we need a naming convention for feature flags. Format is: {team}_{feature_name}_{state} where state is enabled/disabled/rollout. Example: payments_new_checkout_enabled.", "timestamp": "2026-03-07T13:07:00"}
+{"role": "assistant", "content": "Clear naming convention: {team}_{feature_name}_{state}. The team prefix makes it easy to see ownership at a glance. Is there a registry/dashboard for managing these flags?", "timestamp": "2026-03-07T13:07:18"}
+{"role": "user", "content": "We're using LaunchDarkly for flag management. The naming convention needs to be enforced there too.", "timestamp": "2026-03-07T13:08:00"}
+{"role": "assistant", "content": "LaunchDarkly with the {team}_{feature_name}_{state} convention. Noted.", "timestamp": "2026-03-07T13:08:10"}

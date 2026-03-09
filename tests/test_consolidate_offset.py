@@ -695,7 +695,7 @@ class TestConsolidationDeduplicationGuard:
             session.add_message("user", f"msg{i} {payload}")
             session.add_message("assistant", f"resp{i} {payload}")
         loop.sessions.save(session)
-        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold + 1
 
         consolidation_calls = 0
 
@@ -747,7 +747,7 @@ class TestConsolidationDeduplicationGuard:
             session.add_message("user", f"msg{i} {payload}")
             session.add_message("assistant", f"resp{i} {payload}")
         loop.sessions.save(session)
-        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold + 1
 
         async def _fake_consolidate(
             sess,
@@ -844,7 +844,7 @@ class TestConsolidationDeduplicationGuard:
             session.add_message("user", f"msg{i} {payload}")
             session.add_message("assistant", f"resp{i} {payload}")
         loop.sessions.save(session)
-        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold + 1
 
         consolidation_calls = 0
         active = 0
@@ -917,7 +917,7 @@ class TestConsolidationDeduplicationGuard:
             session.add_message("user", f"msg{i} {payload}")
             session.add_message("assistant", f"resp{i} {payload}")
         loop.sessions.save(session)
-        loop._last_input_tokens[session.key] = loop._compaction_token_threshold
+        loop._last_input_tokens[session.key] = loop._compaction_token_threshold + 1
 
         archived_count = -1
 
@@ -1040,5 +1040,4 @@ class TestConsolidationDeduplicationGuard:
         assert response is not None
         assert "new session started" in response.content.lower()
         assert session.key not in loop._consolidation_locks
-
 

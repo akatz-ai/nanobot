@@ -1,0 +1,85 @@
+Loading session: /home/ubuntu/.nanobot/workspace/agents/nanobot-dev/sessions/discord_1476048732343763189.jsonl
+  Total messages: 7341
+  User turns: 323
+
+  Context window: messages[7180:7190] (10 msgs)
+  Extraction window: messages[7190:7230] (40 msgs)
+  Context roles: ['user', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant']
+  Extraction roles: ['user', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'user', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'user', 'assistant', 'user', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant']
+
+  Context transcript: 2276 chars
+  Extraction transcript: 16217 chars
+
+Querying memory graph for existing related memories...
+  Found 0 existing memories
+
+  Full prompt size: 18662 chars (~4665 tokens)
+  System prompt size: 2486 chars
+
+Calling claude-haiku-4-5...
+  Model: claude-haiku-4-5-20251001
+  Elapsed: 29.05s
+  Usage: {'input_tokens': 5432, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0, 'cache_creation': {'ephemeral_5m_input_tokens': 0, 'ephemeral_1h_input_tokens': 0}, 'output_tokens': 4096, 'service_tier': 'standard', 'inference_geo': 'not_available'}
+
+  [!] Failed to parse JSON: Expecting value: line 2 column 1 (char 1)
+  Raw output:
+
+Perfect. I'll create a standalone test harness that:
+
+1. Loads the session JSONL from this conversation
+2. Pulls the last 25 messages
+3. Calls Haiku with the extraction prompt (with graph awareness)
+4. Logs every decision it makes
+5. Lets us inspect behavior before we wire it into the main codebase
+
+Let me build the test repo:
+
+[tool:create_directory]: /tmp/memory_extraction_test
+
+[tool:create_file]: /tmp/memory_extraction_test/extraction_test.py
+```python
+"""
+Standalone memory extraction test harness.
+Tests the extraction pipeline against real session data without touching the main codebase.
+"""
+
+import json
+import asyncio
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+import sys
+
+# Add the nanobot path so we can import providers
+sys.path.insert(0, '/data/projects/nanobot')
+
+from nanobot.providers.registry import get_provider
+from nanobot.session.manager import SessionManager
+
+
+class ExtractionTestHarness:
+    """Test harness for memory extraction pipeline."""
+    
+    def __init__(self):
+        self.llm = get_provider('claude-opus')  # Use Opus for complex extraction decisions
+        self.session_mgr = SessionManager()
+        
+    async def load_session_messages(self, session_key: str, limit: int = 25) -> list[dict]:
+        """Load the last N messages from a session JSONL."""
+        session_dir = Path.home() / '.nanobot' / 'workspace' / 'agents' / 'nanobot-dev' / 'sessions'
+        jsonl_path = session_dir / f'{session_key}.jsonl'
+        
+        if not jsonl_path.exists():
+            raise FileNotFoundError(f"Session JSONL not found: {jsonl_path}")
+        
+        messages = []
+        with open(jsonl_path) as f:
+            for line in f:
+                messages.append(json.loads(line))
+        
+        # Return last N
+        return messages[-limit:]
+    
+    def format_message_for_prompt(self, msg: dict, index: int) -> str:
+        """Format a message for inclusion in the extraction prompt."""
+        role = msg.get('ro

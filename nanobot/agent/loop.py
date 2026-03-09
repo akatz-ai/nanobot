@@ -106,9 +106,11 @@ class AgentLoop:
     }
     _DEFAULT_CONTEXT_WINDOW = 200_000
     _COMPACTION_THRESHOLD_RATIO = 0.75  # Compact at 75% of context window
+    _PROMPT_BUDGET_RATIO = 0.90  # Allow append-only growth between compactions
     _CONSOLIDATION_KEEP_COUNT = 25
     _COMPACTION_RESERVE_TOKENS = 16_384
     _COMPACTION_KEEP_RECENT_TOKENS = 20_000
+    _EMERGENCY_TRIM_SAFETY_TOKENS = 4_096
     _PRUNE_PROTECTED_TOOLS = frozenset(
         {"memory_recall", "memory_save", "memory_graph", "memory_ingest"}
     )
@@ -250,7 +252,7 @@ class AgentLoop:
     def _resolve_compaction_threshold(self) -> int:
         """Determine the token threshold at which compaction should trigger."""
         context_window = self._get_context_window_size()
-        threshold = int(context_window * self._COMPACTION_THRESHOLD_RATIO)
+        threshold = self._get_compaction_threshold()
         logger.info(
             "Compaction threshold: {} tokens ({}% of {} context window for model '{}')",
             threshold,
@@ -620,20 +622,38 @@ class AgentLoop:
         remaining = prompt_word_budget - history_words - message_words
         return max(80, remaining)
 
-    def _get_prompt_input_budget(self) -> int:
-        """Return a prompt-input budget aligned with the compaction threshold.
+    def _get_compaction_threshold(self) -> int:
+        """Return the synchronous compaction trigger threshold."""
+        context_window = max(int(self._get_context_window_size()), 1)
+        return max(
+            512,
+            int((context_window - self._COMPACTION_RESERVE_TOKENS) * self._COMPACTION_THRESHOLD_RATIO),
+        )
 
-        The budget allows the prompt to use up to ``_COMPACTION_THRESHOLD_RATIO``
-        of the context window (minus a reserve for the compaction summary and
-        output headroom).  This ensures the preflight trimmer doesn't silently
-        drop messages before the compaction system has a chance to properly
-        summarize them.
+    def _get_emergency_prompt_threshold(self) -> int:
+        """Return the last-resort prompt threshold after output reservation."""
+        context_window = max(int(self._get_context_window_size()), 1)
+        output_reserve = max(int(self.max_tokens), 1)
+        return max(
+            512,
+            context_window - output_reserve - self._EMERGENCY_TRIM_SAFETY_TOKENS,
+        )
+
+    def _get_prompt_input_budget(self) -> int:
+        """Return the soft prompt-input budget used between compactions.
+
+        Compaction still triggers at ``_COMPACTION_THRESHOLD_RATIO``, but the
+        preflight path should allow append-only growth after compaction until we
+        approach the real provider limit. The hard emergency limit remains
+        ``context_window - output_reserve - safety_margin``.
         """
         context_window = max(int(self._get_context_window_size()), 1)
         return max(
             512,
-            int(context_window * self._COMPACTION_THRESHOLD_RATIO)
-            - self._COMPACTION_RESERVE_TOKENS,
+            min(
+                int(context_window * self._PROMPT_BUDGET_RATIO),
+                self._get_emergency_prompt_threshold(),
+            ),
         )
 
     @staticmethod
@@ -668,10 +688,11 @@ class AgentLoop:
         memory_context: str | None = None,
         resume_notice: str | None = None,
         extra_system_messages: list[str] | None = None,
+        trim_if_needed: bool = True,
     ) -> list[dict[str, Any]]:
-        """Build initial messages and trim oldest history if prompt exceeds budget."""
+        """Build initial messages and only trim history as an emergency fallback."""
         history_window = list(history)
-        prompt_budget = self._get_prompt_input_budget()
+        emergency_threshold = self._get_emergency_prompt_threshold()
         context_label = (
             f"{channel}:{chat_id}" if channel is not None and chat_id is not None else "unknown"
         )
@@ -694,10 +715,10 @@ class AgentLoop:
         estimated = initial_estimate
         trimmed = 0
 
-        if estimated > prompt_budget and history_window:
+        if trim_if_needed and estimated > emergency_threshold and history_window:
             # Estimate tokens per message for batch trimming
             avg_tokens_per_msg = max(estimated / max(len(history_window), 1), 1)
-            overshoot = estimated - prompt_budget
+            overshoot = estimated - emergency_threshold
             # Drop estimated number of messages in one batch (with 10% safety margin)
             batch_drop = min(
                 int(overshoot / avg_tokens_per_msg * 1.1) + 1,
@@ -711,31 +732,298 @@ class AgentLoop:
                 estimated = self._estimate_prompt_tokens(messages)
 
             # Fine-tune: drop one at a time if still over (should be few iterations)
-            while estimated > prompt_budget and history_window:
+            while estimated > emergency_threshold and history_window:
                 history_window = self._drop_oldest_history_message(history_window)
                 trimmed += 1
                 messages = _build(history_window)
                 estimated = self._estimate_prompt_tokens(messages)
 
         if trimmed:
-            logger.warning(
-                "Prompt preflight trimmed {} history message(s) for {} "
-                "(estimate {} -> {}, budget={})",
+            logger.error(
+                "Emergency prompt trim dropped {} history message(s) for {} "
+                "(estimate {} -> {}, emergency_threshold={})",
                 trimmed,
                 context_label,
                 initial_estimate,
                 estimated,
-                prompt_budget,
+                emergency_threshold,
             )
-        if estimated > prompt_budget:
-            logger.warning(
-                "Prompt preflight still over budget for {}: estimate={} budget={} "
+        if trim_if_needed and estimated > emergency_threshold:
+            logger.error(
+                "Emergency prompt trim still over threshold for {}: estimate={} threshold={} "
                 "(history_messages={})",
                 context_label,
                 estimated,
-                prompt_budget,
+                emergency_threshold,
                 len(history_window),
             )
+        return messages
+
+    @staticmethod
+    def _is_provider_context_overflow_error(error: BaseException | str | None) -> bool:
+        """Detect provider-specific context overflow failures."""
+        if error is None:
+            return False
+        if isinstance(error, BaseException):
+            text = str(error)
+        else:
+            text = str(error)
+        if not text:
+            return False
+        normalized = text.lower()
+        patterns = (
+            "prompt is too long",
+            "context window",
+            "context length",
+            "maximum context length",
+            "too many input tokens",
+            "input is too long",
+            "exceeds the context limit",
+        )
+        return any(pattern in normalized for pattern in patterns)
+
+    async def _run_structured_compaction(
+        self,
+        *,
+        session: Session,
+        channel: str | None,
+        chat_id: str | None,
+        input_tokens: int,
+        context_window: int | None = None,
+        reason: str,
+        send_notices: bool = True,
+    ) -> None:
+        """Run the existing structured compaction flow synchronously."""
+        if session.key in self._consolidating:
+            logger.debug(
+                "Skipping structured compaction for {}: consolidation already in progress",
+                session.key,
+            )
+            return
+
+        resolved_context_window = context_window or self._get_context_window_size()
+        threshold = self._get_compaction_threshold()
+        logger.info(
+            "Structured compaction TRIGGERED for {} — reason: {}",
+            session.key,
+            reason,
+        )
+        compaction_started_at = time.monotonic()
+        compaction_event = CompactionEvent(session.key)
+        compaction_event.set_trigger(
+            input_tokens=input_tokens,
+            threshold=threshold,
+            context_window=resolved_context_window,
+            utilization_pct=(input_tokens / resolved_context_window * 100 if resolved_context_window else 0),
+            total_messages=len(session.messages),
+            last_consolidated=session.last_consolidated,
+        )
+
+        lock = self._get_consolidation_lock(session.key)
+        self._consolidating.add(session.key)
+        try:
+            async with lock:
+                if send_notices and channel is not None and chat_id is not None:
+                    try:
+                        await self.bus.publish_outbound(OutboundMessage(
+                            channel=channel,
+                            chat_id=chat_id,
+                            content="⏳ *Compacting session* — summarizing older context to free up space...",
+                            metadata={"_system_notice": True},
+                        ))
+                    except Exception:
+                        logger.warning("Failed to send compaction-start notice")
+
+                previous_entry = session.get_last_compaction()
+                previous_boundary = previous_entry.first_kept_index if previous_entry else 0
+
+                memory_md_chars = len(self.context.memory.read_long_term() or "")
+                compaction_event.set_pre_compaction_context(
+                    system_prompt_chars=len(self.context.build_system_prompt() or ""),
+                    memory_md_chars=memory_md_chars,
+                    history_chars=0,
+                    conversation_messages=max(0, len(session.messages) - previous_boundary),
+                    conversation_start_index=previous_boundary,
+                )
+
+                if input_tokens > 0:
+                    session.metadata["usage_snapshot"] = {
+                        "total_input_tokens": int(input_tokens),
+                        "message_index": len(session.messages),
+                        "source": "compaction_trigger",
+                    }
+
+                entry = await compact_session(
+                    session=session,
+                    provider=self.provider,
+                    model=self.background_model,
+                    context_window=resolved_context_window,
+                    reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
+                    keep_recent_tokens=self._COMPACTION_KEEP_RECENT_TOKENS,
+                    threshold_ratio=self._COMPACTION_THRESHOLD_RATIO,
+                )
+
+                if entry is None:
+                    self._refresh_estimated_token_snapshot(session)
+                    session.metadata.pop("_structured_compaction_plan", None)
+                    compaction_event.finalize(
+                        success=True,
+                        error="structured no-op or summary failure",
+                        total_duration_ms=int((time.monotonic() - compaction_started_at) * 1000),
+                    )
+                else:
+                    plan_meta_raw = session.metadata.pop("_structured_compaction_plan", {})
+                    plan_meta = plan_meta_raw if isinstance(plan_meta_raw, dict) else {}
+                    extract_start_raw = plan_meta.get("extract_start", previous_boundary)
+                    extract_end_raw = plan_meta.get("extract_end", entry.first_kept_index)
+                    try:
+                        extract_start = int(extract_start_raw)
+                    except (TypeError, ValueError):
+                        extract_start = previous_boundary
+                    try:
+                        extract_end = int(extract_end_raw)
+                    except (TypeError, ValueError):
+                        extract_end = entry.first_kept_index
+                    extract_start = max(0, min(extract_start, len(session.messages)))
+                    extract_end = max(extract_start, min(extract_end, len(session.messages)))
+
+                    extraction_ok = True
+                    self._active_compaction_event = compaction_event
+                    try:
+                        extraction_ok = await self._consolidate_memory(
+                            session,
+                            extraction_range=(extract_start, extract_end),
+                        )
+                    finally:
+                        self._active_compaction_event = None
+
+                    if not extraction_ok:
+                        logger.warning(
+                            "Structured compaction memory extraction failed for {}",
+                            session.key,
+                        )
+
+                    memory_compact_result = None
+                    try:
+                        memory_compact_result = await self.context.memory.compact_memory_md(
+                            provider=self.provider,
+                            model=self.background_model,
+                        )
+                        if memory_compact_result and memory_compact_result.get("success"):
+                            logger.info(
+                                "MEMORY.md compacted: {} -> {} tokens",
+                                memory_compact_result["before_tokens"],
+                                memory_compact_result["after_tokens"],
+                            )
+                        elif memory_compact_result:
+                            logger.warning("MEMORY.md compaction attempted but did not produce an update")
+                    except Exception:
+                        logger.exception("MEMORY.md compaction failed (non-fatal)")
+
+                    self._refresh_estimated_token_snapshot(session)
+                    self.sessions.save(session)
+
+                    compaction_event.set_post_compaction_context(
+                        first_kept_index=entry.first_kept_index,
+                        new_last_consolidated=session.last_consolidated,
+                        keep_count=self._CONSOLIDATION_KEEP_COUNT,
+                        visible_messages=max(0, len(session.messages) - entry.first_kept_index),
+                        total_items_extracted=compaction_event.data["result"].get("total_items", 0)
+                        if compaction_event.data.get("result")
+                        else 0,
+                        summary_length=len(entry.summary),
+                        file_ops_read_count=len(entry.file_ops.get("read_files", [])),
+                        file_ops_modified_count=len(entry.file_ops.get("modified_files", [])),
+                        is_iterative_update=bool(entry.previous_summary),
+                        cut_point_type=str(plan_meta.get("cut_point_type", "clean")),
+                    )
+                    if memory_compact_result:
+                        compaction_event.data["memory_md_compaction"] = memory_compact_result
+                    compaction_event.finalize(
+                        success=True,
+                        error=None if extraction_ok else "memory extraction failed",
+                        total_duration_ms=int((time.monotonic() - compaction_started_at) * 1000),
+                    )
+                    if extraction_ok and send_notices and channel is not None and chat_id is not None:
+                        try:
+                            await self.bus.publish_outbound(OutboundMessage(
+                                channel=channel,
+                                chat_id=chat_id,
+                                content=(
+                                    "⚙️ *Session compacted* — older context has been "
+                                    "summarized. Continuing with your message..."
+                                ),
+                                metadata={"_system_notice": True},
+                            ))
+                        except Exception:
+                            logger.warning("Failed to send compaction-complete notice")
+
+                self._get_compaction_logger(session).write(compaction_event)
+        except Exception:
+            logger.exception("Structured inline compaction failed for {}", session.key)
+            try:
+                compaction_event.finalize(
+                    success=False,
+                    error="exception in structured inline compaction",
+                    total_duration_ms=int((time.monotonic() - compaction_started_at) * 1000),
+                )
+                self._get_compaction_logger(session).write(compaction_event)
+            except Exception:
+                pass
+        finally:
+            self._consolidating.discard(session.key)
+            self._prune_consolidation_lock(session.key, lock)
+
+    async def _finalize_prompt_for_send(
+        self,
+        *,
+        session: Session,
+        channel: str | None,
+        chat_id: str | None,
+        build_messages: Callable[[bool], list[dict[str, Any]]],
+        context_label: str,
+    ) -> list[dict[str, Any]]:
+        """Build, compact if needed, then apply emergency trim as a last resort."""
+        messages = build_messages(False)
+        estimated_tokens = self._estimate_prompt_tokens(messages)
+        compaction_threshold = self._get_compaction_threshold()
+        emergency_threshold = self._get_emergency_prompt_threshold()
+        logger.info(
+            "Prompt estimate for {}: tokens={} compaction_threshold={} emergency_threshold={}",
+            context_label,
+            estimated_tokens,
+            compaction_threshold,
+            emergency_threshold,
+        )
+
+        if estimated_tokens > compaction_threshold and session.key not in self._consolidating:
+            await self._run_structured_compaction(
+                session=session,
+                channel=channel,
+                chat_id=chat_id,
+                input_tokens=estimated_tokens,
+                context_window=self._get_context_window_size(),
+                reason=f"current prompt estimate ({estimated_tokens} > {compaction_threshold})",
+            )
+            messages = build_messages(False)
+            estimated_tokens = self._estimate_prompt_tokens(messages)
+            logger.info(
+                "Prompt estimate after compaction for {}: tokens={} emergency_threshold={}",
+                context_label,
+                estimated_tokens,
+                emergency_threshold,
+            )
+
+        if estimated_tokens > emergency_threshold:
+            messages = build_messages(True)
+            estimated_tokens = self._estimate_prompt_tokens(messages)
+            logger.info(
+                "Prompt estimate after emergency trim for {}: tokens={} emergency_threshold={}",
+                context_label,
+                estimated_tokens,
+                emergency_threshold,
+            )
+
         return messages
 
     def _refresh_estimated_token_snapshot(self, session: Session) -> None:
@@ -844,6 +1132,7 @@ class AgentLoop:
         on_progress: Callable[..., Awaitable[None]] | None = None,
         session: Session | None = None,
         checkpoint_start: int | None = None,
+        rebuild_messages: Callable[[], list[dict[str, Any]]] | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
         session_key_token = None
@@ -862,6 +1151,7 @@ class AgentLoop:
         _last_error_sig: str | None = None
         _consecutive_errors: int = 0
         _MAX_CONSECUTIVE_ERRORS = 5  # Raised from 3 — less aggressive
+        _overflow_retry_used = False
 
         try:
             if session is not None and checkpoint_start is not None:
@@ -884,9 +1174,82 @@ class AgentLoop:
                 }
                 if self.reasoning_effort:
                     chat_kwargs["reasoning_effort"] = self.reasoning_effort
-                response = await self.provider.chat(**chat_kwargs)
+                try:
+                    response = await self.provider.chat(**chat_kwargs)
+                except Exception as exc:
+                    if (
+                        not _overflow_retry_used
+                        and session is not None
+                        and rebuild_messages is not None
+                        and self._is_provider_context_overflow_error(exc)
+                    ):
+                        _overflow_retry_used = True
+                        visible_history, _ = session.get_history(
+                            max_messages=max(1, len(session.messages)),
+                            context_window=self._get_context_window_size(),
+                            protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+                        )
+                        overflow_tokens = max(
+                            self._estimate_prompt_tokens(messages),
+                            sum(estimate_message_tokens(msg) for msg in visible_history),
+                            self._get_compaction_threshold() + 1,
+                        )
+                        logger.error(
+                            "Provider rejected prompt for {} due to context overflow; compacting and retrying once "
+                            "(estimate={})",
+                            session.key,
+                            overflow_tokens,
+                        )
+                        await self._run_structured_compaction(
+                            session=session,
+                            channel=None,
+                            chat_id=None,
+                            input_tokens=overflow_tokens,
+                            reason="provider context overflow",
+                            send_notices=False,
+                        )
+                        messages = rebuild_messages()
+                        checkpoint_cursor = len(messages)
+                        continue
+                    raise
                 _api_elapsed = time.monotonic() - _api_start
                 logger.debug("provider.chat() returned in {:.1f}s — finish_reason={}, tool_calls={}", _api_elapsed, response.finish_reason, len(response.tool_calls) if response.tool_calls else 0)
+
+                if (
+                    response.finish_reason == "error"
+                    and not _overflow_retry_used
+                    and session is not None
+                    and rebuild_messages is not None
+                    and self._is_provider_context_overflow_error(response.content)
+                ):
+                    _overflow_retry_used = True
+                    visible_history, _ = session.get_history(
+                        max_messages=max(1, len(session.messages)),
+                        context_window=self._get_context_window_size(),
+                        protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+                    )
+                    overflow_tokens = max(
+                        self._estimate_prompt_tokens(messages),
+                        sum(estimate_message_tokens(msg) for msg in visible_history),
+                        self._get_compaction_threshold() + 1,
+                    )
+                    logger.error(
+                        "Provider reported prompt overflow for {} as an error response; compacting and retrying once "
+                        "(estimate={})",
+                        session.key,
+                        overflow_tokens,
+                    )
+                    await self._run_structured_compaction(
+                        session=session,
+                        channel=None,
+                        chat_id=None,
+                        input_tokens=overflow_tokens,
+                        reason="provider context overflow",
+                        send_notices=False,
+                    )
+                    messages = rebuild_messages()
+                    checkpoint_cursor = len(messages)
+                    continue
 
                 # Track token usage for compaction decisions + sidecar log
                 if response.usage and session is not None:
@@ -1103,6 +1466,13 @@ class AgentLoop:
                     if session is not None and checkpoint_cursor < len(messages):
                         session.checkpoint(messages[checkpoint_cursor:])
                         checkpoint_cursor = len(messages)
+                        prune_method = getattr(self.sessions, "prune_old_tool_results", None)
+                        if callable(prune_method):
+                            prune_method(
+                                session.key,
+                                context_window=self._get_context_window_size(),
+                                protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+                            )
                     break
 
             if final_content is None and iteration >= self.max_iterations:
@@ -1222,20 +1592,34 @@ class AgentLoop:
                 message_tool.start_turn()
 
         context_window = self._get_context_window_size()
-        history, prune_result = session.get_history(
+        def _build_resume_prompt(trim_if_needed: bool) -> list[dict[str, Any]]:
+            history, _ = session.get_history(
+                max_messages=max(1, len(session.messages)),
+                context_window=context_window,
+                protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+            )
+            return self._build_messages_with_prompt_budget(
+                history=history,
+                current_message=None,
+                skill_names=self.skill_names,
+                channel=channel,
+                chat_id=chat_id,
+                resume_notice=self._RESUME_SYSTEM_MESSAGE,
+                extra_system_messages=self._latest_compaction_system_messages(session),
+                trim_if_needed=trim_if_needed,
+            )
+
+        initial_messages = await self._finalize_prompt_for_send(
+            session=session,
+            channel=channel,
+            chat_id=chat_id,
+            context_label=f"resume:{session.key}",
+            build_messages=_build_resume_prompt,
+        )
+        _, prune_result = session.get_history(
             max_messages=max(1, len(session.messages)),
             context_window=context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
-        )
-        extra_system_messages = self._latest_compaction_system_messages(session)
-        initial_messages = self._build_messages_with_prompt_budget(
-            history=history,
-            current_message=None,
-            skill_names=self.skill_names,
-            channel=channel,
-            chat_id=chat_id,
-            resume_notice=self._RESUME_SYSTEM_MESSAGE,
-            extra_system_messages=extra_system_messages,
         )
         self._get_context_logger(session).log_turn(
             built_messages=initial_messages,
@@ -1424,16 +1808,35 @@ class AgentLoop:
                 context_window=context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
-            extra_system_messages = self._latest_compaction_system_messages(session)
-            initial_messages = self._build_messages_with_prompt_budget(
-                history=history,
-                current_message=msg.content,
-                skill_names=self.skill_names,
+            def _build_system_prompt(trim_if_needed: bool) -> list[dict[str, Any]]:
+                history, _ = session.get_history(
+                    max_messages=max(1, len(session.messages)),
+                    context_window=context_window,
+                    protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+                )
+                return self._build_messages_with_prompt_budget(
+                    history=history,
+                    current_message=msg.content,
+                    skill_names=self.skill_names,
+                    channel=channel,
+                    chat_id=chat_id,
+                    memory_context=memory_context,
+                    resume_notice=resume_notice,
+                    extra_system_messages=self._latest_compaction_system_messages(session),
+                    trim_if_needed=trim_if_needed,
+                )
+
+            initial_messages = await self._finalize_prompt_for_send(
+                session=session,
                 channel=channel,
                 chat_id=chat_id,
-                memory_context=memory_context,
-                resume_notice=resume_notice,
-                extra_system_messages=extra_system_messages,
+                context_label=f"{channel}:{chat_id}",
+                build_messages=_build_system_prompt,
+            )
+            history, prune_result = session.get_history(
+                max_messages=max(1, len(session.messages)),
+                context_window=context_window,
+                protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
             self._get_context_logger(session).log_turn(
                 built_messages=initial_messages,
@@ -1449,6 +1852,19 @@ class AgentLoop:
                 initial_messages,
                 session=session,
                 checkpoint_start=turn_start,
+                rebuild_messages=lambda: self._build_messages_with_prompt_budget(
+                    history=session.get_history(
+                        max_messages=max(1, len(session.messages)),
+                        context_window=context_window,
+                        protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+                    )[0],
+                    current_message=None,
+                    skill_names=self.skill_names,
+                    channel=channel,
+                    chat_id=chat_id,
+                    extra_system_messages=self._latest_compaction_system_messages(session),
+                    trim_if_needed=True,
+                ),
             )
             self._save_turn(session, all_msgs, turn_start)
             self.sessions.save(session)
@@ -1580,188 +1996,14 @@ class AgentLoop:
             )
 
         if _needs_compaction:
-            logger.info(
-                "Structured compaction TRIGGERED for {} — reason: {}",
-                session.key,
-                _compaction_reason,
-            )
-            _compaction_t0 = time.monotonic()
-            _compaction_event = CompactionEvent(session.key)
-            _structured_threshold = int(
-                (_context_window - self._COMPACTION_RESERVE_TOKENS) * self._COMPACTION_THRESHOLD_RATIO
-            )
-            _compaction_event.set_trigger(
+            await self._run_structured_compaction(
+                session=session,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
                 input_tokens=_token_count,
-                threshold=_structured_threshold,
                 context_window=_context_window,
-                utilization_pct=(
-                    _token_count / _context_window * 100 if _context_window else 0
-                ),
-                total_messages=len(session.messages),
-                last_consolidated=session.last_consolidated,
+                reason=_compaction_reason,
             )
-            lock = self._get_consolidation_lock(session.key)
-            self._consolidating.add(session.key)
-            try:
-                async with lock:
-                    try:
-                        await self.bus.publish_outbound(OutboundMessage(
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            content="⏳ *Compacting session* — summarizing older context to free up space...",
-                            metadata={"_system_notice": True},
-                        ))
-                    except Exception:
-                        logger.warning("Failed to send compaction-start notice")
-
-                    previous_entry = session.get_last_compaction()
-                    previous_boundary = (
-                        previous_entry.first_kept_index if previous_entry else 0
-                    )
-
-                    _memory_md_chars = len(self.context.memory.read_long_term() or "")
-                    _compaction_event.set_pre_compaction_context(
-                        system_prompt_chars=len(self.context.build_system_prompt() or ""),
-                        memory_md_chars=_memory_md_chars,
-                        history_chars=0,
-                        conversation_messages=max(0, len(session.messages) - previous_boundary),
-                        conversation_start_index=previous_boundary,
-                    )
-
-                    if _token_count > 0 and not isinstance(session.metadata.get("usage_snapshot"), dict):
-                        session.metadata["usage_snapshot"] = {
-                            "total_input_tokens": int(_token_count),
-                            "message_index": len(session.messages),
-                        }
-
-                    entry = await compact_session(
-                        session=session,
-                        provider=self.provider,
-                        model=self.background_model,
-                        context_window=_context_window,
-                        reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
-                        keep_recent_tokens=self._COMPACTION_KEEP_RECENT_TOKENS,
-                        threshold_ratio=self._COMPACTION_THRESHOLD_RATIO,
-                    )
-
-                    if entry is None:
-                        self._refresh_estimated_token_snapshot(session)
-                        session.metadata.pop("_structured_compaction_plan", None)
-                        _compaction_event.finalize(
-                            success=True,
-                            error="structured no-op or summary failure",
-                            total_duration_ms=int((time.monotonic() - _compaction_t0) * 1000),
-                        )
-                    else:
-                        plan_meta_raw = session.metadata.pop(
-                            "_structured_compaction_plan", {}
-                        )
-                        if isinstance(plan_meta_raw, dict):
-                            plan_meta = plan_meta_raw
-                        else:
-                            plan_meta = {}
-                        extract_start_raw = plan_meta.get("extract_start", previous_boundary)
-                        extract_end_raw = plan_meta.get(
-                            "extract_end", entry.first_kept_index
-                        )
-                        try:
-                            extract_start = int(extract_start_raw)
-                        except (TypeError, ValueError):
-                            extract_start = previous_boundary
-                        try:
-                            extract_end = int(extract_end_raw)
-                        except (TypeError, ValueError):
-                            extract_end = entry.first_kept_index
-                        extract_start = max(0, min(extract_start, len(session.messages)))
-                        extract_end = max(extract_start, min(extract_end, len(session.messages)))
-
-                        extraction_ok = True
-                        self._active_compaction_event = _compaction_event
-                        try:
-                            extraction_ok = await self._consolidate_memory(
-                                session,
-                                extraction_range=(extract_start, extract_end),
-                            )
-                        finally:
-                            self._active_compaction_event = None
-
-                        if not extraction_ok:
-                            logger.warning(
-                                "Structured compaction memory extraction failed for {}",
-                                session.key,
-                            )
-
-                        memory_compact_result = None
-                        try:
-                            memory_compact_result = await self.context.memory.compact_memory_md(
-                                provider=self.provider,
-                                model=self.background_model,
-                            )
-                            if memory_compact_result and memory_compact_result.get("success"):
-                                logger.info(
-                                    "MEMORY.md compacted: {} -> {} tokens",
-                                    memory_compact_result["before_tokens"],
-                                    memory_compact_result["after_tokens"],
-                                )
-                            elif memory_compact_result:
-                                logger.warning("MEMORY.md compaction attempted but did not produce an update")
-                        except Exception:
-                            logger.exception("MEMORY.md compaction failed (non-fatal)")
-
-                        self._refresh_estimated_token_snapshot(session)
-                        self.sessions.save(session)
-
-                        _compaction_event.set_post_compaction_context(
-                            first_kept_index=entry.first_kept_index,
-                            new_last_consolidated=session.last_consolidated,
-                            keep_count=self._CONSOLIDATION_KEEP_COUNT,
-                            visible_messages=max(
-                                0, len(session.messages) - entry.first_kept_index
-                            ),
-                            total_items_extracted=_compaction_event.data["result"].get("total_items", 0)
-                            if _compaction_event.data.get("result")
-                            else 0,
-                            summary_length=len(entry.summary),
-                            file_ops_read_count=len(entry.file_ops.get("read_files", [])),
-                            file_ops_modified_count=len(entry.file_ops.get("modified_files", [])),
-                            is_iterative_update=bool(entry.previous_summary),
-                            cut_point_type=str(plan_meta.get("cut_point_type", "clean")),
-                        )
-                        if memory_compact_result:
-                            _compaction_event.data["memory_md_compaction"] = memory_compact_result
-                        _compaction_event.finalize(
-                            success=True,
-                            error=None if extraction_ok else "memory extraction failed",
-                            total_duration_ms=int((time.monotonic() - _compaction_t0) * 1000),
-                        )
-                        if extraction_ok:
-                            try:
-                                await self.bus.publish_outbound(OutboundMessage(
-                                    channel=msg.channel,
-                                    chat_id=msg.chat_id,
-                                    content=(
-                                        "⚙️ *Session compacted* — older context has been "
-                                        "summarized. Continuing with your message..."
-                                    ),
-                                    metadata={"_system_notice": True},
-                                ))
-                            except Exception:
-                                logger.warning("Failed to send compaction-complete notice")
-                    self._get_compaction_logger(session).write(_compaction_event)
-            except Exception:
-                logger.exception("Structured inline compaction failed for {}", session.key)
-                try:
-                    _compaction_event.finalize(
-                        success=False,
-                        error="exception in structured inline compaction",
-                        total_duration_ms=int((time.monotonic() - _compaction_t0) * 1000),
-                    )
-                    self._get_compaction_logger(session).write(_compaction_event)
-                except Exception:
-                    pass
-            finally:
-                self._consolidating.discard(session.key)
-                self._prune_consolidation_lock(session.key, lock)
 
         resume_notice = self._resume_notice_for_state(session.detect_resume_state())
         self._set_tool_context(msg.channel, msg.chat_id, metadata.get("message_id"))
@@ -1806,22 +2048,41 @@ class AgentLoop:
             )
 
         memory_context = await self._retrieve_memory_context(session, msg.content)
-        extra_system_messages = self._latest_compaction_system_messages(session)
         history, prune_result = session.get_history(
             max_messages=max(1, len(session.messages)),
             context_window=_context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
         )
+        def _build_live_prompt(trim_if_needed: bool) -> list[dict[str, Any]]:
+            history, _ = session.get_history(
+                max_messages=max(1, len(session.messages)),
+                context_window=_context_window,
+                protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+            )
+            return self._build_messages_with_prompt_budget(
+                history=history,
+                current_message=msg.content,
+                skill_names=self.skill_names,
+                media=msg.media if msg.media else None,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                memory_context=memory_context,
+                resume_notice=resume_notice,
+                extra_system_messages=self._latest_compaction_system_messages(session),
+                trim_if_needed=trim_if_needed,
+            )
 
-        initial_messages = self._build_messages_with_prompt_budget(
-            history=history,
-            current_message=msg.content,
-            skill_names=self.skill_names,
-            media=msg.media if msg.media else None,
-            channel=msg.channel, chat_id=msg.chat_id,
-            memory_context=memory_context,
-            resume_notice=resume_notice,
-            extra_system_messages=extra_system_messages,
+        initial_messages = await self._finalize_prompt_for_send(
+            session=session,
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            context_label=session.key,
+            build_messages=_build_live_prompt,
+        )
+        history, prune_result = session.get_history(
+            max_messages=max(1, len(session.messages)),
+            context_window=_context_window,
+            protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
         )
 
         # Tag the current user message with the platform message_id so it
@@ -1857,6 +2118,19 @@ class AgentLoop:
             on_progress=on_progress or _bus_progress,
             session=session,
             checkpoint_start=turn_start,
+            rebuild_messages=lambda: self._build_messages_with_prompt_budget(
+                history=session.get_history(
+                    max_messages=max(1, len(session.messages)),
+                    context_window=_context_window,
+                    protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+                )[0],
+                current_message=None,
+                skill_names=self.skill_names,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                extra_system_messages=self._latest_compaction_system_messages(session),
+                trim_if_needed=True,
+            ),
         )
 
         if final_content is None:

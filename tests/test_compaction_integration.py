@@ -40,6 +40,30 @@ def _add_long_messages(session, turns: int = 40) -> None:
         session.add_message("assistant", f"Answer {i} {payload}")
 
 
+def _prompt_with_targeted_pressure(
+    loop: AgentLoop,
+    *,
+    lower_bound: int,
+    upper_bound: int | None,
+) -> tuple[list[dict[str, str]], list[dict[str, str]], int]:
+    history: list[dict[str, str]] = []
+    payload = "x" * 3200
+    for i in range(1, 160):
+        history.append({"role": "user", "content": f"question-{i} {payload}"})
+        history.append({"role": "assistant", "content": f"answer-{i} {payload}"})
+        built = loop._build_messages_with_prompt_budget(
+            history=history,
+            current_message="latest",
+            channel="cli",
+            chat_id="test",
+            trim_if_needed=False,
+        )
+        estimate = sum(estimate_message_tokens(msg) for msg in built)
+        if estimate > lower_bound and (upper_bound is None or estimate < upper_bound):
+            return history, built, estimate
+    raise AssertionError("failed to construct prompt in requested token range")
+
+
 def _make_structured_loop(tmp_path: Path) -> AgentLoop:
     bus = MessageBus()
     provider = MagicMock()
@@ -233,36 +257,112 @@ async def test_compaction_check_uses_visible_history_when_usage_missing(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_preflight_prompt_budget_trims_history_before_chat(tmp_path: Path) -> None:
+async def test_preflight_prompt_budget_preserves_history_under_soft_budget(tmp_path: Path) -> None:
     loop = _make_structured_loop(tmp_path)
-    model_key = "preflight-budget-model"
-    loop.model = model_key
-    # Keep this above reserve/max_tokens so the compaction threshold remains valid.
-    loop.MODEL_CONTEXT_WINDOWS[model_key] = 60_000
-    loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+    prompt_budget = loop._get_prompt_input_budget()
+    emergency_threshold = loop._get_emergency_prompt_threshold()
 
-    try:
-        session = loop.sessions.get_or_create("cli:test")
-        payload = "x" * 2500
-        for i in range(80):
-            session.add_message("user", f"question-{i} {payload}")
-            session.add_message("assistant", f"answer-{i} {payload}")
+    history, untrimmed_messages, estimate = _prompt_with_targeted_pressure(
+        loop,
+        lower_bound=prompt_budget,
+        upper_bound=emergency_threshold,
+    )
 
-        # Force compaction gate to use this low value so preflight trimming is exercised.
-        session.metadata["usage_snapshot"] = {
-            "total_input_tokens": 100,
-            "message_index": len(session.messages),
-        }
+    built_messages = loop._build_messages_with_prompt_budget(
+        history=history,
+        current_message="latest",
+        channel="cli",
+        chat_id="test",
+    )
 
-        await loop._process_message(
-            InboundMessage(channel="cli", sender_id="user", chat_id="test", content="trim me")
-        )
+    assert estimate > prompt_budget
+    assert estimate < emergency_threshold
+    assert built_messages == untrimmed_messages
 
-        sent_messages = loop.provider.chat.await_args.kwargs["messages"]
-        sent_estimate = sum(estimate_message_tokens(msg) for msg in sent_messages)
-        assert sent_estimate <= loop._get_prompt_input_budget()
-    finally:
-        loop.MODEL_CONTEXT_WINDOWS.pop(model_key, None)
+
+@pytest.mark.asyncio
+async def test_preflight_prompt_budget_emergency_trim_only_over_threshold(tmp_path: Path) -> None:
+    loop = _make_structured_loop(tmp_path)
+    emergency_threshold = loop._get_emergency_prompt_threshold()
+
+    history, untrimmed_messages, untrimmed_estimate = _prompt_with_targeted_pressure(
+        loop,
+        lower_bound=emergency_threshold,
+        upper_bound=None,
+    )
+
+    built_messages = loop._build_messages_with_prompt_budget(
+        history=history,
+        current_message="latest",
+        channel="cli",
+        chat_id="test",
+    )
+    trimmed_estimate = sum(estimate_message_tokens(msg) for msg in built_messages)
+
+    assert untrimmed_estimate > emergency_threshold
+    assert built_messages != untrimmed_messages
+    assert trimmed_estimate <= emergency_threshold
+    assert len(built_messages) < len(untrimmed_messages)
+
+
+@pytest.mark.asyncio
+async def test_post_build_compaction_uses_current_prompt_estimate(tmp_path: Path) -> None:
+    loop = _make_structured_loop(tmp_path)
+    loop.provider.chat = AsyncMock(
+        side_effect=[
+            LLMResponse(content=_structured_summary("Current Estimate")),
+            LLMResponse(content="ok", tool_calls=[]),
+        ]
+    )
+    loop._consolidate_memory = AsyncMock(return_value=True)
+
+    session = loop.sessions.get_or_create("cli:test")
+    _add_long_messages(session, turns=240)
+    session.metadata["usage_snapshot"] = {
+        "total_input_tokens": 100,
+        "message_index": len(session.messages),
+    }
+
+    await loop._process_message(
+        InboundMessage(channel="cli", sender_id="user", chat_id="test", content="compact after build")
+    )
+
+    assert len(session.compactions) == 1
+    assert loop.provider.chat.await_count == 2
+    final_prompt = loop.provider.chat.await_args_list[-1].kwargs["messages"]
+    final_estimate = sum(estimate_message_tokens(msg) for msg in final_prompt)
+    assert final_estimate <= loop._get_emergency_prompt_threshold()
+
+
+@pytest.mark.asyncio
+async def test_provider_overflow_fallback_compacts_and_retries_once(tmp_path: Path) -> None:
+    loop = _make_structured_loop(tmp_path)
+    loop.provider.chat = AsyncMock(
+        side_effect=[
+            LLMResponse(
+                content='Anthropic API error: 400 - {"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long"}}',
+                finish_reason="error",
+            ),
+            LLMResponse(content=_structured_summary("Overflow Retry")),
+            LLMResponse(content="ok", tool_calls=[]),
+        ]
+    )
+    loop._consolidate_memory = AsyncMock(return_value=True)
+    loop._estimate_prompt_tokens = lambda messages: 100  # keep pre-send estimate below thresholds
+
+    session = loop.sessions.get_or_create("cli:test")
+    _add_long_messages(session, turns=240)
+    session.metadata["usage_snapshot"] = {
+        "total_input_tokens": 100,
+        "message_index": len(session.messages),
+    }
+
+    await loop._process_message(
+        InboundMessage(channel="cli", sender_id="user", chat_id="test", content="retry after overflow")
+    )
+
+    assert len(session.compactions) == 1
+    assert loop.provider.chat.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -495,6 +595,7 @@ async def test_process_message_pruning_uses_fresh_snapshot_ceiling(
     loop = _make_structured_loop(tmp_path)
     loop._run_agent_loop = AsyncMock(return_value=("ok", [], []))
     loop._retrieve_memory_context = AsyncMock(return_value=None)
+    loop._estimate_prompt_tokens = lambda messages: 8_000
 
     original_window = loop.MODEL_CONTEXT_WINDOWS.get(loop.model)
     loop.MODEL_CONTEXT_WINDOWS[loop.model] = 30_000
@@ -540,6 +641,7 @@ async def test_process_message_ignores_stale_snapshot_ceiling(
     loop = _make_structured_loop(tmp_path)
     loop._run_agent_loop = AsyncMock(return_value=("ok", [], []))
     loop._retrieve_memory_context = AsyncMock(return_value=None)
+    loop._estimate_prompt_tokens = lambda messages: 8_000
 
     original_window = loop.MODEL_CONTEXT_WINDOWS.get(loop.model)
     loop.MODEL_CONTEXT_WINDOWS[loop.model] = 30_000

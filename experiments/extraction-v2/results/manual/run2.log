@@ -1,0 +1,285 @@
+
+======================================================================
+SCENARIO 1
+======================================================================
+Messages: 18 total, 3 context, 15 extract
+Existing memories: 0
+Transcript length: 2393 chars
+
+Calling Haiku (V3 prompt)...
+  Elapsed: 5.07s
+  Tokens: 1761 in, 939 out
+
+  Extracted 10 items:
+
+  ➕ [1] ADD
+     Project name is 'taskflow-api' — a REST API backend for a task management app
+     type=fact importance=0.9 scope=shared decay=sticky
+     entities: ['taskflow-api']
+
+  ➕ [2] ADD
+     Technology stack: FastAPI, PostgreSQL, SQLAlchemy, Pydantic v2, Alembic for migrations, uv for package management
+     type=decision importance=0.95 scope=shared decay=sticky
+     entities: ['FastAPI', 'PostgreSQL', 'SQLAlchemy', 'Pydantic', 'Alembic', 'uv']
+
+  ➕ [3] ADD
+     Using Pydantic v2 specifically for performance improvements; aware of breaking changes with @validator → @field_validator migration
+     type=decision importance=0.85 scope=shared decay=sticky
+     entities: ['Pydantic']
+
+  ➕ [4] ADD
+     User prefers uv for package management over pip or poetry due to speed
+     type=preference importance=0.8 scope=shared decay=sticky
+     entities: ['uv']
+
+  ➕ [5] ADD
+     Project structure: app/ (with main.py, models/, schemas/, routers/, services/, db.py), alembic/, tests/, pyproject.toml. Business logic belongs in services, not route handlers.
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['taskflow-api']
+
+  ➕ [6] ADD
+     Minimum test coverage requirement: 80%
+     type=decision importance=0.8 scope=shared decay=sticky
+     entities: ['taskflow-api']
+
+  ➕ [7] ADD
+     Testing stack: pytest with pytest-asyncio for async tests and httpx for testing FastAPI endpoints
+     type=decision importance=0.85 scope=shared decay=sticky
+     entities: ['pytest', 'FastAPI']
+
+  ➕ [8] ADD
+     Deployment target: Docker containers deployed to Fly.io using multi-stage Dockerfile for optimization
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['taskflow-api', 'Fly.io']
+
+  ➕ [9] ADD
+     CI/CD: GitHub Actions pipeline runs ruff linting, pytest with coverage checks, and Docker build on main branch
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['taskflow-api', 'GitHub Actions', 'ruff']
+
+  ➕ [10] ADD
+     Using ruff as the linter/formatter (replaces flake8, isort, and others)
+     type=decision importance=0.85 scope=shared decay=sticky
+     entities: ['ruff']
+
+======================================================================
+SCENARIO 2
+======================================================================
+Messages: 14 total, 3 context, 11 extract
+Existing memories: 6
+Transcript length: 1686 chars
+
+Existing memories:
+  1. [fact] Memory graph uses LanceDB with openai/text-embedding-3-small at 512 dimensions for vector storage
+  2. [decision] Extraction dedup thresholds: 0.95 similarity = reinforce (identical), 0.85 similarity = review (related but potentially different)
+  3. [procedure] Extraction triggers: every 20 user turns, /new command, compaction catch-up, 30-minute idle flush
+  4. [procedure] Watermark advancement guardrail: last_extracted_index only advances after ALL items in batch successfully saved to graph
+  5. [fact] Background extraction model is claude-haiku-3-5 (Haiku 3.5)
+  6. [decision] Nanobot uses XML-tagged transcript format for Haiku extraction: <transcript>, <context_section>, <extraction_section>
+
+Calling Haiku (V3 prompt)...
+  Elapsed: 1.26s
+  Tokens: 1842 in, 160 out
+
+  Extracted 1 items:
+
+  🔄 [1] SUPERSEDE
+     Background extraction model is claude-haiku-4-5 (Haiku 4.5) — upgraded from Haiku 3.5 for better instruction following and reduced hallucination risk
+     type=fact importance=0.85 scope=shared decay=sticky
+     entities: ['claude-haiku-4-5', 'extraction pipeline']
+     supersedes: Background extraction model is claude-haiku-3-5 (Haiku 3.5)
+
+======================================================================
+SCENARIO 7
+======================================================================
+Messages: 18 total, 3 context, 15 extract
+Existing memories: 0
+Transcript length: 2019 chars
+
+Calling Haiku (V3 prompt)...
+  Elapsed: 4.42s
+  Tokens: 1669 in, 799 out
+
+  Extracted 8 items:
+
+  ➕ [1] ADD
+     CI/CD pipeline: GitHub Actions with stages lint → test → build docker image → push to GHCR → deploy to Fly.io. Deployment to Fly.io only triggers on main branch.
+     type=decision importance=0.95 scope=shared decay=sticky
+     entities: ['GitHub Actions', 'GHCR', 'Fly.io']
+
+  ➕ [2] ADD
+     Test matrix strategy: validate Python 3.11 and 3.12 compatibility. Both versions must be supported.
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['Python 3.11', 'Python 3.12']
+
+  ➕ [3] ADD
+     Frontend stack: Next.js 14 with App Router, TypeScript mandatory (no plain JavaScript files allowed).
+     type=decision importance=0.95 scope=shared decay=sticky
+     entities: ['Next.js 14', 'App Router', 'TypeScript']
+
+  ➕ [4] ADD
+     Frontend design system: shadcn/ui with Tailwind CSS. No Material UI or Chakra UI.
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['shadcn/ui', 'Tailwind CSS']
+
+  ➕ [5] ADD
+     API rate limiting: tiered per-user limits — 100 requests/minute for free tier, 1000 requests/minute for paid tier.
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['rate limiting']
+
+  ➕ [6] ADD
+     Rate limit implementation: Redis with sliding window algorithm using ZSET. Reuses existing Redis job queue infrastructure.
+     type=decision importance=0.85 scope=shared decay=sticky
+     entities: ['Redis', 'sliding window']
+
+  ➕ [7] ADD
+     Feature flag naming convention: {team}_{feature_name}_{state} where state is enabled/disabled/rollout. Example: payments_new_checkout_enabled. Enforced in LaunchDarkly.
+     type=procedure importance=0.85 scope=shared decay=sticky
+     entities: ['feature flags', 'LaunchDarkly']
+
+  ➕ [8] ADD
+     Feature flag management platform: LaunchDarkly.
+     type=decision importance=0.8 scope=shared decay=sticky
+     entities: ['LaunchDarkly']
+
+======================================================================
+SCENARIO 8
+======================================================================
+Messages: 6 total, 3 context, 3 extract
+Existing memories: 0
+Transcript length: 160 chars
+
+Calling Haiku (V3 prompt)...
+  Elapsed: 0.48s
+  Tokens: 1130 in, 4 out
+
+  Extracted 0 items:
+
+======================================================================
+SCENARIO 9
+======================================================================
+Messages: 26 total, 3 context, 23 extract
+Existing memories: 0
+Transcript length: 2523 chars
+
+Calling Haiku (V3 prompt)...
+  Elapsed: 6.08s
+  Tokens: 1849 in, 1211 out
+
+  Extracted 12 items:
+
+  ➕ [1] ADD
+     Architecture: modular monolith. Extract to microservices only when clear scaling need arises.
+     type=decision importance=0.95 scope=shared decay=sticky
+     entities: ['architecture', 'monolith']
+
+  ➕ [2] ADD
+     API: GraphQL with Apollo Server for multi-client support (web, mobile, third-party integrations).
+     type=decision importance=0.95 scope=shared decay=sticky
+     entities: ['API', 'GraphQL', 'Apollo Server']
+
+  ➕ [3] ADD
+     Authentication: OAuth2 with PKCE flow for all clients. JWT tokens using RS256 algorithm. No API key authentication for first-party clients.
+     type=decision importance=0.95 scope=shared decay=sticky
+     entities: ['authentication', 'OAuth2', 'PKCE', 'JWT', 'RS256']
+
+  ➕ [4] ADD
+     Search infrastructure: Elasticsearch for complex full-text search requirements.
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['search', 'Elasticsearch']
+
+  ➕ [5] ADD
+     Caching: Redis for session cache and hot data. TTL: 1 hour default, 24 hours for user profiles.
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['caching', 'Redis', 'TTL']
+
+  ➕ [6] ADD
+     Background jobs: Celery with Redis broker. Periodic tasks via Celery Beat. No separate job service.
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['background jobs', 'Celery', 'Redis', 'Celery Beat']
+
+  ➕ [7] ADD
+     File storage: S3-compatible via Cloudflare R2 with Cloudflare CDN. Rationale: zero egress costs vs AWS S3.
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['storage', 'Cloudflare R2', 'CDN', 'S3']
+
+  ➕ [8] ADD
+     Observability stack: Grafana Loki for structured JSON logs, Grafana Tempo for traces via OpenTelemetry. Rationale: lighter than ELK.
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['logging', 'Grafana Loki', 'Grafana Tempo', 'OpenTelemetry']
+
+  ➕ [9] ADD
+     Infrastructure as Code: Terraform for all cloud resources. Manual console changes strictly forbidden — everything must be in IaC.
+     type=decision importance=0.95 scope=shared decay=sticky
+     entities: ['infrastructure', 'Terraform', 'IaC']
+
+  ➕ [10] ADD
+     Secrets management: HashiCorp Vault for all secrets. Secrets must not be stored in environment variables directly — must go through Vault. Non-negotiable policy.
+     type=decision importance=0.95 scope=shared decay=sticky
+     entities: ['secrets', 'HashiCorp Vault']
+
+  ➕ [11] ADD
+     Error tracking: Sentry. Integrate into all services.
+     type=decision importance=0.8 scope=shared decay=sticky
+     entities: ['error tracking', 'Sentry']
+
+  ➕ [12] ADD
+     Code review policy: PRs require 2 approvals minimum. No self-merge on main branch. Main branch is protected. Feature flags required for all risky deployments.
+     type=procedure importance=0.9 scope=shared decay=sticky
+     entities: ['code review', 'PR', 'feature flags']
+
+======================================================================
+SCENARIO 10
+======================================================================
+Messages: 18 total, 3 context, 15 extract
+Existing memories: 0
+Transcript length: 1657 chars
+
+Calling Haiku (V3 prompt)...
+  Elapsed: 4.35s
+  Tokens: 1574 in, 758 out
+
+  Extracted 8 items:
+
+  ➕ [1] ADD
+     Primary GitHub organization is github.com/acme-corp. All project repositories live under this organization.
+     type=fact importance=0.9 scope=shared decay=sticky
+     entities: ['github.com/acme-corp']
+
+  ➕ [2] ADD
+     Primary programming language across the organization is Python. TypeScript is used for frontend only.
+     type=fact importance=0.9 scope=shared decay=sticky
+     entities: ['Python', 'TypeScript']
+
+  ➕ [3] ADD
+     Always run tests after making code changes without being asked. Do not skip tests.
+     type=preference importance=0.85 scope=agent decay=sticky
+     entities: ['testing']
+
+  ➕ [4] ADD
+     Follow conventional commits format for all commit messages. Format: type(scope): message. Types are: feat, fix, chore, docs, refactor, test. Always include scope in parentheses.
+     type=procedure importance=0.85 scope=agent decay=sticky
+     entities: ['git', 'commits']
+
+  ➕ [5] ADD
+     Staging environment is at staging.acme-corp.com with a separate database from production. Production environment is at acme-corp.com. Never mix or cross-contaminate databases between staging and production.
+     type=fact importance=0.95 scope=shared decay=sticky
+     entities: ['staging.acme-corp.com', 'acme-corp.com']
+
+  ➕ [6] ADD
+     Prefer short, direct responses. Use bullet points only when there are 3 or more items. Do not include preamble.
+     type=preference importance=0.8 scope=agent decay=sticky
+     entities: ['communication style']
+
+  ➕ [7] ADD
+     On-call rotation occurs every 2 weeks. Critical alerts are posted in Slack channel #platform-alerts.
+     type=fact importance=0.8 scope=shared decay=sticky
+     entities: ['on-call', '#platform-alerts']
+
+  ➕ [8] ADD
+     When reviewing code, prioritize in this order: security issues first, then correctness, then style.
+     type=procedure importance=0.85 scope=agent decay=sticky
+     entities: ['code review']
+
+
+Results saved to /data/projects/nanobot/experiments/extraction-v2/results/manual/manual_results.json

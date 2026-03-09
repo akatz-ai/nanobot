@@ -1,0 +1,1767 @@
+{
+  "iteration": 2,
+  "timestamp": "2026-03-06T15:28:37",
+  "summary": {
+    "total": 10,
+    "passed": 10,
+    "failed": 0,
+    "pass_rate": 1.0,
+    "total_tokens_in": 15829,
+    "total_tokens_out": 5826,
+    "suite_elapsed_seconds": 35.0
+  },
+  "scenarios": [
+    {
+      "scenario_id": 1,
+      "title": "Scenario 1: Clean Extraction (No Existing Memories)",
+      "message_count": 18,
+      "existing_memory_count": 0,
+      "extracted_count": 10,
+      "extracted_items": [
+        {
+          "action": "add",
+          "content": "Project name is 'taskflow-api' — a REST API backend for a task management app",
+          "type": "fact",
+          "importance": 0.95,
+          "entities": [
+            "taskflow-api"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Tech stack: FastAPI web framework, PostgreSQL database, SQLAlchemy ORM, Pydantic v2 for data validation, Alembic for migrations",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "FastAPI",
+            "PostgreSQL",
+            "SQLAlchemy",
+            "Pydantic",
+            "Alembic"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "User prefers uv for package management instead of pip or poetry due to speed",
+          "type": "preference",
+          "importance": 0.85,
+          "entities": [
+            "uv"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Project structure: app/ (main.py, models/, schemas/, routers/, services/, db.py), alembic/, tests/, pyproject.toml. Business logic should be in services, not route handlers",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "project structure"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Testing requirement: minimum 80% test coverage mandatory for the project",
+          "type": "goal",
+          "importance": 0.9,
+          "entities": [
+            "pytest",
+            "coverage"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Testing stack: pytest with pytest-asyncio for async tests and httpx for testing FastAPI endpoints",
+          "type": "decision",
+          "importance": 0.85,
+          "entities": [
+            "pytest",
+            "pytest-asyncio",
+            "httpx"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Deployment platform is Fly.io with Docker containerization using multi-stage Dockerfile",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "Fly.io",
+            "Docker"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "CI/CD: GitHub Actions pipeline that runs ruff linting, pytest with coverage check, and builds Docker image on main branch",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "GitHub Actions",
+            "ruff",
+            "pytest"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Using ruff for code linting (replaces flake8, isort, and other linters)",
+          "type": "decision",
+          "importance": 0.8,
+          "entities": [
+            "ruff"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "User chose Pydantic v2 specifically for performance improvements, aware of breaking changes (@validator → @field_validator, @model_validator)",
+          "type": "decision",
+          "importance": 0.8,
+          "entities": [
+            "Pydantic"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        }
+      ],
+      "deduped_items": [
+        {
+          "action": "add",
+          "content": "Project name is 'taskflow-api' — a REST API backend for a task management app",
+          "type": "fact",
+          "importance": 0.95,
+          "entities": [
+            "taskflow-api"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Tech stack: FastAPI web framework, PostgreSQL database, SQLAlchemy ORM, Pydantic v2 for data validation, Alembic for migrations",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "FastAPI",
+            "PostgreSQL",
+            "SQLAlchemy",
+            "Pydantic",
+            "Alembic"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "User prefers uv for package management instead of pip or poetry due to speed",
+          "type": "preference",
+          "importance": 0.85,
+          "entities": [
+            "uv"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Project structure: app/ (main.py, models/, schemas/, routers/, services/, db.py), alembic/, tests/, pyproject.toml. Business logic should be in services, not route handlers",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "project structure"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Testing requirement: minimum 80% test coverage mandatory for the project",
+          "type": "goal",
+          "importance": 0.9,
+          "entities": [
+            "pytest",
+            "coverage"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Testing stack: pytest with pytest-asyncio for async tests and httpx for testing FastAPI endpoints",
+          "type": "decision",
+          "importance": 0.85,
+          "entities": [
+            "pytest",
+            "pytest-asyncio",
+            "httpx"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Deployment platform is Fly.io with Docker containerization using multi-stage Dockerfile",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "Fly.io",
+            "Docker"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "CI/CD: GitHub Actions pipeline that runs ruff linting, pytest with coverage check, and builds Docker image on main branch",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "GitHub Actions",
+            "ruff",
+            "pytest"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Using ruff for code linting (replaces flake8, isort, and other linters)",
+          "type": "decision",
+          "importance": 0.8,
+          "entities": [
+            "ruff"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "User chose Pydantic v2 specifically for performance improvements, aware of breaking changes (@validator → @field_validator, @model_validator)",
+          "type": "decision",
+          "importance": 0.8,
+          "entities": [
+            "Pydantic"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        }
+      ],
+      "parse_error": null,
+      "api_elapsed": 5.15,
+      "api_usage": {
+        "input_tokens": 1720,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 945,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "evaluation": {
+        "passed": true,
+        "score": 0.875,
+        "checks_passed": 7,
+        "checks_total": 8,
+        "summary": "7/8 checks passed (score=88%)",
+        "issues": [
+          "Count 10 outside expected range [5,8]"
+        ]
+      },
+      "passed": true,
+      "prompt_size_chars": 2949
+    },
+    {
+      "scenario_id": 2,
+      "title": "Scenario 2: Heavy Dedup (Many Existing Memories Overlap)",
+      "message_count": 14,
+      "existing_memory_count": 6,
+      "extracted_count": 1,
+      "extracted_items": [
+        {
+          "action": "supersede",
+          "supersedes_content": "Background extraction model is claude-haiku-3-5 (Haiku 3.5)",
+          "content": "Background extraction model is claude-haiku-4-5 (Haiku 4.5)",
+          "type": "fact",
+          "importance": 0.85,
+          "entities": [
+            "claude-haiku-4-5",
+            "extraction pipeline"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        }
+      ],
+      "deduped_items": [
+        {
+          "action": "supersede",
+          "supersedes_content": "Background extraction model is claude-haiku-3-5 (Haiku 3.5)",
+          "content": "Background extraction model is claude-haiku-4-5 (Haiku 4.5)",
+          "type": "fact",
+          "importance": 0.85,
+          "entities": [
+            "claude-haiku-4-5",
+            "extraction pipeline"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        }
+      ],
+      "parse_error": null,
+      "api_elapsed": 1.28,
+      "api_usage": {
+        "input_tokens": 1801,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 138,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "evaluation": {
+        "passed": true,
+        "score": 1.0,
+        "checks_passed": 4,
+        "checks_total": 4,
+        "summary": "4/4 checks passed (score=100%)",
+        "issues": []
+      },
+      "passed": true,
+      "prompt_size_chars": 3129
+    },
+    {
+      "scenario_id": 3,
+      "title": "Scenario 3: Supersede/Update (Outdated Memories)",
+      "message_count": 16,
+      "existing_memory_count": 5,
+      "extracted_count": 6,
+      "extracted_items": [
+        {
+          "action": "supersede",
+          "supersedes_content": "comfygit project is deployed on Heroku",
+          "content": "comfygit project is deployed on Fly.io (migrated from Heroku last week). Primary region: iad (US East). Containerized deployment with native Docker support.",
+          "type": "fact",
+          "importance": 0.9,
+          "entities": [
+            "comfygit",
+            "Fly.io",
+            "iad"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "supersede",
+          "supersedes_content": "comfygit API is currently on v2",
+          "content": "comfygit API is on v3 (v2 fully deprecated last month). v2 endpoints return 410 Gone response. Migration guide: docs.comfygit.org/migration/v3",
+          "type": "fact",
+          "importance": 0.95,
+          "entities": [
+            "comfygit",
+            "API v3"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "comfygit API v3 breaking changes: authentication moved to OAuth2 PKCE; workflow endpoint renamed from /workflows to /environments",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "comfygit",
+            "API v3",
+            "OAuth2 PKCE"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "supersede",
+          "supersedes_content": "comfygit uses Redis for job queue processing",
+          "content": "comfygit uses PostgreSQL-backed job queuing with pgqueue Python library (switched from Redis). Processes ~500 jobs/day. Redis was deprecated as overkill for current scale.",
+          "type": "decision",
+          "importance": 0.85,
+          "entities": [
+            "comfygit",
+            "pgqueue",
+            "PostgreSQL"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "supersede",
+          "supersedes_content": "comfygit database is AWS RDS (PostgreSQL)",
+          "content": "comfygit database is Neon (serverless PostgreSQL), migrated from AWS RDS. More cost-effective for variable workload pattern.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "comfygit",
+            "Neon",
+            "PostgreSQL"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "supersede",
+          "supersedes_content": "comfygit workflow endpoint is /workflows",
+          "content": "comfygit workflow endpoint is /environments (renamed from /workflows in API v3)",
+          "type": "fact",
+          "importance": 0.85,
+          "entities": [
+            "comfygit",
+            "API v3"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        }
+      ],
+      "deduped_items": [
+        {
+          "action": "supersede",
+          "supersedes_content": "comfygit project is deployed on Heroku",
+          "content": "comfygit project is deployed on Fly.io (migrated from Heroku last week). Primary region: iad (US East). Containerized deployment with native Docker support.",
+          "type": "fact",
+          "importance": 0.9,
+          "entities": [
+            "comfygit",
+            "Fly.io",
+            "iad"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "supersede",
+          "supersedes_content": "comfygit API is currently on v2",
+          "content": "comfygit API is on v3 (v2 fully deprecated last month). v2 endpoints return 410 Gone response. Migration guide: docs.comfygit.org/migration/v3",
+          "type": "fact",
+          "importance": 0.95,
+          "entities": [
+            "comfygit",
+            "API v3"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "comfygit API v3 breaking changes: authentication moved to OAuth2 PKCE; workflow endpoint renamed from /workflows to /environments",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "comfygit",
+            "API v3",
+            "OAuth2 PKCE"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "supersede",
+          "supersedes_content": "comfygit uses Redis for job queue processing",
+          "content": "comfygit uses PostgreSQL-backed job queuing with pgqueue Python library (switched from Redis). Processes ~500 jobs/day. Redis was deprecated as overkill for current scale.",
+          "type": "decision",
+          "importance": 0.85,
+          "entities": [
+            "comfygit",
+            "pgqueue",
+            "PostgreSQL"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "supersede",
+          "supersedes_content": "comfygit database is AWS RDS (PostgreSQL)",
+          "content": "comfygit database is Neon (serverless PostgreSQL), migrated from AWS RDS. More cost-effective for variable workload pattern.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "comfygit",
+            "Neon",
+            "PostgreSQL"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "supersede",
+          "supersedes_content": "comfygit workflow endpoint is /workflows",
+          "content": "comfygit workflow endpoint is /environments (renamed from /workflows in API v3)",
+          "type": "fact",
+          "importance": 0.85,
+          "entities": [
+            "comfygit",
+            "API v3"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        }
+      ],
+      "parse_error": null,
+      "api_elapsed": 4.19,
+      "api_usage": {
+        "input_tokens": 1701,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 769,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "evaluation": {
+        "passed": true,
+        "score": 1.0,
+        "checks_passed": 7,
+        "checks_total": 7,
+        "summary": "7/7 checks passed (score=100%)",
+        "issues": []
+      },
+      "passed": true,
+      "prompt_size_chars": 2698
+    },
+    {
+      "scenario_id": 4,
+      "title": "Scenario 4: Ambiguous/Noisy Conversation",
+      "message_count": 18,
+      "existing_memory_count": 0,
+      "extracted_count": 4,
+      "extracted_items": [
+        {
+          "action": "add",
+          "content": "Token storage must use expo-secure-store instead of AsyncStorage for encrypted token storage in React Native Expo app",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "expo-secure-store",
+            "token storage",
+            "React Native"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Token refresh in React Native Expo app needs a promise-based mutex/lock to prevent race conditions when multiple requests fire simultaneously (especially on app resume from background)",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "token refresh",
+            "race condition",
+            "React Native"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Minimum supported iOS version is iOS 16",
+          "type": "fact",
+          "importance": 0.9,
+          "entities": [
+            "iOS",
+            "version requirement"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Minimum supported Android version is API 29 (Android 10)",
+          "type": "fact",
+          "importance": 0.9,
+          "entities": [
+            "Android",
+            "version requirement"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        }
+      ],
+      "deduped_items": [
+        {
+          "action": "add",
+          "content": "Token storage must use expo-secure-store instead of AsyncStorage for encrypted token storage in React Native Expo app",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "expo-secure-store",
+            "token storage",
+            "React Native"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Token refresh in React Native Expo app needs a promise-based mutex/lock to prevent race conditions when multiple requests fire simultaneously (especially on app resume from background)",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "token refresh",
+            "race condition",
+            "React Native"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Minimum supported iOS version is iOS 16",
+          "type": "fact",
+          "importance": 0.9,
+          "entities": [
+            "iOS",
+            "version requirement"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Minimum supported Android version is API 29 (Android 10)",
+          "type": "fact",
+          "importance": 0.9,
+          "entities": [
+            "Android",
+            "version requirement"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        }
+      ],
+      "parse_error": null,
+      "api_elapsed": 2.6,
+      "api_usage": {
+        "input_tokens": 1615,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 370,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "evaluation": {
+        "passed": true,
+        "score": 0.8333333333333334,
+        "checks_passed": 5,
+        "checks_total": 6,
+        "summary": "5/6 checks passed (score=83%)",
+        "issues": [
+          "Count 4 outside expected range [1,3]"
+        ]
+      },
+      "passed": true,
+      "prompt_size_chars": 2731
+    },
+    {
+      "scenario_id": 5,
+      "title": "Scenario 5: Code-Heavy Session (Primary Failure Mode)",
+      "message_count": 17,
+      "existing_memory_count": 0,
+      "extracted_count": 4,
+      "extracted_items": [
+        {
+          "action": "add",
+          "content": "JWT tokens for this project must use RS256 (asymmetric) signing, not HS256, for production security",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "JWT",
+            "RS256",
+            "auth"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Auth architecture uses stateless JWT authentication — tokens are verified by signature without server-side session storage",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "authentication",
+            "JWT",
+            "stateless"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Existing auth config: AUTH_PROVIDER is 'internal', sessions last 24 hours, refresh tokens last 30 days, MFA is required, rate limiting is 60 requests/minute",
+          "type": "fact",
+          "importance": 0.8,
+          "entities": [
+            "auth config",
+            "sessions",
+            "MFA",
+            "rate limiting"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "JWT utilities are implemented in auth/jwt_utils.py with token creation, verification, and user ID extraction functions",
+          "type": "fact",
+          "importance": 0.7,
+          "entities": [
+            "auth/jwt_utils.py",
+            "JWT"
+          ],
+          "scope": "shared",
+          "decay": "normal"
+        }
+      ],
+      "deduped_items": [
+        {
+          "action": "add",
+          "content": "JWT tokens for this project must use RS256 (asymmetric) signing, not HS256, for production security",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "JWT",
+            "RS256",
+            "auth"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Auth architecture uses stateless JWT authentication — tokens are verified by signature without server-side session storage",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "authentication",
+            "JWT",
+            "stateless"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Existing auth config: AUTH_PROVIDER is 'internal', sessions last 24 hours, refresh tokens last 30 days, MFA is required, rate limiting is 60 requests/minute",
+          "type": "fact",
+          "importance": 0.8,
+          "entities": [
+            "auth config",
+            "sessions",
+            "MFA",
+            "rate limiting"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "JWT utilities are implemented in auth/jwt_utils.py with token creation, verification, and user ID extraction functions",
+          "type": "fact",
+          "importance": 0.7,
+          "entities": [
+            "auth/jwt_utils.py",
+            "JWT"
+          ],
+          "scope": "shared",
+          "decay": "normal"
+        }
+      ],
+      "parse_error": null,
+      "api_elapsed": 3.05,
+      "api_usage": {
+        "input_tokens": 1373,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 408,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "evaluation": {
+        "passed": true,
+        "score": 0.8,
+        "checks_passed": 4,
+        "checks_total": 5,
+        "summary": "4/5 checks passed (score=80%)",
+        "issues": [
+          "Count 4 outside expected range [2,3]"
+        ]
+      },
+      "passed": true,
+      "prompt_size_chars": 1689
+    },
+    {
+      "scenario_id": 6,
+      "title": "Scenario 6: Contradictory Information (Mind Changes)",
+      "message_count": 16,
+      "existing_memory_count": 0,
+      "extracted_count": 4,
+      "extracted_items": [
+        {
+          "action": "add",
+          "content": "Analytics service database technology: ClickHouse (columnar OLAP database). PostgreSQL was considered but rejected in favor of ClickHouse for its superior performance on complex aggregations and analytics workloads.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "ClickHouse",
+            "PostgreSQL",
+            "analytics service"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Analytics data pipeline uses Redpanda for event streaming (Kafka-compatible, chosen over Apache Kafka for operational simplicity). Redpanda feeds into ClickHouse via ClickHouse's Kafka table engine.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "Redpanda",
+            "Kafka",
+            "ClickHouse",
+            "analytics pipeline"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Analytics dashboard technology: Grafana. ClickHouse data source integrated via Grafana ClickHouse plugin. Grafana already running for infrastructure metrics.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "Grafana",
+            "ClickHouse",
+            "analytics dashboard"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Analytics service expected workload: a few thousand queries per day with complex aggregations.",
+          "type": "fact",
+          "importance": 0.7,
+          "entities": [
+            "analytics service"
+          ],
+          "scope": "shared",
+          "decay": "normal"
+        }
+      ],
+      "deduped_items": [
+        {
+          "action": "add",
+          "content": "Analytics service database technology: ClickHouse (columnar OLAP database). PostgreSQL was considered but rejected in favor of ClickHouse for its superior performance on complex aggregations and analytics workloads.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "ClickHouse",
+            "PostgreSQL",
+            "analytics service"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Analytics data pipeline uses Redpanda for event streaming (Kafka-compatible, chosen over Apache Kafka for operational simplicity). Redpanda feeds into ClickHouse via ClickHouse's Kafka table engine.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "Redpanda",
+            "Kafka",
+            "ClickHouse",
+            "analytics pipeline"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Analytics dashboard technology: Grafana. ClickHouse data source integrated via Grafana ClickHouse plugin. Grafana already running for infrastructure metrics.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "Grafana",
+            "ClickHouse",
+            "analytics dashboard"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Analytics service expected workload: a few thousand queries per day with complex aggregations.",
+          "type": "fact",
+          "importance": 0.7,
+          "entities": [
+            "analytics service"
+          ],
+          "scope": "shared",
+          "decay": "normal"
+        }
+      ],
+      "parse_error": null,
+      "api_elapsed": 2.94,
+      "api_usage": {
+        "input_tokens": 1561,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 443,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "evaluation": {
+        "passed": true,
+        "score": 1.0,
+        "checks_passed": 6,
+        "checks_total": 6,
+        "summary": "6/6 checks passed (score=100%)",
+        "issues": []
+      },
+      "passed": true,
+      "prompt_size_chars": 2411
+    },
+    {
+      "scenario_id": 7,
+      "title": "Scenario 7: Multi-Topic Conversation",
+      "message_count": 18,
+      "existing_memory_count": 0,
+      "extracted_count": 8,
+      "extracted_items": [
+        {
+          "action": "add",
+          "content": "CI/CD pipeline uses GitHub Actions with stages: lint → test → build docker image → push to GHCR → deploy to Fly.io. Deployment to Fly.io only runs on main branch.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "GitHub Actions",
+            "GHCR",
+            "Fly.io"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Test matrix must validate Python 3.11 and 3.12 compatibility. Both versions are actively supported.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "Python 3.11",
+            "Python 3.12"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Frontend stack: Next.js 14 with App Router, TypeScript only (no plain JavaScript files allowed).",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "Next.js 14",
+            "App Router",
+            "TypeScript"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Frontend design system uses shadcn/ui with Tailwind CSS. MUI and Chakra are explicitly rejected.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "shadcn/ui",
+            "Tailwind CSS"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "API rate limiting strategy: per-user tiered limits with 100 requests per minute for free tier and 1000 for paid tier.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "rate limiting"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Rate limiting implemented using Redis with sliding window algorithm. Redis instance is shared with job queue.",
+          "type": "decision",
+          "importance": 0.85,
+          "entities": [
+            "Redis",
+            "sliding window algorithm"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Feature flag naming convention: {team}_{feature_name}_{state} where state is 'enabled', 'disabled', or 'rollout'. Example: payments_new_checkout_enabled.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "feature flags"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Feature flag management uses LaunchDarkly. The {team}_{feature_name}_{state} naming convention must be enforced within LaunchDarkly.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "LaunchDarkly"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        }
+      ],
+      "deduped_items": [
+        {
+          "action": "add",
+          "content": "CI/CD pipeline uses GitHub Actions with stages: lint → test → build docker image → push to GHCR → deploy to Fly.io. Deployment to Fly.io only runs on main branch.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "GitHub Actions",
+            "GHCR",
+            "Fly.io"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Test matrix must validate Python 3.11 and 3.12 compatibility. Both versions are actively supported.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "Python 3.11",
+            "Python 3.12"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Frontend stack: Next.js 14 with App Router, TypeScript only (no plain JavaScript files allowed).",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "Next.js 14",
+            "App Router",
+            "TypeScript"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Frontend design system uses shadcn/ui with Tailwind CSS. MUI and Chakra are explicitly rejected.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "shadcn/ui",
+            "Tailwind CSS"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "API rate limiting strategy: per-user tiered limits with 100 requests per minute for free tier and 1000 for paid tier.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "rate limiting"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Rate limiting implemented using Redis with sliding window algorithm. Redis instance is shared with job queue.",
+          "type": "decision",
+          "importance": 0.85,
+          "entities": [
+            "Redis",
+            "sliding window algorithm"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Feature flag naming convention: {team}_{feature_name}_{state} where state is 'enabled', 'disabled', or 'rollout'. Example: payments_new_checkout_enabled.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "feature flags"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Feature flag management uses LaunchDarkly. The {team}_{feature_name}_{state} naming convention must be enforced within LaunchDarkly.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "LaunchDarkly"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        }
+      ],
+      "parse_error": null,
+      "api_elapsed": 4.21,
+      "api_usage": {
+        "input_tokens": 1628,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 808,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "evaluation": {
+        "passed": true,
+        "score": 1.0,
+        "checks_passed": 6,
+        "checks_total": 6,
+        "summary": "6/6 checks passed (score=100%)",
+        "issues": []
+      },
+      "passed": true,
+      "prompt_size_chars": 2549
+    },
+    {
+      "scenario_id": 8,
+      "title": "Scenario 8: Very Short Window / Pure Greetings (Edge Case)",
+      "message_count": 6,
+      "existing_memory_count": 0,
+      "extracted_count": 0,
+      "extracted_items": [],
+      "deduped_items": [],
+      "parse_error": null,
+      "api_elapsed": 1.35,
+      "api_usage": {
+        "input_tokens": 1089,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 9,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "evaluation": {
+        "passed": true,
+        "score": 1.0,
+        "checks_passed": 3,
+        "checks_total": 3,
+        "summary": "3/3 checks passed (score=100%)",
+        "issues": []
+      },
+      "passed": true,
+      "prompt_size_chars": 426
+    },
+    {
+      "scenario_id": 9,
+      "title": "Scenario 9: Dense Decision-Making",
+      "message_count": 26,
+      "existing_memory_count": 0,
+      "extracted_count": 12,
+      "extracted_items": [
+        {
+          "action": "add",
+          "content": "Architecture decision: modular monolith. Extract services only when there is a clear scaling need.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "architecture",
+            "monolith"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "API technology: GraphQL with Apollo Server. Chosen to support multiple clients (web, mobile, third-party integrations).",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "API",
+            "GraphQL",
+            "Apollo Server"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Authentication: OAuth2 with PKCE for all clients. JWT tokens using RS256 algorithm. No API key authentication for first-party clients.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "authentication",
+            "OAuth2",
+            "PKCE",
+            "JWT",
+            "RS256"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Search infrastructure: Elasticsearch. Chosen for complex full-text search requirements.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "search",
+            "Elasticsearch"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Caching: Redis for session cache and hot data. TTL configuration: 1 hour default for most keys, 24 hours for user profiles.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "caching",
+            "Redis"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Background jobs: Celery with Redis broker. Periodic tasks via Celery Beat. No separate job service.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "background jobs",
+            "Celery",
+            "Redis",
+            "Celery Beat"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "File storage: S3-compatible via Cloudflare R2. CDN via Cloudflare. Chosen to avoid AWS S3 egress costs.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "file storage",
+            "Cloudflare R2",
+            "CDN"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Observability: structured JSON logs shipped to Grafana Loki. Traces via OpenTelemetry to Grafana Tempo. ELK stack rejected as too heavy.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "logging",
+            "Grafana Loki",
+            "OpenTelemetry",
+            "Grafana Tempo"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Infrastructure as Code: Terraform for all cloud resources. Manual console changes are not allowed — all infrastructure must be in IaC.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "infrastructure",
+            "Terraform",
+            "IaC"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Secrets management: HashiCorp Vault for all secrets. No secrets in environment variables directly. All secrets must be retrieved from Vault. This is non-negotiable.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "secrets",
+            "HashiCorp Vault"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Error tracking: Sentry integrated across all services.",
+          "type": "decision",
+          "importance": 0.8,
+          "entities": [
+            "error tracking",
+            "Sentry"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Code review policy: PRs require 2 approvals. No self-merge on main branch. Main branch is protected. Feature flags required for all risky deploys.",
+          "type": "procedure",
+          "importance": 0.9,
+          "entities": [
+            "code review",
+            "PR",
+            "main branch"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        }
+      ],
+      "deduped_items": [
+        {
+          "action": "add",
+          "content": "Architecture decision: modular monolith. Extract services only when there is a clear scaling need.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "architecture",
+            "monolith"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "API technology: GraphQL with Apollo Server. Chosen to support multiple clients (web, mobile, third-party integrations).",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "API",
+            "GraphQL",
+            "Apollo Server"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Authentication: OAuth2 with PKCE for all clients. JWT tokens using RS256 algorithm. No API key authentication for first-party clients.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "authentication",
+            "OAuth2",
+            "PKCE",
+            "JWT",
+            "RS256"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Search infrastructure: Elasticsearch. Chosen for complex full-text search requirements.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "search",
+            "Elasticsearch"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Caching: Redis for session cache and hot data. TTL configuration: 1 hour default for most keys, 24 hours for user profiles.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "caching",
+            "Redis"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Background jobs: Celery with Redis broker. Periodic tasks via Celery Beat. No separate job service.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "background jobs",
+            "Celery",
+            "Redis",
+            "Celery Beat"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "File storage: S3-compatible via Cloudflare R2. CDN via Cloudflare. Chosen to avoid AWS S3 egress costs.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "file storage",
+            "Cloudflare R2",
+            "CDN"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Observability: structured JSON logs shipped to Grafana Loki. Traces via OpenTelemetry to Grafana Tempo. ELK stack rejected as too heavy.",
+          "type": "decision",
+          "importance": 0.9,
+          "entities": [
+            "logging",
+            "Grafana Loki",
+            "OpenTelemetry",
+            "Grafana Tempo"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Infrastructure as Code: Terraform for all cloud resources. Manual console changes are not allowed — all infrastructure must be in IaC.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "infrastructure",
+            "Terraform",
+            "IaC"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Secrets management: HashiCorp Vault for all secrets. No secrets in environment variables directly. All secrets must be retrieved from Vault. This is non-negotiable.",
+          "type": "decision",
+          "importance": 0.95,
+          "entities": [
+            "secrets",
+            "HashiCorp Vault"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Error tracking: Sentry integrated across all services.",
+          "type": "decision",
+          "importance": 0.8,
+          "entities": [
+            "error tracking",
+            "Sentry"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Code review policy: PRs require 2 approvals. No self-merge on main branch. Main branch is protected. Feature flags required for all risky deploys.",
+          "type": "procedure",
+          "importance": 0.9,
+          "entities": [
+            "code review",
+            "PR",
+            "main branch"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        }
+      ],
+      "parse_error": null,
+      "api_elapsed": 6.12,
+      "api_usage": {
+        "input_tokens": 1808,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 1210,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "evaluation": {
+        "passed": true,
+        "score": 1.0,
+        "checks_passed": 9,
+        "checks_total": 9,
+        "summary": "9/9 checks passed (score=100%)",
+        "issues": []
+      },
+      "passed": true,
+      "prompt_size_chars": 3138
+    },
+    {
+      "scenario_id": 10,
+      "title": "Scenario 10: Agent-Scoped vs Shared Memories",
+      "message_count": 18,
+      "existing_memory_count": 0,
+      "extracted_count": 8,
+      "extracted_items": [
+        {
+          "action": "add",
+          "content": "Main GitHub organization for all work is github.com/acme-corp",
+          "type": "fact",
+          "importance": 0.95,
+          "entities": [
+            "github.com/acme-corp"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Primary programming language across the organization is Python; TypeScript is used for frontend only",
+          "type": "fact",
+          "importance": 0.95,
+          "entities": [
+            "Python",
+            "TypeScript"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Staging environment at staging.acme-corp.com with separate database from production; production environment at acme-corp.com. Never cross-contaminate databases between environments",
+          "type": "fact",
+          "importance": 0.95,
+          "entities": [
+            "staging.acme-corp.com",
+            "acme-corp.com"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "On-call rotation runs on a 2-week cycle; platform alerts are posted to #platform-alerts Slack channel",
+          "type": "fact",
+          "importance": 0.85,
+          "entities": [
+            "#platform-alerts"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Always run tests after making code changes without being asked; do not skip tests",
+          "type": "preference",
+          "importance": 0.9,
+          "entities": [],
+          "scope": "agent",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Commit messages must follow conventional commits format (type(scope): message) where type is one of: feat, fix, chore, docs, refactor, test. Always include scope in parentheses",
+          "type": "procedure",
+          "importance": 0.85,
+          "entities": [],
+          "scope": "agent",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Prefer short, direct responses. Use bullet points only when there are 3 or more items. Never include preamble",
+          "type": "preference",
+          "importance": 0.8,
+          "entities": [],
+          "scope": "agent",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Code review priority order: security issues first, then correctness, then style",
+          "type": "procedure",
+          "importance": 0.9,
+          "entities": [],
+          "scope": "agent",
+          "decay": "sticky"
+        }
+      ],
+      "deduped_items": [
+        {
+          "action": "add",
+          "content": "Main GitHub organization for all work is github.com/acme-corp",
+          "type": "fact",
+          "importance": 0.95,
+          "entities": [
+            "github.com/acme-corp"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Primary programming language across the organization is Python; TypeScript is used for frontend only",
+          "type": "fact",
+          "importance": 0.95,
+          "entities": [
+            "Python",
+            "TypeScript"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Staging environment at staging.acme-corp.com with separate database from production; production environment at acme-corp.com. Never cross-contaminate databases between environments",
+          "type": "fact",
+          "importance": 0.95,
+          "entities": [
+            "staging.acme-corp.com",
+            "acme-corp.com"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "On-call rotation runs on a 2-week cycle; platform alerts are posted to #platform-alerts Slack channel",
+          "type": "fact",
+          "importance": 0.85,
+          "entities": [
+            "#platform-alerts"
+          ],
+          "scope": "shared",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Always run tests after making code changes without being asked; do not skip tests",
+          "type": "preference",
+          "importance": 0.9,
+          "entities": [],
+          "scope": "agent",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Commit messages must follow conventional commits format (type(scope): message) where type is one of: feat, fix, chore, docs, refactor, test. Always include scope in parentheses",
+          "type": "procedure",
+          "importance": 0.85,
+          "entities": [],
+          "scope": "agent",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Prefer short, direct responses. Use bullet points only when there are 3 or more items. Never include preamble",
+          "type": "preference",
+          "importance": 0.8,
+          "entities": [],
+          "scope": "agent",
+          "decay": "sticky"
+        },
+        {
+          "action": "add",
+          "content": "Code review priority order: security issues first, then correctness, then style",
+          "type": "procedure",
+          "importance": 0.9,
+          "entities": [],
+          "scope": "agent",
+          "decay": "sticky"
+        }
+      ],
+      "parse_error": null,
+      "api_elapsed": 4.04,
+      "api_usage": {
+        "input_tokens": 1533,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 726,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "evaluation": {
+        "passed": true,
+        "score": 1.0,
+        "checks_passed": 7,
+        "checks_total": 7,
+        "summary": "7/7 checks passed (score=100%)",
+        "issues": []
+      },
+      "passed": true,
+      "prompt_size_chars": 2171
+    }
+  ]
+}

@@ -1,0 +1,158 @@
+{
+  "scenario_id": 5,
+  "title": "Scenario 5: Code-Heavy Session (Primary Failure Mode)",
+  "message_count": 17,
+  "existing_memory_count": 0,
+  "extracted_count": 5,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "JWT tokens for this project use RS256 (asymmetric signing) instead of HS256 for production security",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "JWT",
+        "RS256",
+        "auth module"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Auth module configuration: AUTH_PROVIDER is 'internal', sessions last 24 hours, refresh tokens last 30 days, MFA is required, rate limiting is 60 requests/minute",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "auth module",
+        "configuration"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "JWT utilities implemented in auth/jwt_utils.py with token creation, verification, and user ID extraction functions",
+      "type": "fact",
+      "importance": 0.8,
+      "entities": [
+        "auth/jwt_utils.py"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Project uses stateless JWT authentication with no server-side session storage — tokens are verified by signature only",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "JWT",
+        "authentication architecture"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "All 5 auth tests pass with RS256 JWT implementation",
+      "type": "event",
+      "importance": 0.7,
+      "entities": [
+        "auth tests",
+        "JWT utilities"
+      ],
+      "scope": "shared",
+      "decay": "normal"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "JWT tokens for this project use RS256 (asymmetric signing) instead of HS256 for production security",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "JWT",
+        "RS256",
+        "auth module"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Auth module configuration: AUTH_PROVIDER is 'internal', sessions last 24 hours, refresh tokens last 30 days, MFA is required, rate limiting is 60 requests/minute",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "auth module",
+        "configuration"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "JWT utilities implemented in auth/jwt_utils.py with token creation, verification, and user ID extraction functions",
+      "type": "fact",
+      "importance": 0.8,
+      "entities": [
+        "auth/jwt_utils.py"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Project uses stateless JWT authentication with no server-side session storage — tokens are verified by signature only",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "JWT",
+        "authentication architecture"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "All 5 auth tests pass with RS256 JWT implementation",
+      "type": "event",
+      "importance": 0.7,
+      "entities": [
+        "auth tests",
+        "JWT utilities"
+      ],
+      "scope": "shared",
+      "decay": "normal"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 2.95,
+  "api_usage": {
+    "input_tokens": 1049,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 474,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": false,
+    "score": 0.6,
+    "checks_passed": 3,
+    "checks_total": 5,
+    "summary": "3/5 checks passed (score=60%)",
+    "issues": [
+      "Count 5 outside expected range [2,3]",
+      "Count 5 too high for code-heavy session (over-extraction)"
+    ]
+  },
+  "passed": false,
+  "prompt_size_chars": 1689
+}

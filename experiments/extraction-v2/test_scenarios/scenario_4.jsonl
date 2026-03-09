@@ -1,0 +1,18 @@
+{"role": "user", "content": "ugh this auth bug is driving me crazy. ok so the token refresh is failing but only sometimes", "timestamp": "2026-03-04T16:00:00"}
+{"role": "assistant", "content": "Intermittent failures are the worst. What error are you seeing?", "timestamp": "2026-03-04T16:00:08"}
+{"role": "user", "content": "it's a 401 but the logs don't help. anyway let me show you what i found. so the refresh endpoint is hitting a race condition", "timestamp": "2026-03-04T16:01:00"}
+{"role": "assistant", "content": "Race conditions in token refresh are classic. This usually happens when multiple requests fire simultaneously and all try to refresh an expired token. Is this on the client or server side?", "timestamp": "2026-03-04T16:01:20"}
+{"role": "user", "content": "client side. we have a react native app. the problem is when the app comes back from background, multiple requests fire at once and each tries to refresh", "timestamp": "2026-03-04T16:02:00"}
+{"role": "assistant", "content": "Classic React Native background resume issue. The standard fix is a mutex/queue: only one refresh can be in-flight at a time, and subsequent requests queue and wait for the result.", "timestamp": "2026-03-04T16:02:20"}
+{"role": "user", "content": "yeah that makes sense. ok completely different thing — did you see that new cursor feature they added? the multi-file edit thing", "timestamp": "2026-03-04T16:03:00"}
+{"role": "assistant", "content": "I haven't seen the latest Cursor updates. What did they add?", "timestamp": "2026-03-04T16:03:10"}
+{"role": "user", "content": "oh it's pretty cool you can do like bulk edits across files. anyway not important. so back to the race condition — i think we need a promise-based lock", "timestamp": "2026-03-04T16:04:00"}
+{"role": "assistant", "content": "Yes, a promise-based lock is the right approach. The pattern is: store a pending refresh promise, and any subsequent refresh call returns the same promise instead of starting a new one.", "timestamp": "2026-03-04T16:04:20"}
+{"role": "user", "content": "ok and while we're at it i should probably move from AsyncStorage to SecureStore for the tokens anyway. AsyncStorage isn't encrypted", "timestamp": "2026-03-04T16:05:00"}
+{"role": "assistant", "content": "Definitely. AsyncStorage is unencrypted and accessible if the device is rooted. expo-secure-store or react-native-keychain are the standard options for token storage.", "timestamp": "2026-03-04T16:05:20"}
+{"role": "user", "content": "we're on expo so expo-secure-store is the easy choice. also lol my cat just knocked over my coffee", "timestamp": "2026-03-04T16:06:00"}
+{"role": "assistant", "content": "haha classic! So expo-secure-store for token storage — that's the right call.", "timestamp": "2026-03-04T16:06:10"}
+{"role": "user", "content": "yeah. ok so the plan is: 1) add promise mutex for token refresh, 2) migrate tokens from AsyncStorage to expo-secure-store. i'll do this tomorrow morning", "timestamp": "2026-03-04T16:07:00"}
+{"role": "assistant", "content": "Solid plan. The mutex prevents the race condition, and SecureStore hardens your token storage. Should be a clean fix.", "timestamp": "2026-03-04T16:07:15"}
+{"role": "user", "content": "one more thing — we decided the minimum supported iOS version for this app is iOS 16. Android minimum is API 29 (Android 10). That's been set in stone.", "timestamp": "2026-03-04T16:08:00"}
+{"role": "assistant", "content": "iOS 16 / Android API 29 minimums noted. Good baselines — both cover the vast majority of active devices.", "timestamp": "2026-03-04T16:08:10"}

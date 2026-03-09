@@ -1,0 +1,199 @@
+{
+  "scenario_id": 10,
+  "title": "Scenario 10: Agent-Scoped vs Shared Memories",
+  "message_count": 18,
+  "existing_memory_count": 0,
+  "extracted_count": 8,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "Main GitHub organization for all work is github.com/acme-corp",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "github.com/acme-corp"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Primary programming language across the organization is Python; TypeScript is used for frontend only",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "Python",
+        "TypeScript"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Staging environment at staging.acme-corp.com with separate database from production; production environment at acme-corp.com. Never cross-contaminate databases between environments",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "staging.acme-corp.com",
+        "acme-corp.com"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "On-call rotation runs on a 2-week cycle; platform alerts are posted to #platform-alerts Slack channel",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "#platform-alerts"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Always run tests after making code changes without being asked; do not skip tests",
+      "type": "preference",
+      "importance": 0.9,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Commit messages must follow conventional commits format (type(scope): message) where type is one of: feat, fix, chore, docs, refactor, test. Always include scope in parentheses",
+      "type": "procedure",
+      "importance": 0.85,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Prefer short, direct responses. Use bullet points only when there are 3 or more items. Never include preamble",
+      "type": "preference",
+      "importance": 0.8,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Code review priority order: security issues first, then correctness, then style",
+      "type": "procedure",
+      "importance": 0.9,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "Main GitHub organization for all work is github.com/acme-corp",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "github.com/acme-corp"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Primary programming language across the organization is Python; TypeScript is used for frontend only",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "Python",
+        "TypeScript"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Staging environment at staging.acme-corp.com with separate database from production; production environment at acme-corp.com. Never cross-contaminate databases between environments",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "staging.acme-corp.com",
+        "acme-corp.com"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "On-call rotation runs on a 2-week cycle; platform alerts are posted to #platform-alerts Slack channel",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "#platform-alerts"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Always run tests after making code changes without being asked; do not skip tests",
+      "type": "preference",
+      "importance": 0.9,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Commit messages must follow conventional commits format (type(scope): message) where type is one of: feat, fix, chore, docs, refactor, test. Always include scope in parentheses",
+      "type": "procedure",
+      "importance": 0.85,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Prefer short, direct responses. Use bullet points only when there are 3 or more items. Never include preamble",
+      "type": "preference",
+      "importance": 0.8,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Code review priority order: security issues first, then correctness, then style",
+      "type": "procedure",
+      "importance": 0.9,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 4.04,
+  "api_usage": {
+    "input_tokens": 1533,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 726,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 1.0,
+    "checks_passed": 7,
+    "checks_total": 7,
+    "summary": "7/7 checks passed (score=100%)",
+    "issues": []
+  },
+  "passed": true,
+  "prompt_size_chars": 2171
+}

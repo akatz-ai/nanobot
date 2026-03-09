@@ -1,0 +1,218 @@
+{
+  "scenario_id": 11,
+  "title": "Scenario 11: Taste Signal Extraction — UI Corrections",
+  "message_count": 18,
+  "existing_memory_count": 0,
+  "extracted_count": 7,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "[ui] Detail views for secondary objects should use centered modals, not inline expansion",
+      "type": "taste",
+      "importance": 0.9,
+      "entities": [
+        "deployment",
+        "detail view",
+        "modal"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "[ui] Prefer compact, dense layouts with reduced whitespace and padding (8-12px on cells/sections) over spacious designs; this is a power-user tool",
+      "type": "taste",
+      "importance": 0.9,
+      "entities": [
+        "dashboard",
+        "spacing",
+        "padding"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "[architecture] Lists show clean summary data only; all details, progress indicators, and drill-down content go in modals. Apply this pattern consistently across all pages (deployments, targets, environments, etc.)",
+      "type": "taste",
+      "importance": 0.85,
+      "entities": [
+        "list views",
+        "modal pattern",
+        "architecture"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Deployment list should only display 'Deployed' status badges; hide draft and ready states as these are internal implementation details that shouldn't leak into the UI",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "deployment",
+        "status",
+        "UI filtering"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Deployment detail modal should include logs with smart auto-scroll: stick to bottom only when user is within 40px of bottom; pause auto-scroll if user manually scrolls up, resume when they scroll back down",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "deployment modal",
+        "logs",
+        "auto-scroll"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Deployment progress indicator should only appear in modal overlay, not inline in table rows; table should show only final state (name, target, status, timestamp)",
+      "type": "decision",
+      "importance": 0.75,
+      "entities": [
+        "deployment table",
+        "progress indicator",
+        "modal"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "[ui] Keep current font sizes (14px base is acceptable); focus compression on whitespace and padding instead of aggressive font reduction",
+      "type": "taste",
+      "importance": 0.7,
+      "entities": [
+        "typography",
+        "spacing"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "[ui] Detail views for secondary objects should use centered modals, not inline expansion",
+      "type": "taste",
+      "importance": 0.9,
+      "entities": [
+        "deployment",
+        "detail view",
+        "modal"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "[ui] Prefer compact, dense layouts with reduced whitespace and padding (8-12px on cells/sections) over spacious designs; this is a power-user tool",
+      "type": "taste",
+      "importance": 0.9,
+      "entities": [
+        "dashboard",
+        "spacing",
+        "padding"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "[architecture] Lists show clean summary data only; all details, progress indicators, and drill-down content go in modals. Apply this pattern consistently across all pages (deployments, targets, environments, etc.)",
+      "type": "taste",
+      "importance": 0.85,
+      "entities": [
+        "list views",
+        "modal pattern",
+        "architecture"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Deployment list should only display 'Deployed' status badges; hide draft and ready states as these are internal implementation details that shouldn't leak into the UI",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "deployment",
+        "status",
+        "UI filtering"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Deployment detail modal should include logs with smart auto-scroll: stick to bottom only when user is within 40px of bottom; pause auto-scroll if user manually scrolls up, resume when they scroll back down",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "deployment modal",
+        "logs",
+        "auto-scroll"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Deployment progress indicator should only appear in modal overlay, not inline in table rows; table should show only final state (name, target, status, timestamp)",
+      "type": "decision",
+      "importance": 0.75,
+      "entities": [
+        "deployment table",
+        "progress indicator",
+        "modal"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "[ui] Keep current font sizes (14px base is acceptable); focus compression on whitespace and padding instead of aggressive font reduction",
+      "type": "taste",
+      "importance": 0.7,
+      "entities": [
+        "typography",
+        "spacing"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 5.57,
+  "api_usage": {
+    "input_tokens": 2149,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 726,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 0.75,
+    "checks_passed": 6,
+    "checks_total": 8,
+    "summary": "6/8 checks passed (score=75%)",
+    "issues": [
+      "Rejected 12px font size was extracted",
+      "Hide-implementation-states principle not captured as taste"
+    ]
+  },
+  "passed": true,
+  "prompt_size_chars": 3824
+}

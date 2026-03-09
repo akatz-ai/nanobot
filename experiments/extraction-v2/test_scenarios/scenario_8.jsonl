@@ -1,0 +1,6 @@
+{"role": "user", "content": "Hey", "timestamp": "2026-03-08T08:00:00"}
+{"role": "assistant", "content": "Hey! What's up?", "timestamp": "2026-03-08T08:00:05"}
+{"role": "user", "content": "Not much, just checking in", "timestamp": "2026-03-08T08:00:30"}
+{"role": "assistant", "content": "All good on my end too. Anything you need help with today?", "timestamp": "2026-03-08T08:00:40"}
+{"role": "user", "content": "Nope, just wanted to say hi. Talk later.", "timestamp": "2026-03-08T08:01:00"}
+{"role": "assistant", "content": "Sounds good! Chat later.", "timestamp": "2026-03-08T08:01:05"}

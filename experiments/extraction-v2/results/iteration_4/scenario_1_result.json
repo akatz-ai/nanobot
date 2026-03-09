@@ -1,0 +1,227 @@
+{
+  "scenario_id": 1,
+  "title": "Scenario 1: Clean Extraction (No Existing Memories)",
+  "message_count": 18,
+  "existing_memory_count": 0,
+  "extracted_count": 8,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "Project name: taskflow-api — a REST API backend for a task management app",
+      "type": "fact",
+      "importance": 0.9,
+      "entities": [
+        "taskflow-api"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Technology stack: FastAPI (web framework), PostgreSQL (database), SQLAlchemy (ORM), Pydantic v2 (data validation), Alembic (migrations)",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "FastAPI",
+        "PostgreSQL",
+        "SQLAlchemy",
+        "Pydantic",
+        "Alembic"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "User preference: use uv for package management instead of pip or poetry — prefers it for speed",
+      "type": "preference",
+      "importance": 0.8,
+      "entities": [
+        "uv"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Project structure: app/ (with main.py, models/, schemas/, routers/, services/, db.py), alembic/, tests/, pyproject.toml. Business logic should be in services layer, not route handlers",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "taskflow-api"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Testing requirements: pytest with pytest-asyncio and httpx for testing FastAPI endpoints. Minimum 80% test coverage required",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "pytest",
+        "pytest-asyncio",
+        "httpx"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Deployment: Docker (multi-stage Dockerfile with uv for deps, slim runtime image) and Fly.io",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "Docker",
+        "Fly.io"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "CI/CD: GitHub Actions pipeline that runs ruff linting, pytest with coverage check, and builds Docker image on main branch",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "GitHub Actions",
+        "ruff"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "[architecture] Use Pydantic v2 for the benefits of performance improvements, accepting the breaking changes from v1 (e.g., @validator → @field_validator)",
+      "type": "taste",
+      "importance": 0.75,
+      "entities": [
+        "Pydantic"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "Project name: taskflow-api — a REST API backend for a task management app",
+      "type": "fact",
+      "importance": 0.9,
+      "entities": [
+        "taskflow-api"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Technology stack: FastAPI (web framework), PostgreSQL (database), SQLAlchemy (ORM), Pydantic v2 (data validation), Alembic (migrations)",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "FastAPI",
+        "PostgreSQL",
+        "SQLAlchemy",
+        "Pydantic",
+        "Alembic"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "User preference: use uv for package management instead of pip or poetry — prefers it for speed",
+      "type": "preference",
+      "importance": 0.8,
+      "entities": [
+        "uv"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Project structure: app/ (with main.py, models/, schemas/, routers/, services/, db.py), alembic/, tests/, pyproject.toml. Business logic should be in services layer, not route handlers",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "taskflow-api"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Testing requirements: pytest with pytest-asyncio and httpx for testing FastAPI endpoints. Minimum 80% test coverage required",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "pytest",
+        "pytest-asyncio",
+        "httpx"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Deployment: Docker (multi-stage Dockerfile with uv for deps, slim runtime image) and Fly.io",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "Docker",
+        "Fly.io"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "CI/CD: GitHub Actions pipeline that runs ruff linting, pytest with coverage check, and builds Docker image on main branch",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "GitHub Actions",
+        "ruff"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "[architecture] Use Pydantic v2 for the benefits of performance improvements, accepting the breaking changes from v1 (e.g., @validator → @field_validator)",
+      "type": "taste",
+      "importance": 0.75,
+      "entities": [
+        "Pydantic"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 5.44,
+  "api_usage": {
+    "input_tokens": 1994,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 806,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 1.0,
+    "checks_passed": 8,
+    "checks_total": 8,
+    "summary": "8/8 checks passed (score=100%)",
+    "issues": []
+  },
+  "passed": true,
+  "prompt_size_chars": 2949
+}

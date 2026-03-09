@@ -1,0 +1,180 @@
+{
+  "session": "/home/ubuntu/.nanobot/workspace/agents/nanobot-dev/sessions/discord_1476048732343763189.jsonl",
+  "window": {
+    "context_start": 7050,
+    "extract_start": 7060,
+    "extract_end": 7110
+  },
+  "existing_memories_count": 0,
+  "api_usage": {
+    "input_tokens": 4043,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 773,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "api_elapsed": 7.49,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "User prefers to use Codex for coding task delegation, not Claude Code. Codex should be the default tool for implementation, audits, refactors, and coding tasks.",
+      "type": "preference",
+      "importance": 0.8,
+      "entities": [
+        "Codex",
+        "Claude Code"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Session Evidence Index (Phase 1) implementation task assigned to Codex. Goal is to build per-session SQLite FTS5 index for tool results, enabling agents to search their own history across tool calls and messages.",
+      "type": "goal",
+      "importance": 0.9,
+      "entities": [
+        "Session Evidence Index",
+        "Phase 1",
+        "SQLite FTS5",
+        "Codex"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Evidence Index is prioritized before extraction improvements because it provides agents with powerful search capability over their own session history, making it possible for them to find previous tool call results and messages. This is foundational for later cross-agent learning.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "Session Evidence Index",
+        "Phase 1",
+        "implementation priority"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Memory graph and session evidence index serve different purposes: evidence index is ephemeral session-local keyword search over raw tool outputs (FTS5); memory graph is durable cross-session knowledge layer with semantic search (LanceDB vectors). They are complementary systems, not competing approaches.",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "Session Evidence Index",
+        "memory graph",
+        "LanceDB",
+        "FTS5"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Memory Extraction v2 spec written and committed to main. Covers three components: Periodic Extraction, Session Evidence Index, and MEMORY.md Auto-Compaction. Can be implemented in three independent phases. Spec located at /data/projects/nanobot/docs/specs/memory-extraction-v2.md",
+      "type": "event",
+      "importance": 0.85,
+      "entities": [
+        "memory-extraction-v2.md",
+        "specification"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "User clarified the ultimate goal: build a robust graph system that accumulates lessons learned across all agent chats over time. This graph should become essential for helping agents find important memories about what the user is working on and trying to accomplish. System must be serializable for backups.",
+      "type": "goal",
+      "importance": 0.95,
+      "entities": [
+        "memory graph",
+        "durable knowledge layer"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "User prefers to use Codex for coding task delegation, not Claude Code. Codex should be the default tool for implementation, audits, refactors, and coding tasks.",
+      "type": "preference",
+      "importance": 0.8,
+      "entities": [
+        "Codex",
+        "Claude Code"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Session Evidence Index (Phase 1) implementation task assigned to Codex. Goal is to build per-session SQLite FTS5 index for tool results, enabling agents to search their own history across tool calls and messages.",
+      "type": "goal",
+      "importance": 0.9,
+      "entities": [
+        "Session Evidence Index",
+        "Phase 1",
+        "SQLite FTS5",
+        "Codex"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Evidence Index is prioritized before extraction improvements because it provides agents with powerful search capability over their own session history, making it possible for them to find previous tool call results and messages. This is foundational for later cross-agent learning.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "Session Evidence Index",
+        "Phase 1",
+        "implementation priority"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Memory graph and session evidence index serve different purposes: evidence index is ephemeral session-local keyword search over raw tool outputs (FTS5); memory graph is durable cross-session knowledge layer with semantic search (LanceDB vectors). They are complementary systems, not competing approaches.",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "Session Evidence Index",
+        "memory graph",
+        "LanceDB",
+        "FTS5"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Memory Extraction v2 spec written and committed to main. Covers three components: Periodic Extraction, Session Evidence Index, and MEMORY.md Auto-Compaction. Can be implemented in three independent phases. Spec located at /data/projects/nanobot/docs/specs/memory-extraction-v2.md",
+      "type": "event",
+      "importance": 0.85,
+      "entities": [
+        "memory-extraction-v2.md",
+        "specification"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "User clarified the ultimate goal: build a robust graph system that accumulates lessons learned across all agent chats over time. This graph should become essential for helping agents find important memories about what the user is working on and trying to accomplish. System must be serializable for backups.",
+      "type": "goal",
+      "importance": 0.95,
+      "entities": [
+        "memory graph",
+        "durable knowledge layer"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ]
+}

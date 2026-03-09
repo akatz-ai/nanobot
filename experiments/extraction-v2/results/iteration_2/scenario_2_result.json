@@ -1,0 +1,61 @@
+{
+  "scenario_id": 2,
+  "title": "Scenario 2: Heavy Dedup (Many Existing Memories Overlap)",
+  "message_count": 14,
+  "existing_memory_count": 6,
+  "extracted_count": 1,
+  "extracted_items": [
+    {
+      "action": "supersede",
+      "supersedes_content": "Background extraction model is claude-haiku-3-5 (Haiku 3.5)",
+      "content": "Background extraction model is claude-haiku-4-5 (Haiku 4.5)",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "claude-haiku-4-5",
+        "extraction pipeline"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "supersede",
+      "supersedes_content": "Background extraction model is claude-haiku-3-5 (Haiku 3.5)",
+      "content": "Background extraction model is claude-haiku-4-5 (Haiku 4.5)",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "claude-haiku-4-5",
+        "extraction pipeline"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 1.28,
+  "api_usage": {
+    "input_tokens": 1801,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 138,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 1.0,
+    "checks_passed": 4,
+    "checks_total": 4,
+    "summary": "4/4 checks passed (score=100%)",
+    "issues": []
+  },
+  "passed": true,
+  "prompt_size_chars": 3129
+}

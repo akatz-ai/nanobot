@@ -1,0 +1,343 @@
+{
+  "scenario_id": 9,
+  "title": "Scenario 9: Dense Decision-Making",
+  "message_count": 26,
+  "existing_memory_count": 0,
+  "extracted_count": 12,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "Architecture: modular monolith. Extract services only when there is a clear scaling need.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "architecture",
+        "monolith"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "API design: GraphQL with Apollo Server for multi-client support (web, mobile, third-party integrations).",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "GraphQL",
+        "Apollo Server",
+        "API"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Authentication: OAuth2 with PKCE for all clients. JWT tokens using RS256 algorithm. No API key authentication for first-party clients.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "OAuth2",
+        "PKCE",
+        "JWT",
+        "RS256"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Search infrastructure: Elasticsearch for complex full-text search requirements.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Elasticsearch",
+        "search"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Caching: Redis for session cache and hot data. TTL: 1 hour default, 24 hours for user profiles.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Redis",
+        "caching",
+        "TTL"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Background jobs: Celery with Redis broker. Periodic tasks via Celery Beat. No separate job service.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Celery",
+        "Redis",
+        "background jobs"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "File storage: S3-compatible via Cloudflare R2. CDN via Cloudflare. AWS S3 rejected due to egress costs.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Cloudflare R2",
+        "S3",
+        "CDN",
+        "file storage"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Observability: structured JSON logs via Grafana Loki, traces via OpenTelemetry → Grafana Tempo. ELK stack rejected as too heavy.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Grafana Loki",
+        "Grafana Tempo",
+        "OpenTelemetry",
+        "observability"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Infrastructure as Code: Terraform for all cloud resources. Manual console changes strictly forbidden — everything must be version-controlled in IaC.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "Terraform",
+        "IaC"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Secrets management: HashiCorp Vault for all secrets. No secrets in environment variables directly. Non-negotiable policy.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "HashiCorp Vault",
+        "secrets"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Error tracking: Sentry integrated across all services.",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "Sentry",
+        "error tracking"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Code review policy: PRs require 2 approvals minimum. No self-merge on main branch. Main branch protected. Feature flags required for all risky deploys.",
+      "type": "procedure",
+      "importance": 0.9,
+      "entities": [
+        "code review",
+        "PR",
+        "main branch"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "Architecture: modular monolith. Extract services only when there is a clear scaling need.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "architecture",
+        "monolith"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "API design: GraphQL with Apollo Server for multi-client support (web, mobile, third-party integrations).",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "GraphQL",
+        "Apollo Server",
+        "API"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Authentication: OAuth2 with PKCE for all clients. JWT tokens using RS256 algorithm. No API key authentication for first-party clients.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "OAuth2",
+        "PKCE",
+        "JWT",
+        "RS256"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Search infrastructure: Elasticsearch for complex full-text search requirements.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Elasticsearch",
+        "search"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Caching: Redis for session cache and hot data. TTL: 1 hour default, 24 hours for user profiles.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Redis",
+        "caching",
+        "TTL"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Background jobs: Celery with Redis broker. Periodic tasks via Celery Beat. No separate job service.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Celery",
+        "Redis",
+        "background jobs"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "File storage: S3-compatible via Cloudflare R2. CDN via Cloudflare. AWS S3 rejected due to egress costs.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Cloudflare R2",
+        "S3",
+        "CDN",
+        "file storage"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Observability: structured JSON logs via Grafana Loki, traces via OpenTelemetry → Grafana Tempo. ELK stack rejected as too heavy.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Grafana Loki",
+        "Grafana Tempo",
+        "OpenTelemetry",
+        "observability"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Infrastructure as Code: Terraform for all cloud resources. Manual console changes strictly forbidden — everything must be version-controlled in IaC.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "Terraform",
+        "IaC"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Secrets management: HashiCorp Vault for all secrets. No secrets in environment variables directly. Non-negotiable policy.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "HashiCorp Vault",
+        "secrets"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Error tracking: Sentry integrated across all services.",
+      "type": "decision",
+      "importance": 0.8,
+      "entities": [
+        "Sentry",
+        "error tracking"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Code review policy: PRs require 2 approvals minimum. No self-merge on main branch. Main branch protected. Feature flags required for all risky deploys.",
+      "type": "procedure",
+      "importance": 0.9,
+      "entities": [
+        "code review",
+        "PR",
+        "main branch"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 5.52,
+  "api_usage": {
+    "input_tokens": 1837,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1185,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 1.0,
+    "checks_passed": 9,
+    "checks_total": 9,
+    "summary": "9/9 checks passed (score=100%)",
+    "issues": []
+  },
+  "passed": true,
+  "prompt_size_chars": 3138
+}

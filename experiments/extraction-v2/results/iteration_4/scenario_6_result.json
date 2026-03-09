@@ -1,0 +1,141 @@
+{
+  "scenario_id": 6,
+  "title": "Scenario 6: Contradictory Information (Mind Changes)",
+  "message_count": 16,
+  "existing_memory_count": 0,
+  "extracted_count": 4,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "Analytics service uses ClickHouse as the database. PostgreSQL was considered but rejected in favor of ClickHouse for its columnar storage and superior performance on aggregations over large datasets.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "ClickHouse",
+        "PostgreSQL",
+        "analytics service"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Analytics data pipeline uses Redpanda for event streaming (Kafka-compatible). Kafka was initially considered but Redpanda was chosen for operational simplicity (single binary, no Zookeeper).",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "Redpanda",
+        "Kafka",
+        "event streaming",
+        "analytics service"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Analytics dashboard uses Grafana, leveraging existing infrastructure monitoring Grafana instance. ClickHouse is integrated via Grafana ClickHouse plugin.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Grafana",
+        "ClickHouse",
+        "dashboard"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Analytics service handles a few thousand queries per day with complex aggregations. This workload requirement drove the selection of ClickHouse over PostgreSQL.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "analytics service",
+        "query volume"
+      ],
+      "scope": "shared",
+      "decay": "normal"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "Analytics service uses ClickHouse as the database. PostgreSQL was considered but rejected in favor of ClickHouse for its columnar storage and superior performance on aggregations over large datasets.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "ClickHouse",
+        "PostgreSQL",
+        "analytics service"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Analytics data pipeline uses Redpanda for event streaming (Kafka-compatible). Kafka was initially considered but Redpanda was chosen for operational simplicity (single binary, no Zookeeper).",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "Redpanda",
+        "Kafka",
+        "event streaming",
+        "analytics service"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Analytics dashboard uses Grafana, leveraging existing infrastructure monitoring Grafana instance. ClickHouse is integrated via Grafana ClickHouse plugin.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Grafana",
+        "ClickHouse",
+        "dashboard"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Analytics service handles a few thousand queries per day with complex aggregations. This workload requirement drove the selection of ClickHouse over PostgreSQL.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "analytics service",
+        "query volume"
+      ],
+      "scope": "shared",
+      "decay": "normal"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 3.13,
+  "api_usage": {
+    "input_tokens": 1835,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 447,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 0.8333333333333334,
+    "checks_passed": 5,
+    "checks_total": 6,
+    "summary": "5/6 checks passed (score=83%)",
+    "issues": [
+      "PostgreSQL incorrectly extracted as final analytics DB choice"
+    ]
+  },
+  "passed": true,
+  "prompt_size_chars": 2411
+}

@@ -1,6 +1,7 @@
 """Context builder for assembling agent prompts."""
 
 import base64
+import hashlib
 import mimetypes
 import platform
 import re
@@ -40,12 +41,60 @@ class ContextBuilder:
         )
         self.restrict_to_workspace = restrict_to_workspace
         self._last_skills_summary = ""
+        self._cached_system_prompt: str | None = None
+        self._cached_prompt_hash: str | None = None
+        self._cached_skills_summary = ""
         consolidation_cfg = (memory_graph_config or {}).get("consolidation") or {}
         self._memory_engine = str(consolidation_cfg.get("engine") or "legacy").lower()
-    
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
+
+    @staticmethod
+    def _path_mtime_ns(path: Path) -> int | None:
+        try:
+            return path.stat().st_mtime_ns
+        except FileNotFoundError:
+            return None
+
+    def _system_prompt_cache_key(
+        self,
+        skill_names: list[str] | None,
+        *,
+        include_memory: bool,
+    ) -> str:
+        skill_key = tuple(skill_names or [])
+        watched_files = {
+            filename: self._path_mtime_ns(self.workspace / filename)
+            for filename in self.BOOTSTRAP_FILES
+        }
+        if include_memory:
+            watched_files["memory/MEMORY.md"] = self._path_mtime_ns(self.workspace / "memory" / "MEMORY.md")
+
+        skill_paths = [
+            Path(skill["path"])
+            for skill in self.skills.list_skills(filter_unavailable=False, skill_names=skill_names)
+        ]
+        skill_state = tuple(
+            (str(path), self._path_mtime_ns(path))
+            for path in sorted(skill_paths, key=lambda item: str(item))
+        )
+
+        payload = repr(
+            (skill_key, include_memory, tuple(sorted(watched_files.items())), skill_state)
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def invalidate_prompt_cache(self) -> None:
+        self._cached_system_prompt = None
+        self._cached_prompt_hash = None
+        self._cached_skills_summary = ""
+
+    def build_system_prompt(
+        self,
+        skill_names: list[str] | None = None,
+        *,
+        include_memory: bool = True,
+    ) -> str:
         """
-        Build a cache-friendly base system prompt from identity/bootstrap/skills.
+        Build a cache-friendly base system prompt from workspace state.
         
         Args:
             skill_names: Optional list of skills to include.
@@ -53,6 +102,11 @@ class ContextBuilder:
         Returns:
             Complete system prompt.
         """
+        cache_key = self._system_prompt_cache_key(skill_names, include_memory=include_memory)
+        if cache_key == self._cached_prompt_hash and self._cached_system_prompt is not None:
+            self._last_skills_summary = self._cached_skills_summary
+            return self._cached_system_prompt
+
         parts = []
         self.skills.clear_cache()
 
@@ -63,6 +117,10 @@ class ContextBuilder:
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
             parts.append(bootstrap)
+
+        long_term_memory = self._build_long_term_memory_block() if include_memory else None
+        if long_term_memory:
+            parts.append(long_term_memory)
 
         all_skills = self.skills.list_skills(filter_unavailable=False, skill_names=skill_names)
 
@@ -108,8 +166,12 @@ Skills with available="false" need dependencies installed first - you can try in
             inlined_content = self.skills.load_skills_for_context(inlined_skill_names)
             if inlined_content:
                 parts.append(f"# Inlined Skills\n\n{inlined_content}")
-        
-        return "\n\n---\n\n".join(parts)
+
+        prompt = "\n\n---\n\n".join(parts)
+        self._cached_system_prompt = prompt
+        self._cached_prompt_hash = cache_key
+        self._cached_skills_summary = self._last_skills_summary
+        return prompt
 
     def get_last_skills_summary(self) -> str:
         """Get the skills XML summary from the most recent system prompt build."""
@@ -202,6 +264,22 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
                 parts.append(f"## {filename}\n\n{content}")
         
         return "\n\n".join(parts) if parts else ""
+
+    def _build_long_term_memory_block(self) -> str | None:
+        """Load long-term memory into the static prompt when present."""
+        long_term_memory = self.memory.read_long_term()
+        if not long_term_memory:
+            return None
+        bounded_memory = self._clip_block(
+            long_term_memory,
+            max_chars=self._MAX_LONG_TERM_MEMORY_CHARS,
+            prefer_tail=False,
+        )
+        return self._build_memory_data_message(
+            title="Long-term Memory (file)",
+            data=bounded_memory,
+            block_tag="memory_file_data",
+        )
     
     def build_messages(
         self,
@@ -235,24 +313,12 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         messages = []
 
         # Static system prompt (cache-friendly)
-        system_prompt = self.build_system_prompt(skill_names)
+        system_prompt = self.build_system_prompt(skill_names, include_memory=False)
         messages.append({"role": "system", "content": system_prompt})
 
-        long_term_memory = self.memory.read_long_term()
+        long_term_memory = self._build_long_term_memory_block()
         if long_term_memory:
-            bounded_memory = self._clip_block(
-                long_term_memory,
-                max_chars=self._MAX_LONG_TERM_MEMORY_CHARS,
-                prefer_tail=False,
-            )
-            messages.append({
-                "role": "system",
-                "content": self._build_memory_data_message(
-                    title="Long-term Memory (file)",
-                    data=bounded_memory,
-                    block_tag="memory_file_data",
-                ),
-            })
+            messages.append({"role": "system", "content": long_term_memory})
 
         compaction_summaries: list[str] = []
         other_extra_messages: list[str] = []

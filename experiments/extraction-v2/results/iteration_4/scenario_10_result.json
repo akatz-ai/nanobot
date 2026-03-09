@@ -1,0 +1,199 @@
+{
+  "scenario_id": 10,
+  "title": "Scenario 10: Agent-Scoped vs Shared Memories",
+  "message_count": 18,
+  "existing_memory_count": 0,
+  "extracted_count": 8,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "Primary GitHub organization is github.com/acme-corp. All project repos are located under this org.",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "github.com/acme-corp"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Primary programming language across the org is Python. TypeScript is used for frontend only.",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "Python",
+        "TypeScript"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Staging environment: staging.acme-corp.com with separate database. Production environment: acme-corp.com. Never mix or cross-contaminate databases between staging and production.",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "staging.acme-corp.com",
+        "acme-corp.com"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "On-call rotation runs on a 2-week cycle. Alerts are posted to #platform-alerts Slack channel.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "#platform-alerts"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Always run the full test suite after making code changes, without waiting for user request. Never skip tests.",
+      "type": "preference",
+      "importance": 0.9,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Commit messages must follow conventional commits format: type(scope): message. Required types are feat, fix, chore, docs, refactor, test. Always include a scope in parentheses.",
+      "type": "procedure",
+      "importance": 0.9,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Response style: keep responses short and direct. Use bullet points only when listing 3 or more items. Omit preambles.",
+      "type": "preference",
+      "importance": 0.85,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Code review priority order: security issues first, then correctness, then style. Always check in this sequence.",
+      "type": "procedure",
+      "importance": 0.9,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "Primary GitHub organization is github.com/acme-corp. All project repos are located under this org.",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "github.com/acme-corp"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Primary programming language across the org is Python. TypeScript is used for frontend only.",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "Python",
+        "TypeScript"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Staging environment: staging.acme-corp.com with separate database. Production environment: acme-corp.com. Never mix or cross-contaminate databases between staging and production.",
+      "type": "fact",
+      "importance": 0.95,
+      "entities": [
+        "staging.acme-corp.com",
+        "acme-corp.com"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "On-call rotation runs on a 2-week cycle. Alerts are posted to #platform-alerts Slack channel.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "#platform-alerts"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Always run the full test suite after making code changes, without waiting for user request. Never skip tests.",
+      "type": "preference",
+      "importance": 0.9,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Commit messages must follow conventional commits format: type(scope): message. Required types are feat, fix, chore, docs, refactor, test. Always include a scope in parentheses.",
+      "type": "procedure",
+      "importance": 0.9,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Response style: keep responses short and direct. Use bullet points only when listing 3 or more items. Omit preambles.",
+      "type": "preference",
+      "importance": 0.85,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Code review priority order: security issues first, then correctness, then style. Always check in this sequence.",
+      "type": "procedure",
+      "importance": 0.9,
+      "entities": [],
+      "scope": "agent",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 5.01,
+  "api_usage": {
+    "input_tokens": 1807,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 745,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 1.0,
+    "checks_passed": 7,
+    "checks_total": 7,
+    "summary": "7/7 checks passed (score=100%)",
+    "issues": []
+  },
+  "passed": true,
+  "prompt_size_chars": 2171
+}

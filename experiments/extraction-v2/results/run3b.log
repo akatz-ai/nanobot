@@ -1,0 +1,91 @@
+Loading session: /home/ubuntu/.nanobot/workspace/agents/nanobot-dev/sessions/discord_1476048732343763189.jsonl
+  Total messages: 7357
+  User turns: 323
+
+  Context window: messages[7180:7190] (10 msgs)
+  Extraction window: messages[7190:7230] (40 msgs)
+  Context roles: ['user', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant']
+  Extraction roles: ['user', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'user', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'user', 'assistant', 'user', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant']
+
+  Context transcript: 1601 chars
+  Extraction transcript: 13246 chars
+
+Querying memory graph for existing related memories...
+  Found 0 existing memories
+
+  Full prompt size: 15073 chars (~3768 tokens)
+  System prompt size: 2486 chars
+
+Calling claude-haiku-4-5...
+  Model: claude-haiku-4-5-20251001
+  Elapsed: 10.35s
+  Usage: {'input_tokens': 4322, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0, 'cache_creation': {'ephemeral_5m_input_tokens': 0, 'ephemeral_1h_input_tokens': 0}, 'output_tokens': 1293, 'service_tier': 'standard', 'inference_geo': 'not_available'}
+
+======================================================================
+EXTRACTED 11 ITEMS
+======================================================================
+
+  ➕ [1] ADD
+     Content: Evidence index persists across `/new` command — SQLite connection closes but file stays on disk, allowing new sessions to search previous conversation tool history
+     Type: decision | Importance: 0.9 | Scope: shared | Decay: sticky
+     Entities: evidence index, /new command, SQLite
+
+  ➕ [2] ADD
+     Content: Phase 2 of memory improvements: Extraction Decoupling — decouple extraction from compaction to run on independent schedule (~20 user turns, /new, idle flush, catch-up before compaction)
+     Type: goal | Importance: 0.95 | Scope: shared | Decay: sticky
+     Entities: extraction, compaction, memory system
+
+  ➕ [3] ADD
+     Content: Extraction watermark tracking — maintain `last_extracted_index` in session metadata to prevent silent memory loss from failed extraction batches and ensure catch-up before compaction
+     Type: decision | Importance: 0.9 | Scope: shared | Decay: sticky
+     Entities: extraction, watermark, session metadata
+
+  ➕ [4] ADD
+     Content: Smarter extraction routing — categorize extracted items as shared (all agents visible in memory graph) vs agent-specific (scoped in memory graph), stops dumping shared facts into MEMORY.md
+     Type: decision | Importance: 0.85 | Scope: shared | Decay: sticky
+     Entities: extraction, memory graph, MEMORY.md
+
+  ➕ [5] ADD
+     Content: Phase 3: MEMORY.md Compaction — after extraction, check MEMORY.md token count; if over 10K tokens, use Haiku to distill to ~5K, keeping only agent-private preferences and active context
+     Type: goal | Importance: 0.85 | Scope: shared | Decay: sticky
+     Entities: MEMORY.md, compaction, Haiku, token management
+
+  ➕ [6] ADD
+     Content: Extraction window with context overlap — provide Haiku with read-only context messages before watermark (5 messages) plus extraction window (new messages since last extraction), explicitly marked so Haiku knows not to extract from context
+     Type: procedure | Importance: 0.9 | Scope: shared | Decay: sticky
+     Entities: extraction, Haiku, watermark, context overlap
+
+  ➕ [7] ADD
+     Content: Extraction token budget — cap input at ~12K tokens per batch to keep Haiku focused; batch large windows into multiple smaller extractions if needed
+     Type: decision | Importance: 0.8 | Scope: shared | Decay: sticky
+     Entities: extraction, token budget, Haiku, batching
+
+  ➕ [8] ADD
+     Content: Graph-aware extraction with dedup — include top relevant existing memories in extraction prompt so Haiku can make informed decisions on adding new items, superseding outdated ones, or reinforcing existing memories
+     Type: decision | Importance: 0.95 | Scope: shared | Decay: sticky
+     Entities: extraction, memory graph, deduplication, Haiku
+
+  ➕ [9] ADD
+     Content: Extraction dedup actions — Haiku outputs action field with values: 'add' for new facts, 'reinforce' for existing memories still valid, 'supersede' for newer info contradicting old memories
+     Type: procedure | Importance: 0.9 | Scope: shared | Decay: sticky
+     Entities: extraction, deduplication, memory graph
+
+  ➕ [10] ADD
+     Content: Watermark advancement guardrail — only advance `last_extracted_index` after ALL items from batch successfully save to graph; if any part fails, watermark stays put for retry at next trigger
+     Type: procedure | Importance: 0.95 | Scope: shared | Decay: sticky
+     Entities: extraction, watermark, error handling, data integrity
+
+  ➕ [11] ADD
+     Content: Plan: Create isolated test/experiment script using Haiku API to simulate full extraction pipeline before implementation — test last 25 messages from conversation via JSONL, observe what Haiku extracts as important, compare against memory graph results, run fuzz tests and scenarios to validate system reliability
+     Type: goal | Importance: 0.9 | Scope: shared | Decay: sticky
+     Entities: extraction, testing, Haiku, validation
+
+======================================================================
+SUMMARY
+======================================================================
+  Total extracted: 11
+    add: 11
+  By type: {'decision': 5, 'goal': 3, 'procedure': 3}
+  By scope: {'shared': 11}
+
+  Results saved to: experiments/extraction-v2/results/run3b.json

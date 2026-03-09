@@ -1,0 +1,141 @@
+{
+  "scenario_id": 5,
+  "title": "Scenario 5: Code-Heavy Session (Primary Failure Mode)",
+  "message_count": 17,
+  "existing_memory_count": 0,
+  "extracted_count": 4,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "JWT tokens for this project must use RS256 (asymmetric) signing, not HS256, for production security",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "JWT",
+        "RS256",
+        "auth"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Auth architecture uses stateless JWT authentication — tokens are verified by signature without server-side session storage",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "authentication",
+        "JWT",
+        "stateless"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Existing auth config: AUTH_PROVIDER is 'internal', sessions last 24 hours, refresh tokens last 30 days, MFA is required, rate limiting is 60 requests/minute",
+      "type": "fact",
+      "importance": 0.8,
+      "entities": [
+        "auth config",
+        "sessions",
+        "MFA",
+        "rate limiting"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "JWT utilities are implemented in auth/jwt_utils.py with token creation, verification, and user ID extraction functions",
+      "type": "fact",
+      "importance": 0.7,
+      "entities": [
+        "auth/jwt_utils.py",
+        "JWT"
+      ],
+      "scope": "shared",
+      "decay": "normal"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "JWT tokens for this project must use RS256 (asymmetric) signing, not HS256, for production security",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "JWT",
+        "RS256",
+        "auth"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Auth architecture uses stateless JWT authentication — tokens are verified by signature without server-side session storage",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "authentication",
+        "JWT",
+        "stateless"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Existing auth config: AUTH_PROVIDER is 'internal', sessions last 24 hours, refresh tokens last 30 days, MFA is required, rate limiting is 60 requests/minute",
+      "type": "fact",
+      "importance": 0.8,
+      "entities": [
+        "auth config",
+        "sessions",
+        "MFA",
+        "rate limiting"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "JWT utilities are implemented in auth/jwt_utils.py with token creation, verification, and user ID extraction functions",
+      "type": "fact",
+      "importance": 0.7,
+      "entities": [
+        "auth/jwt_utils.py",
+        "JWT"
+      ],
+      "scope": "shared",
+      "decay": "normal"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 3.05,
+  "api_usage": {
+    "input_tokens": 1373,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 408,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 0.8,
+    "checks_passed": 4,
+    "checks_total": 5,
+    "summary": "4/5 checks passed (score=80%)",
+    "issues": [
+      "Count 4 outside expected range [2,3]"
+    ]
+  },
+  "passed": true,
+  "prompt_size_chars": 1689
+}

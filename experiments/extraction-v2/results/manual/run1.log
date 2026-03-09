@@ -1,0 +1,152 @@
+
+======================================================================
+SCENARIO 3
+======================================================================
+Messages: 16 total, 3 context, 13 extract
+Existing memories: 5
+Transcript length: 1896 chars
+
+Existing memories:
+  1. [fact] comfygit project is deployed on Heroku
+  2. [fact] comfygit API is currently on v2
+  3. [fact] comfygit uses Redis for job queue processing
+  4. [fact] comfygit database is AWS RDS (PostgreSQL)
+  5. [fact] comfygit workflow endpoint is /workflows
+
+Calling Haiku (V3 prompt)...
+  Elapsed: 4.91s
+  Tokens: 1742 in, 722 out
+
+  Extracted 6 items:
+
+  🔄 [1] SUPERSEDE
+     comfygit project is deployed on Fly.io with primary region iad (US East)
+     type=fact importance=0.85 scope=shared decay=sticky
+     entities: ['comfygit', 'Fly.io']
+     supersedes: comfygit project is deployed on Heroku
+
+  🔄 [2] SUPERSEDE
+     comfygit API is on v3; v2 is deprecated and returns 410 Gone. Migration guide: docs.comfygit.org/migration/v3
+     type=fact importance=0.9 scope=shared decay=sticky
+     entities: ['comfygit', 'API v3']
+     supersedes: comfygit API is currently on v2
+
+  ➕ [3] ADD
+     comfygit API v3 key breaking changes: authentication moved to OAuth2 PKCE; /workflows endpoint renamed to /environments
+     type=decision importance=0.85 scope=shared decay=sticky
+     entities: ['comfygit', 'API v3', 'OAuth2 PKCE']
+
+  🔄 [4] SUPERSEDE
+     comfygit uses PostgreSQL-backed job queuing with pgqueue Python library; handles ~500 jobs/day; Redis was deprecated for being overkill for current scale
+     type=decision importance=0.85 scope=shared decay=sticky
+     entities: ['comfygit', 'pgqueue']
+     supersedes: comfygit uses Redis for job queue processing
+
+  🔄 [5] SUPERSEDE
+     comfygit database is Neon (serverless PostgreSQL); migrated from RDS for cost optimization on variable workloads
+     type=decision importance=0.85 scope=shared decay=sticky
+     entities: ['comfygit', 'Neon']
+     supersedes: comfygit database is AWS RDS (PostgreSQL)
+
+  🔄 [6] SUPERSEDE
+     comfygit workflow endpoint is /environments (renamed from /workflows in API v3)
+     type=fact importance=0.85 scope=shared decay=sticky
+     entities: ['comfygit', 'API v3']
+     supersedes: comfygit workflow endpoint is /workflows
+
+======================================================================
+SCENARIO 4
+======================================================================
+Messages: 18 total, 3 context, 15 extract
+Existing memories: 0
+Transcript length: 2230 chars
+
+Calling Haiku (V3 prompt)...
+  Elapsed: 2.83s
+  Tokens: 1656 in, 342 out
+
+  Extracted 3 items:
+
+  ➕ [1] ADD
+     Token refresh in React Native app experiences race conditions when multiple requests fire simultaneously (especially on app resume from background). Solution: implement a promise-based mutex/lock to ensure only one token refresh is in-flight at a time, with subsequent requests queuing and returning the same promise.
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['React Native', 'token refresh', 'race condition', 'promise-based lock']
+
+  ➕ [2] ADD
+     Migrate token storage from AsyncStorage to expo-secure-store for encryption and security hardening.
+     type=decision importance=0.85 scope=shared decay=sticky
+     entities: ['expo-secure-store', 'AsyncStorage', 'token storage', 'React Native']
+
+  ➕ [3] ADD
+     Minimum supported iOS version is iOS 16. Minimum Android version is API 29 (Android 10).
+     type=fact importance=0.95 scope=shared decay=sticky
+     entities: ['iOS 16', 'Android API 29', 'platform requirements']
+
+======================================================================
+SCENARIO 5
+======================================================================
+Messages: 17 total, 3 context, 14 extract
+Existing memories: 0
+Transcript length: 1316 chars
+
+Calling Haiku (V3 prompt)...
+  Elapsed: 2.4s
+  Tokens: 1414 in, 376 out
+
+  Extracted 4 items:
+
+  ➕ [1] ADD
+     All JWT tokens for this project must use RS256 (asymmetric) signing, not HS256, for production security
+     type=decision importance=0.95 scope=shared decay=sticky
+     entities: ['JWT', 'RS256', 'authentication']
+
+  ➕ [2] ADD
+     Auth configuration: MFA is required, sessions last 24 hours, refresh tokens last 30 days, rate limiting is 60 requests/minute
+     type=fact importance=0.9 scope=shared decay=sticky
+     entities: ['auth', 'configuration']
+
+  ➕ [3] ADD
+     The project uses stateless JWT authentication without server-side session storage — tokens are verified by signature only
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['JWT', 'authentication', 'architecture']
+
+  ➕ [4] ADD
+     AUTH_PROVIDER is set to 'internal' in the existing auth config
+     type=fact importance=0.7 scope=shared decay=sticky
+     entities: ['auth', 'configuration']
+
+======================================================================
+SCENARIO 6
+======================================================================
+Messages: 16 total, 3 context, 13 extract
+Existing memories: 0
+Transcript length: 1816 chars
+
+Calling Haiku (V3 prompt)...
+  Elapsed: 3.1s
+  Tokens: 1602 in, 454 out
+
+  Extracted 4 items:
+
+  ➕ [1] ADD
+     Analytics service database: ClickHouse selected. PostgreSQL ruled out for this use case. ClickHouse chosen for columnar storage and superior aggregation performance on large datasets.
+     type=decision importance=0.95 scope=shared decay=sticky
+     entities: ['ClickHouse', 'analytics service', 'PostgreSQL']
+
+  ➕ [2] ADD
+     Analytics data pipeline: Redpanda selected for event streaming. Kafka-compatible API but simpler operational overhead with single binary deployment and no Zookeeper dependency.
+     type=decision importance=0.9 scope=shared decay=sticky
+     entities: ['Redpanda', 'event streaming', 'analytics pipeline']
+
+  ➕ [3] ADD
+     Analytics stack architecture: Redpanda → ClickHouse → Grafana. Redpanda handles event streaming, ClickHouse for columnar analytics storage, Grafana for dashboard visualization using ClickHouse plugin.
+     type=decision importance=0.95 scope=shared decay=sticky
+     entities: ['Redpanda', 'ClickHouse', 'Grafana', 'analytics stack']
+
+  ➕ [4] ADD
+     Grafana already deployed for infrastructure metrics and will be reused as analytics dashboard frontend with ClickHouse data source integration.
+     type=fact importance=0.75 scope=shared decay=sticky
+     entities: ['Grafana', 'ClickHouse']
+
+
+Results saved to /data/projects/nanobot/experiments/extraction-v2/results/manual/manual_results.json

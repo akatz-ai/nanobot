@@ -1,0 +1,26 @@
+{"role": "user", "content": "We need to make a bunch of architectural decisions for the new platform. Let's go rapid-fire. First: monolith vs microservices?", "timestamp": "2026-03-09T10:00:00"}
+{"role": "assistant", "content": "Given your team size (5 engineers), monolith-first is almost always the right call. Microservices complexity requires a larger team to justify.", "timestamp": "2026-03-09T10:00:10"}
+{"role": "user", "content": "Agreed. Modular monolith. We'll extract services only when there's a clear scaling need. Next: REST vs GraphQL for the API?", "timestamp": "2026-03-09T10:01:00"}
+{"role": "assistant", "content": "REST for a simpler DX unless you have complex nested queries. What's your client use case?", "timestamp": "2026-03-09T10:01:12"}
+{"role": "user", "content": "Multiple clients (web, mobile, third-party integrations). GraphQL makes more sense for that. Decision: GraphQL with Apollo Server.", "timestamp": "2026-03-09T10:02:00"}
+{"role": "assistant", "content": "GraphQL with Apollo Server — good fit for multi-client APIs.", "timestamp": "2026-03-09T10:02:10"}
+{"role": "user", "content": "Authentication: OAuth2 with PKCE for all clients, no API key auth for first-party clients. JWT tokens, RS256 algorithm.", "timestamp": "2026-03-09T10:03:00"}
+{"role": "assistant", "content": "OAuth2 PKCE + RS256 JWT — secure and modern. First-party clients get OAuth only, no API keys.", "timestamp": "2026-03-09T10:03:12"}
+{"role": "user", "content": "Search infrastructure: Elasticsearch. We have complex full-text search requirements. TypeSense would be too limited.", "timestamp": "2026-03-09T10:04:00"}
+{"role": "assistant", "content": "Elasticsearch for complex FTS. Rational decision given the requirement complexity.", "timestamp": "2026-03-09T10:04:10"}
+{"role": "user", "content": "Caching: Redis for session cache and hot data. TTL of 1 hour for most keys, 24 hours for user profiles.", "timestamp": "2026-03-09T10:05:00"}
+{"role": "assistant", "content": "Redis caching with tiered TTLs: 1h default, 24h for profiles.", "timestamp": "2026-03-09T10:05:10"}
+{"role": "user", "content": "Background jobs: use Celery with Redis broker. Periodic tasks via Celery Beat. No separate job service.", "timestamp": "2026-03-09T10:06:00"}
+{"role": "assistant", "content": "Celery + Redis broker with Beat for periodic tasks. Avoids a separate service boundary.", "timestamp": "2026-03-09T10:06:10"}
+{"role": "user", "content": "File storage: S3-compatible, using Cloudflare R2 for cost. CDN via Cloudflare too. No AWS S3 due to egress costs.", "timestamp": "2026-03-09T10:07:00"}
+{"role": "assistant", "content": "Cloudflare R2 for S3-compatible storage with Cloudflare CDN — zero egress costs. Smart choice over AWS S3.", "timestamp": "2026-03-09T10:07:12"}
+{"role": "user", "content": "Logging: structured JSON logs, shipped to Grafana Loki. No ELK stack — too heavy. Traces via OpenTelemetry → Grafana Tempo.", "timestamp": "2026-03-09T10:08:00"}
+{"role": "assistant", "content": "Grafana stack for observability: Loki (logs) + Tempo (traces) via OpenTelemetry. Lighter than ELK.", "timestamp": "2026-03-09T10:08:12"}
+{"role": "user", "content": "Infrastructure as code: Terraform for all cloud resources. No manual console changes allowed — everything must be in IaC.", "timestamp": "2026-03-09T10:09:00"}
+{"role": "assistant", "content": "Terraform for IaC, console changes banned. Good discipline — prevents drift.", "timestamp": "2026-03-09T10:09:10"}
+{"role": "user", "content": "Secrets management: HashiCorp Vault for all secrets. No secrets in environment variables directly, must go through Vault. That's non-negotiable.", "timestamp": "2026-03-09T10:10:00"}
+{"role": "assistant", "content": "HashiCorp Vault for secrets, no env var secrets — non-negotiable policy.", "timestamp": "2026-03-09T10:10:12"}
+{"role": "user", "content": "Error tracking: Sentry. It's already paid for. Integrate into all services.", "timestamp": "2026-03-09T10:11:00"}
+{"role": "assistant", "content": "Sentry for error tracking across all services. Noted.", "timestamp": "2026-03-09T10:11:08"}
+{"role": "user", "content": "Code review policy: PRs require 2 approvals, no self-merge on main. Main is protected. Feature flags for all risky deploys.", "timestamp": "2026-03-09T10:12:00"}
+{"role": "assistant", "content": "PR policy: 2 approvals, no self-merge, protected main, feature flags for risky deploys.", "timestamp": "2026-03-09T10:12:12"}

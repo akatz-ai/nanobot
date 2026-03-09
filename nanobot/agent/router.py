@@ -15,6 +15,7 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import AgentProfile, ResolvedAgentProfile
 from nanobot.session.manager import SessionManager
+from nanobot.session.store import SQLiteSessionManager
 
 if TYPE_CHECKING:
     from nanobot.config.schema import ChannelsConfig, Config
@@ -139,6 +140,7 @@ class AgentRouter:
         return ResolvedAgentProfile(
             model=d.model,
             background_model=d.background_model,
+            session_store=d.session_store,
             max_tokens=d.max_tokens,
             temperature=d.temperature,
             max_tool_iterations=d.max_tool_iterations,
@@ -155,7 +157,10 @@ class AgentRouter:
         )
 
         agent_bus = MessageBus()
-        session_manager = SessionManager(workspace)
+        if profile.session_store == "sqlite":
+            session_manager = SQLiteSessionManager(workspace)
+        else:
+            session_manager = SessionManager(workspace)
 
         loop = AgentLoop(
             bus=agent_bus,

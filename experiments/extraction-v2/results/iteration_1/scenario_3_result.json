@@ -1,0 +1,239 @@
+{
+  "scenario_id": 3,
+  "title": "Scenario 3: Supersede/Update (Outdated Memories)",
+  "message_count": 16,
+  "existing_memory_count": 5,
+  "extracted_count": 7,
+  "extracted_items": [
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit project is deployed on Heroku",
+      "content": "comfygit project migrated from Heroku to Fly.io last week. All environments now on Fly.io.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "comfygit",
+        "Fly.io",
+        "Heroku"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "comfygit primary deployment region is iad (US East). Singapore (sin) region is a potential future consideration for Asia coverage but not yet decided.",
+      "type": "fact",
+      "importance": 0.75,
+      "entities": [
+        "comfygit",
+        "Fly.io",
+        "iad",
+        "sin"
+      ],
+      "scope": "shared",
+      "decay": "normal"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit API is currently on v2",
+      "content": "comfygit API is on v3. API v2 was fully deprecated last month and returns 410 Gone responses.",
+      "type": "fact",
+      "importance": 0.9,
+      "entities": [
+        "comfygit",
+        "API",
+        "v3",
+        "v2"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "comfygit API v3 migration guide is at docs.comfygit.org/migration/v3. Key breaking changes: authentication moved to OAuth2 PKCE, workflow endpoint renamed from /workflows to /environments.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "comfygit",
+        "API",
+        "v3",
+        "OAuth2",
+        "PKCE"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit uses Redis for job queue processing",
+      "content": "comfygit switched from Redis to PostgreSQL-backed queuing using the pgqueue Python library. Processing approximately 500 jobs/day.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "comfygit",
+        "pgqueue",
+        "PostgreSQL",
+        "Redis"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit database is AWS RDS (PostgreSQL)",
+      "content": "comfygit database migrated from AWS RDS to Neon serverless Postgres for cost efficiency with variable workload patterns.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "comfygit",
+        "Neon",
+        "PostgreSQL",
+        "RDS"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit workflow endpoint is /workflows",
+      "content": "comfygit workflow endpoint renamed to /environments in API v3.",
+      "type": "fact",
+      "importance": 0.8,
+      "entities": [
+        "comfygit",
+        "API",
+        "v3"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit project is deployed on Heroku",
+      "content": "comfygit project migrated from Heroku to Fly.io last week. All environments now on Fly.io.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "comfygit",
+        "Fly.io",
+        "Heroku"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "comfygit primary deployment region is iad (US East). Singapore (sin) region is a potential future consideration for Asia coverage but not yet decided.",
+      "type": "fact",
+      "importance": 0.75,
+      "entities": [
+        "comfygit",
+        "Fly.io",
+        "iad",
+        "sin"
+      ],
+      "scope": "shared",
+      "decay": "normal"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit API is currently on v2",
+      "content": "comfygit API is on v3. API v2 was fully deprecated last month and returns 410 Gone responses.",
+      "type": "fact",
+      "importance": 0.9,
+      "entities": [
+        "comfygit",
+        "API",
+        "v3",
+        "v2"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "comfygit API v3 migration guide is at docs.comfygit.org/migration/v3. Key breaking changes: authentication moved to OAuth2 PKCE, workflow endpoint renamed from /workflows to /environments.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "comfygit",
+        "API",
+        "v3",
+        "OAuth2",
+        "PKCE"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit uses Redis for job queue processing",
+      "content": "comfygit switched from Redis to PostgreSQL-backed queuing using the pgqueue Python library. Processing approximately 500 jobs/day.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "comfygit",
+        "pgqueue",
+        "PostgreSQL",
+        "Redis"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit database is AWS RDS (PostgreSQL)",
+      "content": "comfygit database migrated from AWS RDS to Neon serverless Postgres for cost efficiency with variable workload patterns.",
+      "type": "fact",
+      "importance": 0.85,
+      "entities": [
+        "comfygit",
+        "Neon",
+        "PostgreSQL",
+        "RDS"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "supersede",
+      "supersedes_content": "comfygit workflow endpoint is /workflows",
+      "content": "comfygit workflow endpoint renamed to /environments in API v3.",
+      "type": "fact",
+      "importance": 0.8,
+      "entities": [
+        "comfygit",
+        "API",
+        "v3"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 4.72,
+  "api_usage": {
+    "input_tokens": 1377,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 865,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 1.0,
+    "checks_passed": 7,
+    "checks_total": 7,
+    "summary": "7/7 checks passed (score=100%)",
+    "issues": []
+  },
+  "passed": true,
+  "prompt_size_chars": 2698
+}

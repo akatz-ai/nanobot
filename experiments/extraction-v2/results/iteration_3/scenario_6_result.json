@@ -1,0 +1,139 @@
+{
+  "scenario_id": 6,
+  "title": "Scenario 6: Contradictory Information (Mind Changes)",
+  "message_count": 16,
+  "existing_memory_count": 0,
+  "extracted_count": 4,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "Analytics service database: ClickHouse (columnar storage, purpose-built for analytics). PostgreSQL was considered but rejected in favor of ClickHouse for better aggregation performance on analytics workloads.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "ClickHouse",
+        "PostgreSQL",
+        "analytics service"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Event streaming for analytics pipeline: Redpanda (Kafka-compatible, single binary, no Zookeeper dependency). Selected over Apache Kafka for operational simplicity.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Redpanda",
+        "Kafka",
+        "event streaming"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Analytics dashboard: Grafana, using the Grafana ClickHouse plugin as data source. Leveraging existing Grafana infrastructure for infrastructure metrics.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "Grafana",
+        "ClickHouse"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Analytics stack architecture: Redpanda (event streaming) → ClickHouse (columnar analytics storage) → Grafana (dashboard/visualization). Designed for a few thousand queries per day with complex aggregations.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Redpanda",
+        "ClickHouse",
+        "Grafana",
+        "analytics service"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "Analytics service database: ClickHouse (columnar storage, purpose-built for analytics). PostgreSQL was considered but rejected in favor of ClickHouse for better aggregation performance on analytics workloads.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "ClickHouse",
+        "PostgreSQL",
+        "analytics service"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Event streaming for analytics pipeline: Redpanda (Kafka-compatible, single binary, no Zookeeper dependency). Selected over Apache Kafka for operational simplicity.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Redpanda",
+        "Kafka",
+        "event streaming"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Analytics dashboard: Grafana, using the Grafana ClickHouse plugin as data source. Leveraging existing Grafana infrastructure for infrastructure metrics.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "Grafana",
+        "ClickHouse"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Analytics stack architecture: Redpanda (event streaming) → ClickHouse (columnar analytics storage) → Grafana (dashboard/visualization). Designed for a few thousand queries per day with complex aggregations.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Redpanda",
+        "ClickHouse",
+        "Grafana",
+        "analytics service"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 3.25,
+  "api_usage": {
+    "input_tokens": 1590,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 465,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 1.0,
+    "checks_passed": 6,
+    "checks_total": 6,
+    "summary": "6/6 checks passed (score=100%)",
+    "issues": []
+  },
+  "passed": true,
+  "prompt_size_chars": 2411
+}

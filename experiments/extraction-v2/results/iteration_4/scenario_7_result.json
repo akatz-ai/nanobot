@@ -1,0 +1,205 @@
+{
+  "scenario_id": 7,
+  "title": "Scenario 7: Multi-Topic Conversation",
+  "message_count": 18,
+  "existing_memory_count": 0,
+  "extracted_count": 7,
+  "extracted_items": [
+    {
+      "action": "add",
+      "content": "CI/CD pipeline uses GitHub Actions with stages: lint → test → build docker image → push to GHCR → deploy to Fly.io. Deployment to Fly.io only occurs on main branch.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "GitHub Actions",
+        "GHCR",
+        "Fly.io"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Test matrix testing requirement: Python 3.11 and 3.12 must both be supported and validated in CI.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Python 3.11",
+        "Python 3.12"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Frontend stack: Next.js 14 with App Router, TypeScript only (no plain JavaScript files allowed).",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "Next.js 14",
+        "App Router",
+        "TypeScript"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "UI component library: shadcn/ui with Tailwind CSS. Do not use MUI or Chakra.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "shadcn/ui",
+        "Tailwind CSS"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "API rate limiting uses tiered per-user limits: 100 requests per minute for free tier, 1000 for paid tier.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "rate limiting"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Rate limit implementation uses Redis with sliding window algorithm, leveraging existing Redis instance for job queue.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "Redis",
+        "sliding window"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Feature flag naming convention: {team}_{feature_name}_{state}, where state is enabled/disabled/rollout. Example: payments_new_checkout_enabled. Enforced in LaunchDarkly.",
+      "type": "procedure",
+      "importance": 0.85,
+      "entities": [
+        "feature flags",
+        "LaunchDarkly"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "deduped_items": [
+    {
+      "action": "add",
+      "content": "CI/CD pipeline uses GitHub Actions with stages: lint → test → build docker image → push to GHCR → deploy to Fly.io. Deployment to Fly.io only occurs on main branch.",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "GitHub Actions",
+        "GHCR",
+        "Fly.io"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Test matrix testing requirement: Python 3.11 and 3.12 must both be supported and validated in CI.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "Python 3.11",
+        "Python 3.12"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Frontend stack: Next.js 14 with App Router, TypeScript only (no plain JavaScript files allowed).",
+      "type": "decision",
+      "importance": 0.95,
+      "entities": [
+        "Next.js 14",
+        "App Router",
+        "TypeScript"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "UI component library: shadcn/ui with Tailwind CSS. Do not use MUI or Chakra.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "shadcn/ui",
+        "Tailwind CSS"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "API rate limiting uses tiered per-user limits: 100 requests per minute for free tier, 1000 for paid tier.",
+      "type": "decision",
+      "importance": 0.9,
+      "entities": [
+        "rate limiting"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Rate limit implementation uses Redis with sliding window algorithm, leveraging existing Redis instance for job queue.",
+      "type": "decision",
+      "importance": 0.85,
+      "entities": [
+        "Redis",
+        "sliding window"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    },
+    {
+      "action": "add",
+      "content": "Feature flag naming convention: {team}_{feature_name}_{state}, where state is enabled/disabled/rollout. Example: payments_new_checkout_enabled. Enforced in LaunchDarkly.",
+      "type": "procedure",
+      "importance": 0.85,
+      "entities": [
+        "feature flags",
+        "LaunchDarkly"
+      ],
+      "scope": "shared",
+      "decay": "sticky"
+    }
+  ],
+  "parse_error": null,
+  "api_elapsed": 3.75,
+  "api_usage": {
+    "input_tokens": 1902,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 718,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  },
+  "evaluation": {
+    "passed": true,
+    "score": 1.0,
+    "checks_passed": 6,
+    "checks_total": 6,
+    "summary": "6/6 checks passed (score=100%)",
+    "issues": []
+  },
+  "passed": true,
+  "prompt_size_chars": 2549
+}

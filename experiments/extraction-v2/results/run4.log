@@ -1,0 +1,76 @@
+Loading session: /home/ubuntu/.nanobot/workspace/agents/nanobot-dev/sessions/discord_1476048732343763189.jsonl
+  Total messages: 7357
+  User turns: 323
+
+  Context window: messages[7050:7060] (10 msgs)
+  Extraction window: messages[7060:7110] (50 msgs)
+  Context roles: ['tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant']
+  Extraction roles: ['tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'user', 'assistant', 'user', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'assistant', 'user', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool', 'assistant', 'tool']
+
+  Context transcript: 247 chars
+  Extraction transcript: 7248 chars
+
+Querying memory graph for existing related memories...
+  Found 0 existing memories
+
+  Full prompt size: 7721 chars (~1930 tokens)
+  System prompt size: 2486 chars
+
+Calling claude-haiku-4-5...
+  Model: claude-haiku-4-5-20251001
+  Elapsed: 7.33s
+  Usage: {'input_tokens': 2591, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0, 'cache_creation': {'ephemeral_5m_input_tokens': 0, 'ephemeral_1h_input_tokens': 0}, 'output_tokens': 948, 'service_tier': 'standard', 'inference_geo': 'not_available'}
+
+======================================================================
+EXTRACTED 8 ITEMS
+======================================================================
+
+  ➕ [1] ADD
+     Content: The session evidence index and memory graph serve different purposes: evidence index is session-local search for raw tool outputs (ephemeral, FTS5-based), while memory graph is durable cross-session knowledge layer (LanceDB vectors + graph edges)
+     Type: decision | Importance: 0.9 | Scope: shared | Decay: sticky
+     Entities: session evidence index, memory graph, LanceDB, FTS5
+
+  ➕ [2] ADD
+     Content: Phase 1 (Session Evidence Index) implementation uses SQLite FTS5 as per-session sidecar to index tool results (exec, read_file, write_file, web_fetch) with new session_search tool allowing agents to search back for specific code, errors, or outputs
+     Type: decision | Importance: 0.85 | Scope: shared | Decay: sticky
+     Entities: Phase 1, Session Evidence Index, SQLite FTS5, session_search tool
+
+  ➕ [3] ADD
+     Content: User preference: implement the evidence index (Phase 1) because it enables agents to see what they may have already found via tool calls or messages from earlier, giving them powerful history search capability
+     Type: preference | Importance: 0.85 | Scope: shared | Decay: sticky
+     Entities: evidence index, agent history search
+
+  ➕ [4] ADD
+     Content: User corrected assistant for launching Claude Code instead of Codex when user specifically requested Codex to work on the evidence index implementation
+     Type: event | Importance: 0.7 | Scope: agent | Decay: normal
+     Entities: Codex, Claude Code
+
+  ➕ [5] ADD
+     Content: Session evidence index is session-local and disposable; content is raw command output, file contents, API responses; searchable via keyword/full-text search; serializes as single SQLite file
+     Type: fact | Importance: 0.8 | Scope: shared | Decay: sticky
+     Entities: session evidence index, SQLite
+
+  ➕ [6] ADD
+     Content: Memory graph is permanent durable knowledge layer for distilled facts, decisions, and preferences; cross-session and cross-agent; built on LanceDB vectors plus graph edges with semantic + keyword hybrid search
+     Type: fact | Importance: 0.9 | Scope: shared | Decay: sticky
+     Entities: memory graph, LanceDB, durable knowledge
+
+  ➕ [7] ADD
+     Content: Goal: build a robust memory graph system that slowly accumulates lessons learned across all agent chats, making it an essential part allowing agents to find important context on what user is working on and trying to accomplish
+     Type: goal | Importance: 0.95 | Scope: shared | Decay: sticky
+     Entities: memory graph, cross-agent learning
+
+  ➕ [8] ADD
+     Content: Phase 1 (evidence index) is simpler and ships fast but does not contribute to cross-agent learning loop; Phase 2 (extraction decoupling + smarter routing) is higher strategic value for building durable knowledge graph
+     Type: decision | Importance: 0.8 | Scope: shared | Decay: sticky
+     Entities: Phase 1, Phase 2, prioritization
+
+======================================================================
+SUMMARY
+======================================================================
+  Total extracted: 8
+    add: 8
+  By type: {'decision': 3, 'preference': 1, 'event': 1, 'fact': 2, 'goal': 1}
+  By scope: {'shared': 7, 'agent': 1}
+
+  Results saved to: experiments/extraction-v2/results/run4.json

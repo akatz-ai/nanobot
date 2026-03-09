@@ -51,6 +51,7 @@ from nanobot.session.compaction_log import CompactionEvent, CompactionLogger
 from nanobot.session.context_log import TurnContextLogger
 from nanobot.session.extraction_log import ExtractionEvent, ExtractionLogger
 from nanobot.session.inbox import InboxEvent
+from nanobot.session.records import make_interrupted_tool_records
 from nanobot.session.usage_log import TokenUsageLogger
 from nanobot.session.manager import Session, SessionManager
 
@@ -1583,38 +1584,9 @@ class AgentLoop:
         if not isinstance(tool_calls, list) or not tool_calls:
             return False
 
-        timestamp = datetime.now().isoformat()
-        entries: list[dict[str, Any]] = []
-        for tool_call in tool_calls:
-            if not isinstance(tool_call, dict):
-                continue
-            tool_call_id = tool_call.get("id") or (tool_call.get("function") or {}).get("id")
-            tool_name = (tool_call.get("function") or {}).get("name") or "unknown_tool"
-            if not tool_call_id:
-                continue
-            entries.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": str(tool_call_id),
-                    "name": str(tool_name),
-                    "content": "[Tool execution interrupted during gateway restart]",
-                    "timestamp": timestamp,
-                }
-            )
-
+        entries = make_interrupted_tool_records(tool_calls)
         if not entries:
             return False
-
-        entries.append(
-            {
-                "role": "assistant",
-                "content": (
-                    "A previous tool execution was interrupted by a gateway restart. "
-                    "The interrupted call was marked failed; waiting for a new user message."
-                ),
-                "timestamp": timestamp,
-            }
-        )
         session.checkpoint(entries)
         self.sessions.save_state(session)
         logger.warning(

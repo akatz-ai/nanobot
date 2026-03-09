@@ -13,6 +13,7 @@ from typing import Any
 from loguru import logger
 
 from nanobot.utils.helpers import ensure_dir, safe_filename
+from nanobot.session.records import CompactionPlanRecord
 
 _UNSET = object()
 
@@ -948,13 +949,13 @@ class SessionManager:
     def clear_usage_snapshot(self, session: Session) -> None:
         self.apply_state(session, metadata_remove=["usage_snapshot"])
 
-    def set_compaction_plan(self, session: Session, plan: dict[str, Any]) -> None:
+    def set_compaction_plan(self, session: Session, plan: CompactionPlanRecord) -> None:
         self.apply_state(
             session,
             metadata_updates={"_structured_compaction_plan": dict(plan)},
         )
 
-    def pop_compaction_plan(self, session: Session) -> dict[str, Any]:
+    def pop_compaction_plan(self, session: Session) -> CompactionPlanRecord:
         removed = self.apply_state(
             session,
             metadata_remove=["_structured_compaction_plan"],

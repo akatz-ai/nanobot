@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -27,8 +28,9 @@ from nanobot.agent.profile_manager import AgentProfileManager
 from nanobot.agent.workspace import init_agent_workspace
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.discord import DiscordChannel
-from nanobot.config.loader import get_config_path, get_state_path, load_config, load_config_data
+from nanobot.config.loader import get_config_path, get_data_dir, get_state_path, load_config, load_config_data
 from nanobot.config.state import StateStore
+from nanobot.cron.service import CronService
 from nanobot.session.context_log import load_context_log
 from nanobot.session.extraction_log import load_extraction_log
 from nanobot.session.manager import SessionManager
@@ -40,6 +42,23 @@ from nanobot.session.usage_log import get_session_summary
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Nanobot Memory Dashboard", version=nanobot.__version__)
+
+_default_cors_origins = [
+    'http://localhost:4173',
+    'http://127.0.0.1:4173',
+    'http://localhost:4174',
+    'http://127.0.0.1:4174',
+    'http://localhost:9347',
+    'http://127.0.0.1:9347',
+]
+_env_cors = [o.strip() for o in os.getenv('NANOBOT_DASHBOARD_CORS_ORIGINS', '').split(',') if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=sorted(set(_default_cors_origins + _env_cors)),
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/dashboard/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -1511,6 +1530,39 @@ async def get_logs(
         "count": len(entries),
         "path": str(log_path),
     }
+
+
+@app.get("/api/cron")
+async def cron_jobs():
+    cron = CronService(get_data_dir() / 'cron' / 'jobs')
+    jobs = cron.list_jobs(include_disabled=True)
+    rows = []
+    for job in jobs:
+        rows.append({
+            'id': job.id,
+            'name': job.name,
+            'enabled': job.enabled,
+            'schedule_type': job.schedule.kind,
+            'cron_expr': job.schedule.expr,
+            'every_seconds': (job.schedule.every_ms // 1000) if job.schedule.every_ms is not None else None,
+            'at_ms': job.schedule.at_ms,
+            'agent_id': job.payload.agent_id,
+            'message': job.payload.message,
+            'channel': job.payload.channel,
+            'chat_id': job.payload.to,
+            'deliver': job.payload.deliver,
+            'origin_session_key': job.payload.origin_session_key,
+            'next_run_at_ms': job.state.next_run_at_ms,
+            'last_run_at_ms': job.state.last_run_at_ms,
+            'last_status': job.state.last_status,
+            'last_error': job.state.last_error,
+            'runs': job.state.runs,
+            'created_at_ms': job.created_at_ms,
+            'updated_at_ms': job.updated_at_ms,
+            'timeout_s': job.timeout_s,
+            'max_runs': job.max_runs,
+        })
+    return {'jobs': rows, 'count': len(rows)}
 
 
 @app.get("/api/config")

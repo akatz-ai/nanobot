@@ -88,6 +88,11 @@ class AgentLoop:
         "Your previous tool calls and results are preserved above. "
         "Continue where you left off — do not re-execute tools that already have results."
     )
+    _INTERRUPTED_CONTEXT_SYSTEM_MESSAGE = (
+        "Note: A previous turn was interrupted by a system restart. "
+        "Any partial tool work from that interrupted turn is preserved above, but prioritize the user's new request "
+        "unless they explicitly ask you to continue the interrupted task."
+    )
 
     # Known context window sizes for common models (in tokens).
     # Used to determine when to trigger compaction (at 75% of window).
@@ -1538,11 +1543,36 @@ class AgentLoop:
             if session_key_token is not None:
                 self._current_session_key_ctx.reset(session_key_token)
 
+    @staticmethod
+    def _extract_latest_user_text(content: Any) -> str:
+        if isinstance(content, str):
+            if "\n---\n\n" in content:
+                return content.partition("\n---\n\n")[2].strip()
+            return content.strip()
+        return content_to_text(content).strip()
+
     @classmethod
-    def _resume_notice_for_state(cls, state: str) -> str | None:
-        if state in {"mid_tool", "mid_loop"}:
+    def _is_explicit_continue_request(cls, content: Any) -> bool:
+        text = cls._extract_latest_user_text(content).lower()
+        if not text:
+            return False
+        normalized = re.sub(r"\s+", " ", text)
+        explicit = {
+            'continue', 'resume', 'go on', 'keep going', 'carry on',
+            'continue please', 'resume please', 'pick up where you left off',
+            'continue where you left off', 'keep going please',
+        }
+        if normalized in explicit:
+            return True
+        return normalized.startswith('continue ') or normalized.startswith('resume ')
+
+    @classmethod
+    def _resume_notice_for_state(cls, state: str, current_message: Any | None = None) -> str | None:
+        if state not in {"mid_tool", "mid_loop"}:
+            return None
+        if cls._is_explicit_continue_request(current_message):
             return cls._RESUME_SYSTEM_MESSAGE
-        return None
+        return cls._INTERRUPTED_CONTEXT_SYSTEM_MESSAGE
 
     @staticmethod
     def _split_session_key(key: str) -> tuple[str, str]:
@@ -1875,7 +1905,7 @@ class AgentLoop:
             key = f"{channel}:{chat_id}"
             session = self.sessions.get_or_create(key)
             metadata = msg.metadata or {}
-            resume_notice = self._resume_notice_for_state(session.detect_resume_state())
+            resume_notice = self._resume_notice_for_state(session.detect_resume_state(), msg.content)
             self._set_tool_context(channel, chat_id, metadata.get("message_id"))
             memory_context = await self._retrieve_memory_context(session, msg.content)
             context_window = self._get_context_window_size()
@@ -2083,7 +2113,7 @@ class AgentLoop:
                 reason=_compaction_reason,
             )
 
-        resume_notice = self._resume_notice_for_state(session.detect_resume_state())
+        resume_notice = self._resume_notice_for_state(session.detect_resume_state(), msg.content)
         self._set_tool_context(msg.channel, msg.chat_id, metadata.get("message_id"))
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):

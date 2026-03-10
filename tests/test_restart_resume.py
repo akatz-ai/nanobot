@@ -125,6 +125,18 @@ async def test_resume_notice_is_injected_for_mid_flight_state(tmp_path: Path) ->
     )
 
 
+def test_resume_notice_softens_for_new_non_continue_request() -> None:
+    notice = AgentLoop._resume_notice_for_state("mid_loop", "Can you read the architecture doc and give me your thoughts?")
+    assert notice is not None
+    assert "prioritize the user's new request" in notice
+    assert "Continue where you left off" not in notice
+
+
+def test_resume_notice_stays_strong_for_explicit_continue() -> None:
+    notice = AgentLoop._resume_notice_for_state("mid_loop", "continue")
+    assert notice == AgentLoop._RESUME_SYSTEM_MESSAGE
+
+
 @pytest.mark.asyncio
 async def test_end_to_end_interruption_reload_and_auto_resume(tmp_path: Path) -> None:
     provider1 = _ScriptedProvider(

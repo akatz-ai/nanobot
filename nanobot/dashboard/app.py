@@ -31,6 +31,8 @@ from nanobot.config.loader import get_config_path, get_state_path, load_config, 
 from nanobot.config.state import StateStore
 from nanobot.session.context_log import load_context_log
 from nanobot.session.extraction_log import load_extraction_log
+from nanobot.session.manager import SessionManager
+from nanobot.session.store import SQLiteSessionManager
 from nanobot.session.usage_log import get_session_summary
 
 # ---------------------------------------------------------------------------
@@ -568,6 +570,41 @@ def _load_primary_session_bundle(name: str, profile: dict[str, Any]) -> dict[str
     path = _primary_session_path(name, profile)
     if path is None:
         return None
+
+    cfg = _load_config()
+    defaults = cfg.get('agents', {}).get('defaults', {})
+    session_store = str(
+        _profile_value(profile, 'sessionStore', 'session_store')
+        or defaults.get('sessionStore')
+        or defaults.get('session_store')
+        or ''
+    ).lower()
+    channel_id = _session_channel_id(path, {})
+    key = f'discord:{channel_id}' if channel_id else None
+
+    if session_store == 'sqlite' and key:
+        workspace = _workspace() / 'agents' / name
+        manager = SQLiteSessionManager(workspace)
+        session = manager.get_or_create(key)
+        messages = list(session.messages)
+        metadata = {
+            'key': session.key,
+            'created_at': session.created_at.isoformat(),
+            'updated_at': session.updated_at.isoformat(),
+            'last_consolidated': session.last_consolidated,
+            **dict(session.metadata or {}),
+        }
+        compactions = list(session.compactions)
+        usage_summary = get_session_summary(path)
+        return {
+            'path': path,
+            'metadata': metadata,
+            'messages': messages,
+            'compactions': compactions,
+            'usage_summary': usage_summary,
+            'key': session.key,
+            'channel_id': channel_id,
+        }
 
     metadata, messages, compactions = _parse_session_with_compactions(path)
     usage_summary = get_session_summary(path)

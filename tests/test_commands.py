@@ -6,7 +6,7 @@ import ssl
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 from typer.testing import CliRunner
@@ -30,6 +30,7 @@ from nanobot.providers.openai_codex_provider import (
     OpenAICodexProvider,
     _convert_messages,
     _extract_event_error,
+    _extract_request_id_from_text,
     _friendly_error,
     _prompt_cache_key,
     _strip_model_prefix,
@@ -266,6 +267,12 @@ def test_openai_codex_extract_event_error_uses_event_details() -> None:
     assert _extract_event_error({'response': {'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}}}) == 'incomplete: max_output_tokens'
 
 
+def test_openai_codex_extract_request_id_from_text() -> None:
+    text = 'Please include the request ID 89f88325-3411-4426-b2f4-d83c3c6a3194 in your message.'
+    assert _extract_request_id_from_text(text) == '89f88325-3411-4426-b2f4-d83c3c6a3194'
+    assert _extract_request_id_from_text('no request id here') is None
+
+
 @pytest.mark.asyncio
 async def test_openai_codex_provider_retries_transient_failures(
     monkeypatch: pytest.MonkeyPatch,
@@ -276,8 +283,8 @@ async def test_openai_codex_provider_retries_transient_failures(
         account_id = 'acct'
         access = 'secret'
 
-    async def _fake_request(url, headers, body, verify):
-        _ = (url, headers, body, verify)
+    async def _fake_request(url, headers, body, verify, request_id, payload_stats):
+        _ = (url, headers, body, verify, request_id, payload_stats)
         attempts['count'] += 1
         if attempts['count'] < 3:
             raise RuntimeError('HTTP 503: upstream connect error or disconnect/reset before headers. delayed connect error: No route to host')
@@ -316,8 +323,8 @@ async def test_openai_codex_provider_does_not_retry_insufficient_quota(
 
     attempts = {'count': 0}
 
-    async def _fake_request(url, headers, body, verify):
-        _ = (url, headers, body, verify)
+    async def _fake_request(url, headers, body, verify, request_id, payload_stats):
+        _ = (url, headers, body, verify, request_id, payload_stats)
         attempts['count'] += 1
         raise CodexAPIError(
             'ChatGPT/Codex quota is exhausted for the current plan or billing pool. Please try again later.',
@@ -341,6 +348,44 @@ async def test_openai_codex_provider_does_not_retry_insufficient_quota(
 
 
 @pytest.mark.asyncio
+async def test_openai_codex_provider_logs_structured_failure_on_exhausted_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Token:
+        account_id = 'acct'
+        access = 'secret'
+
+    async def _fake_request(url, headers, body, request_id, payload_stats):
+        _ = (url, headers, body, request_id, payload_stats)
+        raise CodexAPIError(
+            'An error occurred while processing your request. Please include the request ID 89f88325-3411-4426-b2f4-d83c3c6a3194 in your message. | server_error | server_error',
+            status_code=500,
+            error_type='server_error',
+            error_code='server_error',
+            request_id='89f88325-3411-4426-b2f4-d83c3c6a3194',
+        )
+
+    log_mock = MagicMock()
+    monkeypatch.setattr('nanobot.providers.openai_codex_provider.get_codex_token', lambda: _Token())
+    monkeypatch.setattr('nanobot.providers.openai_codex_provider._request_codex_with_retries', _fake_request)
+    monkeypatch.setattr('nanobot.providers.openai_codex_provider.logger', log_mock)
+
+    provider = OpenAICodexProvider(default_model='openai-codex/gpt-5.4')
+    response = await provider.chat(messages=[{'role': 'user', 'content': 'hello'}])
+
+    assert 'Error calling Codex:' in response.content
+    assert log_mock.bind.called
+    bind_kwargs = log_mock.bind.call_args.kwargs
+    assert bind_kwargs['provider'] == 'codex'
+    assert bind_kwargs['stage'] == 'final_exhausted'
+    assert bind_kwargs['model'] == 'openai-codex/gpt-5.4'
+    assert 'body_tokens_est' in bind_kwargs
+    assert bind_kwargs['exception_class'] == 'CodexAPIError'
+    assert bind_kwargs['error_message'].startswith('An error occurred while processing your request.')
+    assert '89f88325-3411-4426-b2f4-d83c3c6a3194' in response.content
+
+
+@pytest.mark.asyncio
 async def test_openai_codex_provider_forwards_reasoning_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -350,8 +395,8 @@ async def test_openai_codex_provider_forwards_reasoning_effort(
         account_id = "acct"
         access = "secret"
 
-    async def _fake_request(url, headers, body, verify):
-        _ = (url, headers, verify)
+    async def _fake_request(url, headers, body, verify, request_id, payload_stats):
+        _ = (url, headers, verify, request_id, payload_stats)
         captured["body"] = body
         return "OK", [], "stop", {"prompt_tokens": 123, "completion_tokens": 45, "cache_read_input_tokens": 67}
 
@@ -713,6 +758,31 @@ def test_codex_concatenates_all_system_messages_in_order():
 
     assert system_prompt == "Base system\n\nRetrieved memory"
     assert input_items == [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}]
+
+
+@pytest.mark.asyncio
+async def test_openai_codex_iter_sse_logs_parse_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nanobot.providers import openai_codex_provider as ocp
+
+    class _Resp:
+        async def aiter_lines(self):
+            for line in ['data: {not-json', '']:
+                yield line
+
+    log_mock = MagicMock()
+    monkeypatch.setattr(ocp, 'logger', log_mock)
+
+    events = []
+    async for event in ocp._iter_sse(_Resp(), request_id='req-123', payload_stats={'model': 'openai-codex/gpt-5.4'}):
+        events.append(event)
+
+    assert events == []
+    assert log_mock.bind.called
+    bind_kwargs = log_mock.bind.call_args.kwargs
+    assert bind_kwargs['provider'] == 'codex'
+    assert bind_kwargs['stage'] == 'sse_parse_error'
+    assert bind_kwargs['request_id'] == 'req-123'
+    assert bind_kwargs['model'] == 'openai-codex/gpt-5.4'
 
 
 def test_codex_prompt_cache_key_uses_stable_prefix_only():

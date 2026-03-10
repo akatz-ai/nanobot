@@ -6,7 +6,9 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 from typing import Any, AsyncGenerator
+from uuid import uuid4
 
 import httpx
 from loguru import logger
@@ -24,12 +26,26 @@ _CODEX_MAX_RETRIES = 3
 class CodexAPIError(RuntimeError):
     """Structured error for Codex HTTP/API failures."""
 
-    def __init__(self, message: str, *, status_code: int | None = None, retry_after: float | None = None, error_type: str | None = None, error_code: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retry_after: float | None = None,
+        error_type: str | None = None,
+        error_code: str | None = None,
+        request_id: str | None = None,
+        response_status: str | None = None,
+        raw_error: str | None = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.retry_after = retry_after
         self.error_type = error_type
         self.error_code = error_code
+        self.request_id = request_id
+        self.response_status = response_status
+        self.raw_error = raw_error
 
 
 class OpenAICodexProvider(LLMProvider):
@@ -49,6 +65,7 @@ class OpenAICodexProvider(LLMProvider):
         reasoning_effort: str | None = None,
     ) -> LLMResponse:
         model = model or self.default_model
+        request_id = str(uuid4())
         system_prompt, input_items = _convert_messages(messages)
 
         token = await asyncio.to_thread(get_codex_token)
@@ -74,6 +91,14 @@ class OpenAICodexProvider(LLMProvider):
         if tools:
             body["tools"] = _convert_tools(tools)
 
+        payload_stats = _payload_stats(
+            model=model,
+            system_prompt=system_prompt,
+            input_items=input_items,
+            tools=tools,
+            body=body,
+        )
+
         url = DEFAULT_CODEX_URL
 
         try:
@@ -81,6 +106,8 @@ class OpenAICodexProvider(LLMProvider):
                 url=url,
                 headers=headers,
                 body=body,
+                request_id=request_id,
+                payload_stats=payload_stats,
             )
             return LLMResponse(
                 content=content,
@@ -89,6 +116,13 @@ class OpenAICodexProvider(LLMProvider):
                 usage=usage,
             )
         except Exception as e:
+            _log_codex_failure(
+                stage='final_exhausted',
+                request_id=request_id,
+                error=e,
+                payload_stats=payload_stats,
+                retries=_CODEX_MAX_RETRIES,
+            )
             return LLMResponse(
                 content=f"Error calling Codex: {str(e)}",
                 finish_reason="error",
@@ -140,6 +174,92 @@ def _format_codex_error(exc: Exception) -> str:
     return exc.__class__.__name__
 
 
+def _extract_request_id_from_text(text: str | None) -> str | None:
+    if not text:
+        return None
+    match = re.search(r'request id\s+([0-9a-fA-F-]{8,})', text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _extract_request_id_from_headers(headers: httpx.Headers | dict[str, Any] | None) -> str | None:
+    if not headers:
+        return None
+    for key in ('x-request-id', 'request-id', 'openai-request-id'):
+        try:
+            value = headers.get(key)
+        except Exception:
+            value = None
+        if value:
+            return str(value)
+    return None
+
+
+def _payload_stats(
+    *,
+    model: str,
+    system_prompt: str,
+    input_items: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    body_text = json.dumps(body, ensure_ascii=False, sort_keys=True)
+    return {
+        'model': model,
+        'system_prompt_chars': len(system_prompt),
+        'input_item_count': len(input_items),
+        'tool_count': len(tools or []),
+        'body_chars': len(body_text),
+        'body_tokens_est': max(1, len(body_text) // 4),
+        'prompt_cache_key': body.get('prompt_cache_key'),
+        'parallel_tool_calls': bool(body.get('parallel_tool_calls')),
+        'has_reasoning': 'reasoning' in body,
+    }
+
+
+def _log_codex_event(level: str, message: str, **fields: Any) -> None:
+    logger.bind(provider='codex', **fields).log(level.upper(), message)
+
+
+def _log_codex_failure(
+    *,
+    stage: str,
+    request_id: str,
+    error: Exception,
+    payload_stats: dict[str, Any],
+    attempt: int | None = None,
+    retries: int | None = None,
+) -> None:
+    codex_request_id = None
+    if isinstance(error, CodexAPIError):
+        codex_request_id = error.request_id or _extract_request_id_from_text(str(error))
+    else:
+        codex_request_id = _extract_request_id_from_text(str(error))
+    fields = {
+        'stage': stage,
+        'request_id': request_id,
+        'upstream_request_id': codex_request_id,
+        'exception_class': error.__class__.__name__,
+        'error_message': _format_codex_error(error),
+        'attempt': attempt,
+        'retries': retries,
+        **payload_stats,
+    }
+    if isinstance(error, CodexAPIError):
+        fields.update(
+            {
+                'status_code': error.status_code,
+                'error_type': error.error_type,
+                'error_code': error.error_code,
+                'retry_after': error.retry_after,
+                'response_status': error.response_status,
+                'raw_error': error.raw_error,
+            }
+        )
+    _log_codex_event('error', 'Codex request failed', **fields)
+
+
 def _is_retryable_codex_error(exc: Exception) -> bool:
     if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
         return True
@@ -174,17 +294,34 @@ async def _request_codex_with_retries(
     url: str,
     headers: dict[str, str],
     body: dict[str, Any],
+    request_id: str,
+    payload_stats: dict[str, Any],
 ) -> tuple[str, list[ToolCallRequest], str, dict[str, int]]:
     last_error: Exception | None = None
     verify = True
     for attempt in range(1, _CODEX_MAX_RETRIES + 1):
         try:
-            return await _request_codex(url, headers, body, verify=verify)
+            return await _request_codex(
+                url,
+                headers,
+                body,
+                verify=verify,
+                request_id=request_id,
+                payload_stats=payload_stats,
+            )
         except Exception as e:
             last_error = e
             if 'CERTIFICATE_VERIFY_FAILED' in str(e):
                 if verify:
-                    logger.warning('SSL certificate verification failed for Codex API; retrying with verify=False')
+                    _log_codex_event(
+                        'warning',
+                        'SSL certificate verification failed for Codex API; retrying with verify=False',
+                        stage='ssl_retry',
+                        request_id=request_id,
+                        attempt=attempt,
+                        retries=_CODEX_MAX_RETRIES,
+                        **payload_stats,
+                    )
                     verify = False
                     continue
             if attempt >= _CODEX_MAX_RETRIES or not _is_retryable_codex_error(e):
@@ -192,12 +329,23 @@ async def _request_codex_with_retries(
             retry_after = getattr(e, 'retry_after', None)
             delay = retry_after if retry_after is not None else [2, 8, 16][attempt - 1]
             delay = max(1.0, min(float(delay), 60.0))
-            logger.warning(
-                'Codex request failed (attempt {}/{}): {}. Retrying in {:.1f}s',
-                attempt,
-                _CODEX_MAX_RETRIES,
-                _format_codex_error(e),
-                delay,
+            _log_codex_failure(
+                stage='retryable_error',
+                request_id=request_id,
+                error=e,
+                payload_stats=payload_stats,
+                attempt=attempt,
+                retries=_CODEX_MAX_RETRIES,
+            )
+            _log_codex_event(
+                'warning',
+                'Codex request will be retried',
+                stage='retry_scheduled',
+                request_id=request_id,
+                attempt=attempt,
+                retries=_CODEX_MAX_RETRIES,
+                retry_delay_sec=delay,
+                **payload_stats,
             )
             await asyncio.sleep(delay)
     assert last_error is not None
@@ -209,21 +357,29 @@ async def _request_codex(
     headers: dict[str, str],
     body: dict[str, Any],
     verify: bool,
+    *,
+    request_id: str,
+    payload_stats: dict[str, Any],
 ) -> tuple[str, list[ToolCallRequest], str, dict[str, int]]:
     async with httpx.AsyncClient(timeout=60.0, verify=verify) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
             if response.status_code != 200:
                 text = await response.aread()
+                raw_text = text.decode("utf-8", "ignore")
                 retry_after = _parse_retry_after(response.headers.get('retry-after'))
-                message, error_type, error_code = _friendly_error(response.status_code, text.decode("utf-8", "ignore"))
+                message, error_type, error_code = _friendly_error(response.status_code, raw_text)
+                upstream_request_id = _extract_request_id_from_headers(response.headers) or _extract_request_id_from_text(raw_text)
                 raise CodexAPIError(
                     message,
                     status_code=response.status_code,
                     retry_after=retry_after,
                     error_type=error_type,
                     error_code=error_code,
+                    request_id=upstream_request_id,
+                    response_status=str(response.status_code),
+                    raw_error=raw_text[:1000],
                 )
-            return await _consume_sse(response)
+            return await _consume_sse(response, request_id=request_id, payload_stats=payload_stats)
 
 
 def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -363,7 +519,12 @@ def _prompt_cache_key(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-async def _iter_sse(response: httpx.Response) -> AsyncGenerator[dict[str, Any], None]:
+async def _iter_sse(
+    response: httpx.Response,
+    *,
+    request_id: str | None = None,
+    payload_stats: dict[str, Any] | None = None,
+) -> AsyncGenerator[dict[str, Any], None]:
     buffer: list[str] = []
     async for line in response.aiter_lines():
         if line == "":
@@ -377,7 +538,16 @@ async def _iter_sse(response: httpx.Response) -> AsyncGenerator[dict[str, Any], 
                     continue
                 try:
                     yield json.loads(data)
-                except Exception:
+                except Exception as e:
+                    _log_codex_event(
+                        'warning',
+                        'Codex SSE event parse failed',
+                        stage='sse_parse_error',
+                        request_id=request_id,
+                        parse_error=str(e),
+                        event_preview=data[:500],
+                        **(payload_stats or {}),
+                    )
                     continue
             continue
         buffer.append(line)
@@ -411,14 +581,19 @@ def _extract_event_error(event: dict[str, Any]) -> str:
     return 'Codex response failed'
 
 
-async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequest], str, dict[str, int]]:
+async def _consume_sse(
+    response: httpx.Response,
+    *,
+    request_id: str | None = None,
+    payload_stats: dict[str, Any] | None = None,
+) -> tuple[str, list[ToolCallRequest], str, dict[str, int]]:
     content = ""
     tool_calls: list[ToolCallRequest] = []
     tool_call_buffers: dict[str, dict[str, Any]] = {}
     finish_reason = "stop"
     usage: dict[str, int] = {}
 
-    async for event in _iter_sse(response):
+    async for event in _iter_sse(response, request_id=request_id, payload_stats=payload_stats):
         event_type = event.get("type")
         if event_type == "response.output_item.added":
             item = event.get("item") or {}
@@ -477,7 +652,19 @@ async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequ
                 "cache_read_input_tokens": cached_tokens,
             }
         elif event_type in {"error", "response.failed", "response.incomplete"}:
-            raise RuntimeError(_extract_event_error(event))
+            message = _extract_event_error(event)
+            response_obj = event.get('response') if isinstance(event.get('response'), dict) else {}
+            response_error = response_obj.get('error') if isinstance(response_obj, dict) else {}
+            request_id_upstream = _extract_request_id_from_headers(response.headers) or _extract_request_id_from_text(message)
+            raise CodexAPIError(
+                message,
+                status_code=None,
+                error_type=(response_error.get('type') if isinstance(response_error, dict) else None),
+                error_code=(response_error.get('code') if isinstance(response_error, dict) else None),
+                request_id=request_id_upstream,
+                response_status=(response_obj.get('status') if isinstance(response_obj, dict) else None),
+                raw_error=json.dumps(event, ensure_ascii=False)[:1000],
+            )
 
     return content, tool_calls, finish_reason, usage
 

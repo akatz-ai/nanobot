@@ -28,7 +28,7 @@ from nanobot.agent.profile_manager import AgentProfileManager
 from nanobot.agent.workspace import init_agent_workspace
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.discord import DiscordChannel
-from nanobot.config.loader import get_config_path, get_data_dir, get_state_path, load_config, load_config_data
+from nanobot.config.loader import get_config_path, get_data_dir, get_state_path, load_base_config, load_config, load_config_data, save_config
 from nanobot.config.state import StateStore
 from nanobot.cron.service import CronService
 from nanobot.session.context_log import load_context_log
@@ -44,10 +44,6 @@ from nanobot.session.usage_log import get_session_summary
 app = FastAPI(title="Nanobot Memory Dashboard", version=nanobot.__version__)
 
 _default_cors_origins = [
-    'http://localhost:4173',
-    'http://127.0.0.1:4173',
-    'http://localhost:4174',
-    'http://127.0.0.1:4174',
     'http://localhost:9347',
     'http://127.0.0.1:9347',
 ]
@@ -55,6 +51,7 @@ _env_cors = [o.strip() for o in os.getenv('NANOBOT_DASHBOARD_CORS_ORIGINS', '').
 app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(set(_default_cors_origins + _env_cors)),
+    allow_origin_regex=r'https?://(localhost|127\.0\.0\.1)(:\d+)?',
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],
@@ -1568,6 +1565,47 @@ async def cron_jobs():
 @app.get("/api/config")
 async def config():
     return {"config": _sanitize_config_value("config", _load_config())}
+
+
+class DiscordChannelConfigPatchRequest(BaseModel):
+    guild_id: str | None = None
+    usage_dashboard_enabled: bool | None = None
+    usage_dashboard_channel_id: str | None = None
+    codex_usage_enabled: bool | None = None
+    codex_usage_channel_id: str | None = None
+    system_status_enabled: bool | None = None
+    system_status_channel_id: str | None = None
+
+
+@app.patch("/api/channels/discord")
+async def update_discord_channel_config(payload: DiscordChannelConfigPatchRequest):
+    config_path = get_config_path()
+    base_config = load_base_config(config_path)
+    discord = base_config.channels.discord
+
+    if payload.guild_id is not None:
+        discord.guild_id = payload.guild_id
+    if payload.usage_dashboard_enabled is not None:
+        discord.usage_dashboard.enabled = payload.usage_dashboard_enabled
+    if payload.usage_dashboard_channel_id is not None:
+        discord.usage_dashboard.channel_id = payload.usage_dashboard_channel_id
+    if payload.codex_usage_enabled is not None:
+        discord.codex_usage.enabled = payload.codex_usage_enabled
+    if payload.codex_usage_channel_id is not None:
+        discord.codex_usage.channel_id = payload.codex_usage_channel_id
+    if payload.system_status_enabled is not None:
+        discord.system_status.enabled = payload.system_status_enabled
+    if payload.system_status_channel_id is not None:
+        discord.system_status.channel_id = payload.system_status_channel_id
+
+    save_config(base_config, config_path)
+
+    return {
+        'status': 'saved',
+        'restart_required': True,
+        'channel': 'discord',
+        'warnings': ['Discord config saved. Restart gateway if runtime channel wiring needs to pick up the changes.'],
+    }
 
 
 class AgentMutationRequest(BaseModel):

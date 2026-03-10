@@ -804,35 +804,6 @@ def gateway_worker(
         console.print(f"[green]✓[/green] System status: channel={status_cfg.channel_id}, interval={status_cfg.poll_interval_s}s")
 
 
-    async def _send_restart_notifications() -> None:
-        """Send a system message to all active agent Discord channels after startup."""
-        from nanobot.bus.events import OutboundMessage
-
-        # Give Discord a moment to connect
-        await asyncio.sleep(3)
-
-        notified: set[str] = set()
-        for aid, inst in router.agents.items():
-            # Find Discord session keys for this agent
-            for item in inst.loop.sessions.list_sessions():
-                key = item.get("key") or ""
-                if ":" not in key:
-                    continue
-                channel, chat_id = key.split(":", 1)
-                if channel != "discord" or chat_id in notified:
-                    continue
-                # Skip cron/system sessions
-                if chat_id.startswith("cron:") or chat_id == "direct":
-                    continue
-                notified.add(chat_id)
-                await bus.publish_outbound(OutboundMessage(
-                    channel="discord",
-                    chat_id=chat_id,
-                    content="🔄 *Agent process restarted.*",
-                ))
-        if notified:
-            console.print(f"[green]✓[/green] Restart notifications sent to {len(notified)} channel(s)")
-
     async def run():
         try:
             await _init_router()
@@ -844,8 +815,6 @@ def gateway_worker(
                 await codex_usage_dashboard.start()
             if system_status_dashboard:
                 await system_status_dashboard.start()
-            # Fire restart notifications in the background
-            asyncio.create_task(_send_restart_notifications())
             await asyncio.gather(
                 router.start(),
                 channels.start_all(),

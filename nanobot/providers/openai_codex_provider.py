@@ -469,7 +469,10 @@ async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequ
             cached_tokens = int((usage_obj.get("input_tokens_details") or {}).get("cached_tokens") or 0)
             output_tokens = int(usage_obj.get("output_tokens") or 0)
             usage = {
-                "prompt_tokens": input_tokens + cached_tokens,
+                # Codex/Responses usage.input_tokens already reflects the total prompt size.
+                # cached_tokens is reported separately for cache-hit accounting and should not
+                # be added again or the caller will double-count cached prompt segments.
+                "prompt_tokens": input_tokens,
                 "completion_tokens": output_tokens,
                 "cache_read_input_tokens": cached_tokens,
             }

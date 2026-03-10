@@ -294,12 +294,30 @@ def _context_window_for_model(
 
 def _session_metadata_blob(meta: dict[str, Any]) -> dict[str, Any]:
     value = meta.get("metadata")
-    return value if isinstance(value, dict) else {}
+    if isinstance(value, dict):
+        return value
+    # SQLite-backed dashboard loading already returns the session metadata at top level.
+    if isinstance(meta, dict):
+        return meta
+    return {}
 
 
 def _session_usage_snapshot(meta: dict[str, Any]) -> dict[str, Any]:
     value = _session_metadata_blob(meta).get("usage_snapshot")
     return value if isinstance(value, dict) else {}
+
+
+def _current_context_tokens(meta: dict[str, Any], usage_summary: dict[str, Any], context_window: int) -> int:
+    """Prefer current prompt/window tokens, never cumulative session totals beyond context size."""
+    usage_snapshot = _session_usage_snapshot(meta)
+    snapshot_tokens = _coerce_int(usage_snapshot.get("total_input_tokens"), 0)
+    if snapshot_tokens > 0:
+        return snapshot_tokens
+
+    summary_tokens = _coerce_int(usage_summary.get("total_input_tokens"), 0)
+    if 0 < summary_tokens <= max(int(context_window), 1):
+        return summary_tokens
+    return 0
 
 
 def _uptime_seconds() -> int:
@@ -697,11 +715,7 @@ def _build_live_context_response(
     total_session_messages = len(messages)
     model = _resolved_agent_model(profile, _load_config().get("agents", {}).get("defaults", {}))
     context_window = _context_window_for_model(model, usage_summary)
-    usage_snapshot = _session_usage_snapshot(metadata)
-    current_tokens = _coerce_int(
-        usage_snapshot.get("total_input_tokens"),
-        _coerce_int(usage_summary.get("total_input_tokens"), 0),
-    )
+    current_tokens = _current_context_tokens(metadata, usage_summary, context_window)
     utilization_pct = round(current_tokens / context_window * 100, 1) if context_window else 0.0
 
     fallback_last_consolidated = _coerce_int(metadata.get("last_consolidated"), 0)
@@ -836,15 +850,11 @@ def _build_agent_record(
     if primary_bundle is not None:
         primary_meta = primary_bundle["metadata"]
         primary_usage = primary_bundle["usage_summary"] or {}
-        usage_snapshot = _session_usage_snapshot(primary_meta)
         primary_key = primary_bundle["key"]
         primary_channel_id = primary_bundle["channel_id"]
         last_active = primary_meta.get("updated_at")
-        context_tokens = _coerce_int(
-            usage_snapshot.get("total_input_tokens"),
-            _coerce_int(primary_usage.get("total_input_tokens"), 0),
-        )
         context_window = _context_window_for_model(model, primary_usage)
+        context_tokens = _current_context_tokens(primary_meta, primary_usage, context_window)
         context_pct = round(context_tokens / context_window * 100, 1) if context_window else 0.0
 
     return {

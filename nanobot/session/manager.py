@@ -975,6 +975,7 @@ class SessionManager:
         total_input_tokens: int,
         message_index: int | None = None,
         source: str | None = None,
+        revision: int | None = None,
     ) -> None:
         payload: dict[str, Any] = {
             "total_input_tokens": int(total_input_tokens),
@@ -982,6 +983,8 @@ class SessionManager:
         }
         if source:
             payload["source"] = source
+        if revision is not None:
+            payload["revision"] = int(revision)
         self.apply_state(session, metadata_updates={"usage_snapshot": payload})
 
     def clear_usage_snapshot(self, session: Session) -> None:

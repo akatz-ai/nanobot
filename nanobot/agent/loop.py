@@ -716,6 +716,60 @@ class AgentLoop:
             return [entry.summary]
         return []
 
+    def _session_revision(self, session: Session) -> int | None:
+        """Return the backend revision for freshness-aware snapshot metadata."""
+        value = getattr(session, "_sqlite_revision", None)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _persist_current_context_snapshot(
+        self,
+        session: Session,
+        *,
+        total_input_tokens: int,
+        source: str,
+        message_index: int | None = None,
+    ) -> None:
+        """Persist the canonical current-context token snapshot for dashboards/status."""
+        total = int(total_input_tokens)
+        self._last_input_tokens[session.key] = total
+        self.sessions.set_usage_snapshot(
+            session,
+            total_input_tokens=total,
+            source=source,
+            message_index=message_index,
+            revision=self._session_revision(session),
+        )
+
+    def _estimate_current_context_snapshot(
+        self,
+        session: Session,
+        *,
+        channel: str | None = None,
+        chat_id: str | None = None,
+    ) -> int:
+        """Estimate the current full prompt window for the session without a new user turn."""
+        context_window = self._get_context_window_size()
+        history, _ = session.get_history(
+            max_messages=max(1, session.get_visible_message_count()),
+            context_window=context_window,
+            protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+        )
+        messages = self._build_messages_with_prompt_budget(
+            history=history,
+            current_message=None,
+            skill_names=self.skill_names,
+            channel=channel,
+            chat_id=chat_id,
+            extra_system_messages=self._latest_compaction_system_messages(session),
+            trim_if_needed=False,
+        )
+        return int(self._estimate_prompt_tokens(messages))
+
     def _build_messages_with_prompt_budget(
         self,
         *,
@@ -890,10 +944,16 @@ class AgentLoop:
                 )
 
                 if input_tokens > 0:
-                    self.sessions.set_usage_snapshot(
+                    self.sessions.apply_state(
                         session,
-                        total_input_tokens=int(input_tokens),
-                        source="compaction_trigger",
+                        metadata_updates={
+                            "compaction_trigger_snapshot": {
+                                "total_input_tokens": int(input_tokens),
+                                "message_index": session.get_message_count(),
+                                "source": "compaction_trigger",
+                                "revision": self._session_revision(session),
+                            }
+                        },
                     )
 
                 entry = await compact_session(
@@ -909,7 +969,11 @@ class AgentLoop:
                 )
 
                 if entry is None:
-                    self._refresh_estimated_token_snapshot(session)
+                    self._refresh_estimated_token_snapshot(
+                        session,
+                        channel=channel,
+                        chat_id=chat_id,
+                    )
                     self.sessions.pop_compaction_plan(session)
                     compaction_event.finalize(
                         success=True,
@@ -966,7 +1030,11 @@ class AgentLoop:
                     except Exception:
                         logger.exception("MEMORY.md compaction failed (non-fatal)")
 
-                    self._refresh_estimated_token_snapshot(session)
+                    self._refresh_estimated_token_snapshot(
+                        session,
+                        channel=channel,
+                        chat_id=chat_id,
+                    )
                     self.sessions.save_state(session)
 
                     compaction_event.set_post_compaction_context(
@@ -1070,11 +1138,10 @@ class AgentLoop:
                 emergency_threshold,
             )
 
-        # Always refresh the persisted estimate for the current visible prompt window.
-        # This keeps dashboards/channel labels current even for providers that do not
-        # report usage on every request or when no request has been made since restart.
-        self._last_input_tokens[session.key] = int(estimated_tokens)
-        self.sessions.set_usage_snapshot(
+        # Always refresh the persisted current-context estimate for the prompt
+        # we are about to send. Dashboards should use this canonical field when
+        # provider-reported usage is not yet available.
+        self._persist_current_context_snapshot(
             session,
             total_input_tokens=int(estimated_tokens),
             source="estimated_current_prompt",
@@ -1082,20 +1149,23 @@ class AgentLoop:
 
         return messages
 
-    def _refresh_estimated_token_snapshot(self, session: Session) -> None:
-        """Refresh token snapshot from visible prompt window after compaction."""
-        context_window = self._get_context_window_size()
-        visible_history, _ = session.get_history(
-            max_messages=max(1, session.get_visible_message_count()),
-            context_window=context_window,
-            protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
+    def _refresh_estimated_token_snapshot(
+        self,
+        session: Session,
+        *,
+        channel: str | None = None,
+        chat_id: str | None = None,
+    ) -> None:
+        """Refresh the canonical current-context snapshot after prompt-shaping changes."""
+        estimated_tokens = self._estimate_current_context_snapshot(
+            session,
+            channel=channel,
+            chat_id=chat_id,
         )
-        estimated_tokens = int(self._estimate_prompt_tokens(visible_history))
-        self._last_input_tokens[session.key] = estimated_tokens
-        self.sessions.set_usage_snapshot(
+        self._persist_current_context_snapshot(
             session,
             total_input_tokens=estimated_tokens,
-            source="estimated_visible_history",
+            source="recomputed_current_context",
         )
 
     async def _connect_mcp(self) -> None:
@@ -1317,10 +1387,10 @@ class AgentLoop:
                     # Total context = input_tokens + cache_read + cache_creation.
                     total_input = input_tokens + cache_read + cache_creation
                     if total_input:
-                        self._last_input_tokens[session.key] = total_input
-                        self.sessions.set_usage_snapshot(
+                        self._persist_current_context_snapshot(
                             session,
                             total_input_tokens=int(total_input),
+                            source="provider_usage",
                         )
                         context_window = self._get_context_window_size()
                         utilization = round(total_input / context_window * 100, 1) if context_window else 0

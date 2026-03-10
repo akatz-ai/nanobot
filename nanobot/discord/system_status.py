@@ -96,10 +96,20 @@ def _get_worker_uptime() -> float | None:
         return None
 
 
+_CURRENT_CONTEXT_SNAPSHOT_SOURCES = {
+    "provider_usage",
+    "estimated_current_prompt",
+    "recomputed_current_context",
+}
+
+
 def _usage_snapshot_total(metadata: dict[str, Any]) -> int:
     """Return the last persisted total_input_tokens for a session metadata blob."""
     raw = metadata.get("usage_snapshot")
     if not isinstance(raw, dict):
+        return 0
+    source = raw.get("source")
+    if isinstance(source, str) and source not in _CURRENT_CONTEXT_SNAPSHOT_SOURCES:
         return 0
     try:
         return max(0, int(raw.get("total_input_tokens", 0) or 0))
@@ -107,12 +117,43 @@ def _usage_snapshot_total(metadata: dict[str, Any]) -> int:
         return 0
 
 
+def _current_snapshot_tokens(loop: Any, session: Any) -> int:
+    """Return a fresh current-context snapshot token count if available."""
+    raw = getattr(session, "metadata", {}).get("usage_snapshot")
+    if not isinstance(raw, dict):
+        return 0
+    source = raw.get("source")
+    if isinstance(source, str) and source not in _CURRENT_CONTEXT_SNAPSHOT_SOURCES:
+        return 0
+    try:
+        tokens = int(raw.get("total_input_tokens", 0) or 0)
+        message_index = int(raw.get("message_index"))
+    except (TypeError, ValueError):
+        return 0
+    if tokens <= 0:
+        return 0
+    try:
+        session_count = int(session.get_message_count())
+    except Exception:
+        session_count = None
+    if session_count is not None and abs(session_count - message_index) > 100:
+        return 0
+    snapshot_revision = raw.get("revision")
+    current_revision = getattr(session, "_sqlite_revision", None)
+    if snapshot_revision is not None and current_revision is not None:
+        try:
+            if int(snapshot_revision) != int(current_revision):
+                return 0
+        except (TypeError, ValueError):
+            return 0
+    return tokens
+
+
 def _collect_session_usage(loop: Any) -> dict[str, dict[str, Any]]:
     """Collect current session usage for each non-cron session.
 
-    Prefer persisted usage_snapshot totals because they track the current built
-    prompt window. Fall back to in-memory _last_input_tokens only when the
-    snapshot is unavailable.
+    Prefer fresh persisted current-context snapshots, and only fall back to the
+    in-memory last-known value when no valid snapshot exists.
     """
     usage: dict[str, dict[str, Any]] = {}
     for session_info in loop.sessions.list_sessions():
@@ -124,7 +165,7 @@ def _collect_session_usage(loop: Any) -> dict[str, dict[str, Any]]:
         snapshot_tokens = 0
         try:
             session = loop.sessions.get_or_create(key)
-            snapshot_tokens = _usage_snapshot_total(session.metadata)
+            snapshot_tokens = _current_snapshot_tokens(loop, session)
         except Exception:
             logger.exception("SystemStatusDashboard: Failed loading session metadata for {}", key)
 

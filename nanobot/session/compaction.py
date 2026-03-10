@@ -98,6 +98,11 @@ TARGET_SUMMARY_CHARS = 4_000
 MAX_SUMMARY_COMPRESSION_INPUT_CHARS = 20_000
 SUMMARY_COMPRESSION_MAX_TOKENS = 1_600
 USAGE_SNAPSHOT_MAX_MESSAGE_LAG = 100
+_USAGE_SNAPSHOT_VALID_SOURCES = {
+    "provider_usage",
+    "estimated_current_prompt",
+    "recomputed_current_context",
+}
 
 
 @dataclass
@@ -706,6 +711,9 @@ def _usage_snapshot_tokens(
 ) -> int | None:
     raw = session.metadata.get("usage_snapshot")
     if not isinstance(raw, dict):
+        return None
+    source = raw.get("source")
+    if isinstance(source, str) and source not in _USAGE_SNAPSHOT_VALID_SOURCES:
         return None
     try:
         value = int(raw.get("total_input_tokens", 0))

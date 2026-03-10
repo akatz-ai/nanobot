@@ -323,16 +323,24 @@ def _session_usage_snapshot(meta: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+_CURRENT_CONTEXT_SNAPSHOT_SOURCES = {
+    "provider_usage",
+    "estimated_current_prompt",
+    "recomputed_current_context",
+}
+
+
 def _current_context_tokens(meta: dict[str, Any], usage_summary: dict[str, Any], context_window: int) -> int:
-    """Prefer current prompt/window tokens, never cumulative session totals beyond context size."""
+    """Return current prompt/window tokens without falling back to cumulative totals."""
+    _ = usage_summary
+    _ = context_window
     usage_snapshot = _session_usage_snapshot(meta)
+    source = usage_snapshot.get("source")
+    if isinstance(source, str) and source not in _CURRENT_CONTEXT_SNAPSHOT_SOURCES:
+        return 0
     snapshot_tokens = _coerce_int(usage_snapshot.get("total_input_tokens"), 0)
     if snapshot_tokens > 0:
         return snapshot_tokens
-
-    summary_tokens = _coerce_int(usage_summary.get("total_input_tokens"), 0)
-    if 0 < summary_tokens <= max(int(context_window), 1):
-        return summary_tokens
     return 0
 
 

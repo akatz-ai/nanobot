@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import nanobot.dashboard.app as dashboard_app
+from nanobot.dashboard.app import _current_context_tokens
 
 
 @pytest.fixture
@@ -200,6 +201,25 @@ def test_integration_callback_handles_error_and_missing_code(dashboard_client) -
 
     assert missing_code.status_code == 400
     assert missing_code.json()["detail"] == "No authorization code received"
+
+
+def test_current_context_tokens_does_not_fallback_to_cumulative_summary() -> None:
+    assert _current_context_tokens(
+        {},
+        {"total_input_tokens": 450000},
+        200000,
+    ) == 0
+
+    assert _current_context_tokens(
+        {
+            "usage_snapshot": {
+                "total_input_tokens": 32000,
+                "source": "provider_usage",
+            }
+        },
+        {"total_input_tokens": 450000},
+        200000,
+    ) == 32000
 
 
 def test_dashboard_can_create_agent_via_api(dashboard_client, monkeypatch: pytest.MonkeyPatch) -> None:

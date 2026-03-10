@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from nanobot.discord.system_status import _channel_topic, collect_system_status
+from nanobot.discord.system_status import _channel_topic, _current_snapshot_tokens, collect_system_status
 
 
 class _FakeSessions:
@@ -19,7 +19,11 @@ class _FakeSessions:
 
     def get_or_create(self, key: str):
         payload = self._sessions[key]
-        return SimpleNamespace(metadata=payload.get("metadata", {}))
+        return SimpleNamespace(
+            metadata=payload.get("metadata", {}),
+            _sqlite_revision=payload.get("revision"),
+            get_message_count=lambda: payload.get("message_count", 0),
+        )
 
 
 class _FakeLoop:
@@ -44,10 +48,14 @@ def test_collect_system_status_uses_persisted_usage_snapshot_after_restart():
                     context_window=100000,
                     sessions={
                         "discord:123": {
+                            "message_count": 10,
+                            "revision": 7,
                             "metadata": {
                                 "usage_snapshot": {
                                     "total_input_tokens": 25000,
                                     "message_index": 10,
+                                    "source": "provider_usage",
+                                    "revision": 7,
                                 }
                             }
                         }
@@ -76,10 +84,14 @@ def test_collect_system_status_prefers_snapshot_over_stale_live_tokens():
                     context_window=100000,
                     sessions={
                         "discord:123": {
+                            "message_count": 10,
+                            "revision": 4,
                             "metadata": {
                                 "usage_snapshot": {
                                     "total_input_tokens": 25000,
                                     "message_index": 10,
+                                    "source": "estimated_current_prompt",
+                                    "revision": 4,
                                 }
                             }
                         }
@@ -94,6 +106,38 @@ def test_collect_system_status_prefers_snapshot_over_stale_live_tokens():
     agent = status.agents[0]
     assert agent.current_input_tokens == 25000
     assert round(agent.utilization_pct, 2) == 0.25
+
+
+def test_current_snapshot_tokens_rejects_non_current_context_sources():
+    session = SimpleNamespace(
+        metadata={
+            "usage_snapshot": {
+                "total_input_tokens": 99999,
+                "message_index": 10,
+                "source": "compaction_trigger",
+                "revision": 1,
+            }
+        },
+        _sqlite_revision=1,
+        get_message_count=lambda: 10,
+    )
+    assert _current_snapshot_tokens(SimpleNamespace(), session) == 0
+
+
+def test_current_snapshot_tokens_rejects_stale_revision():
+    session = SimpleNamespace(
+        metadata={
+            "usage_snapshot": {
+                "total_input_tokens": 25000,
+                "message_index": 10,
+                "source": "provider_usage",
+                "revision": 1,
+            }
+        },
+        _sqlite_revision=2,
+        get_message_count=lambda: 10,
+    )
+    assert _current_snapshot_tokens(SimpleNamespace(), session) == 0
 
 
 def test_channel_topic_uses_model_string_only():

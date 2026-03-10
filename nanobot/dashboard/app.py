@@ -568,11 +568,21 @@ def _primary_session_path(name: str, profile: dict[str, Any]) -> Path | None:
     if not session_dir.exists():
         return None
 
+    cfg = _load_config()
+    defaults = cfg.get('agents', {}).get('defaults', {})
+    session_store = str(
+        _profile_value(profile, 'sessionStore', 'session_store')
+        or defaults.get('sessionStore')
+        or defaults.get('session_store')
+        or ''
+    ).lower()
+
     channel_ids = [
         str(channel_id)
         for channel_id in (_profile_value(profile, "discordChannels", "discord_channels") or [])
         if channel_id
     ]
+
     for channel_id in channel_ids:
         direct = session_dir / f"discord_{channel_id}.jsonl"
         if direct.exists():
@@ -590,6 +600,24 @@ def _primary_session_path(name: str, profile: dict[str, Any]) -> Path | None:
         key = str(meta.get("key") or "")
         if key.startswith("discord:") or session_path.stem.startswith("discord_"):
             return session_path
+
+    if session_store == 'sqlite':
+        manager = SQLiteSessionManager(adir)
+        sqlite_sessions = manager.list_sessions()
+        if channel_ids:
+            for channel_id in channel_ids:
+                expected_key = f"discord:{channel_id}"
+                for item in sqlite_sessions:
+                    if str(item.get('key') or '') == expected_key:
+                        candidate = Path(str(item.get('path') or ''))
+                        if candidate:
+                            return candidate
+        for item in sqlite_sessions:
+            key = str(item.get('key') or '')
+            if key.startswith('discord:'):
+                candidate = Path(str(item.get('path') or ''))
+                if candidate:
+                    return candidate
 
     sessions = _session_files(adir)
     return sessions[0] if sessions else None

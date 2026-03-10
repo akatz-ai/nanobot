@@ -6,7 +6,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import nanobot.dashboard.app as dashboard_app
-from nanobot.dashboard.app import _current_context_tokens
+from nanobot.dashboard.app import _current_context_tokens, _load_primary_session_bundle, _primary_session_path
+from nanobot.session.store import SQLiteSessionManager
 
 
 @pytest.fixture
@@ -339,3 +340,70 @@ def test_dashboard_can_clone_agent_via_api(dashboard_client, monkeypatch: pytest
     assert (clone_ws / 'skills' / 'local-skill' / 'SKILL.md').read_text(encoding='utf-8') == 'skill body'
     assert (clone_ws / 'sessions' / 'source.jsonl').exists()
     assert not (clone_ws / 'sessions' / 'source.context.jsonl').exists()
+
+
+def test_primary_session_path_resolves_sqlite_backed_discord_session(dashboard_client) -> None:
+    _client, fake_home, workspace = dashboard_client
+    agent_dir = workspace / 'agents' / 'sqlite-agent'
+    agent_dir.mkdir(parents=True, exist_ok=True)
+
+    config = json.loads((fake_home / '.nanobot' / 'config.json').read_text(encoding='utf-8'))
+    config['agents']['defaults']['sessionStore'] = 'sqlite'
+    config['agents']['profiles']['sqlite-agent'] = {
+        'displayName': 'SQLite Agent',
+        'discordChannels': ['1234567890'],
+        'model': 'openai-codex/gpt-5.4',
+    }
+    (fake_home / '.nanobot' / 'config.json').write_text(json.dumps(config), encoding='utf-8')
+    dashboard_app._config_cache = None
+
+    manager = SQLiteSessionManager(agent_dir)
+    session = manager.get_or_create('discord:1234567890')
+    session.metadata['usage_snapshot'] = {
+        'total_input_tokens': 45678,
+        'source': 'provider_usage',
+    }
+    session.checkpoint([
+        {'role': 'user', 'content': 'hello', 'timestamp': '2026-03-10T16:00:00+00:00'},
+        {'role': 'assistant', 'content': 'hi', 'timestamp': '2026-03-10T16:00:01+00:00'},
+    ])
+    manager.save(session)
+
+    usage_path = manager.get_session_path('discord:1234567890').with_suffix('.usage.jsonl')
+    usage_path.write_text(
+        json.dumps({
+            'call_index': 0,
+            'turn': 1,
+            'iteration': 1,
+            'context_window': 200000,
+            'total_input_tokens': 45678,
+            'cumulative_input': 999999,
+            'cumulative_output': 123,
+            'utilization_pct': 22.8,
+            'model': 'openai-codex/gpt-5.4',
+        }) + '\n',
+        encoding='utf-8',
+    )
+
+    profile = dashboard_app._load_config()['agents']['profiles']['sqlite-agent']
+    path = _primary_session_path('sqlite-agent', profile)
+    assert path is not None
+    assert path.name == 'discord_1234567890.jsonl'
+
+    bundle = _load_primary_session_bundle('sqlite-agent', profile)
+    assert bundle is not None
+    assert bundle['key'] == 'discord:1234567890'
+    assert bundle['channel_id'] == '1234567890'
+    assert bundle['metadata']['usage_snapshot']['total_input_tokens'] == 45678
+    assert bundle['usage_summary']['total_input_tokens'] == 999999
+
+    record = dashboard_app._build_agent_record(
+        'sqlite-agent',
+        profile,
+        dashboard_app._load_config()['agents']['defaults'],
+        workspace,
+    )
+    assert record['primarySession'] == 'discord:1234567890'
+    assert record['primaryChannelId'] == '1234567890'
+    assert record['contextTokens'] == 45678
+    assert record['contextPct'] == round(45678 / 200000 * 100, 1)

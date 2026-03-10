@@ -100,10 +100,14 @@ async def test_full_structured_compaction_flow(tmp_path: Path) -> None:
     loop._consolidate_memory = _fake_consolidate
 
     session = loop.sessions.get_or_create("cli:test")
-    _add_long_messages(session, turns=40)
+    payload = "x" * 6000
+    for i in range(40):
+        session.add_message("user", f"Question {i} {payload}")
+        session.add_message("assistant", f"Answer {i} {payload}")
     session.metadata["usage_snapshot"] = {
         "total_input_tokens": 180_000,
         "message_index": len(session.messages),
+        "source": "provider_usage",
     }
     loop.sessions.save(session)
 
@@ -158,20 +162,27 @@ async def test_iterative_structured_compaction_uses_previous_summary(tmp_path: P
     loop._consolidate_memory = _fake_consolidate
 
     session = loop.sessions.get_or_create("cli:test")
-    _add_long_messages(session, turns=40)
+    payload = "x" * 6200
+    for i in range(40):
+        session.add_message("user", f"Question {i} {payload}")
+        session.add_message("assistant", f"Answer {i} {payload}")
     session.metadata["usage_snapshot"] = {
         "total_input_tokens": 180_000,
         "message_index": len(session.messages),
+        "source": "provider_usage",
     }
 
     await loop._process_message(
         InboundMessage(channel="cli", sender_id="user", chat_id="test", content="first")
     )
 
-    _add_long_messages(session, turns=12)
+    for i in range(28):
+        session.add_message("user", f"Followup question {i} {payload}")
+        session.add_message("assistant", f"Followup answer {i} {payload}")
     session.metadata["usage_snapshot"] = {
         "total_input_tokens": 185_000,
         "message_index": len(session.messages),
+        "source": "provider_usage",
     }
 
     await loop._process_message(
@@ -448,10 +459,14 @@ async def test_memory_extraction_called_with_explicit_range(tmp_path: Path) -> N
     loop._consolidate_memory = consolidate
 
     session = loop.sessions.get_or_create("cli:test")
-    _add_long_messages(session, turns=40)
+    payload = "x" * 6000
+    for i in range(40):
+        session.add_message("user", f"Question {i} {payload}")
+        session.add_message("assistant", f"Answer {i} {payload}")
     session.metadata["usage_snapshot"] = {
         "total_input_tokens": 180_000,
         "message_index": len(session.messages),
+        "source": "provider_usage",
     }
 
     await loop._process_message(
@@ -525,10 +540,14 @@ async def test_concurrent_structured_compactions_are_serialized(tmp_path: Path) 
     loop._consolidate_memory = _slow_consolidate
 
     session = loop.sessions.get_or_create("cli:test")
-    _add_long_messages(session, turns=42)
+    payload = "x" * 6000
+    for i in range(42):
+        session.add_message("user", f"Question {i} {payload}")
+        session.add_message("assistant", f"Answer {i} {payload}")
     session.metadata["usage_snapshot"] = {
         "total_input_tokens": 190_000,
         "message_index": len(session.messages),
+        "source": "provider_usage",
     }
 
     await asyncio.gather(
@@ -562,23 +581,28 @@ async def test_save_reload_round_trip_with_compaction_and_messages(tmp_path: Pat
     loop._consolidate_memory = _fake_consolidate
 
     session = loop.sessions.get_or_create("cli:test")
-    _add_long_messages(session, turns=40)
+    payload = "x" * 6000
+    for i in range(40):
+        session.add_message("user", f"Question {i} {payload}")
+        session.add_message("assistant", f"Answer {i} {payload}")
     session.metadata["usage_snapshot"] = {
         "total_input_tokens": 180_000,
         "message_index": len(session.messages),
+        "source": "provider_usage",
     }
 
     await loop._process_message(
         InboundMessage(channel="cli", sender_id="user", chat_id="test", content="persist")
     )
 
+    loop.sessions.save(session)
+    before_loaded = loop.sessions.get_or_create(session.key)
     before = {
-        "messages": list(session.messages),
-        "compactions": list(session.compactions),
-        "last_consolidated": session.last_consolidated,
+        "messages": list(before_loaded.messages),
+        "compactions": list(before_loaded.compactions),
+        "last_consolidated": before_loaded.last_consolidated,
     }
 
-    loop.sessions.save(session)
     loop.sessions.invalidate(session.key)
     loaded = loop.sessions.get_or_create(session.key)
 
@@ -588,7 +612,7 @@ async def test_save_reload_round_trip_with_compaction_and_messages(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_process_message_pruning_uses_fresh_snapshot_ceiling(
+async def test_process_message_does_not_compact_from_snapshot_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -604,21 +628,19 @@ async def test_process_message_pruning_uses_fresh_snapshot_ceiling(
         session.add_message("user", "old-user")
         session.add_message("assistant", "old-assistant")
         session.metadata["usage_snapshot"] = {
-            "total_input_tokens": 8_000,
+            "total_input_tokens": 50_000,
             "message_index": len(session.messages),
+            "source": "provider_usage",
         }
 
-        baseline_history = [{"role": "user", "content": "x" * 45_000}]
         pressure_history = [{"role": "user", "content": "y" * 35_000}]
 
         def _fake_get_history(*args, **kwargs):
-            if kwargs.get("prune_tool_results") is False:
-                return baseline_history, None
             return pressure_history, None
 
         monkeypatch.setattr(session, "get_history", _fake_get_history)
         compact_mock = AsyncMock(return_value=None)
-        monkeypatch.setattr("nanobot.agent.loop.compact_session", compact_mock)
+        monkeypatch.setattr(loop, "_run_structured_compaction", compact_mock)
 
         response = await loop._process_message(
             InboundMessage(channel="cli", sender_id="user", chat_id="test", content="next")
@@ -634,14 +656,13 @@ async def test_process_message_pruning_uses_fresh_snapshot_ceiling(
 
 
 @pytest.mark.asyncio
-async def test_process_message_ignores_stale_snapshot_ceiling(
+async def test_process_message_compacts_from_assembled_prompt_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     loop = _make_structured_loop(tmp_path)
     loop._run_agent_loop = AsyncMock(return_value=("ok", [], []))
     loop._retrieve_memory_context = AsyncMock(return_value=None)
-    loop._estimate_prompt_tokens = lambda messages: 8_000
 
     original_window = loop.MODEL_CONTEXT_WINDOWS.get(loop.model)
     loop.MODEL_CONTEXT_WINDOWS[loop.model] = 30_000
@@ -651,21 +672,14 @@ async def test_process_message_ignores_stale_snapshot_ceiling(
         session.add_message("assistant", "old-assistant")
         session.metadata["usage_snapshot"] = {
             "total_input_tokens": 8_000,
-            "message_index": len(session.messages) - 500,
+            "message_index": len(session.messages),
+            "source": "provider_usage",
         }
         loop._last_input_tokens.pop(session.key, None)
 
-        baseline_history = [{"role": "user", "content": "x" * 45_000}]
-        pressure_history = [{"role": "user", "content": "y" * 35_000}]
-
-        def _fake_get_history(*args, **kwargs):
-            if kwargs.get("prune_tool_results") is False:
-                return baseline_history, None
-            return pressure_history, None
-
-        monkeypatch.setattr(session, "get_history", _fake_get_history)
+        monkeypatch.setattr(loop, "_estimate_prompt_tokens", lambda messages: 12_000)
         compact_mock = AsyncMock(return_value=None)
-        monkeypatch.setattr("nanobot.agent.loop.compact_session", compact_mock)
+        monkeypatch.setattr(loop, "_run_structured_compaction", compact_mock)
 
         response = await loop._process_message(
             InboundMessage(channel="cli", sender_id="user", chat_id="test", content="next")
@@ -673,6 +687,8 @@ async def test_process_message_ignores_stale_snapshot_ceiling(
 
         assert response is not None
         assert compact_mock.await_count == 1
+        assert "assembled prompt estimate" in compact_mock.await_args.kwargs["reason"]
+        assert compact_mock.await_args.kwargs["input_tokens"] == 12_000
     finally:
         if original_window is None:
             loop.MODEL_CONTEXT_WINDOWS.pop(loop.model, None)

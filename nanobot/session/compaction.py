@@ -760,6 +760,7 @@ async def compact_session(
     keep_recent_tokens: int = 20_000,
     threshold_ratio: float = 0.75,
     reasoning_effort: str | None = None,
+    force: bool = False,
 ) -> CompactionEntry | None:
     """Run structured compaction and persist a CompactionEntry when successful."""
     last_input_tokens = _usage_snapshot_tokens(session)
@@ -781,7 +782,7 @@ async def compact_session(
         fallback_tokens=last_input_tokens,
         default_to_estimate=True,
     )
-    if not should_compact(
+    if not force and not should_compact(
         pressure_messages,
         context_window=context_window,
         reserve_tokens=reserve_tokens,

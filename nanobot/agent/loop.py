@@ -39,13 +39,11 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.session.compaction import (
-    _decision_tokens_with_pruning_ceiling,
     _usage_snapshot_tokens,
     compact_session,
     estimate_message_tokens,
     extract_file_ops,
     generate_compaction_summary,
-    should_compact,
 )
 from nanobot.session.compaction_log import CompactionEvent, CompactionLogger
 from nanobot.session.context_log import TurnContextLogger
@@ -753,6 +751,28 @@ class AgentLoop:
         chat_id: str | None = None,
     ) -> int:
         """Estimate the current full prompt window for the session without a new user turn."""
+        messages, estimated_tokens = self._build_current_context_messages(
+            session,
+            channel=channel,
+            chat_id=chat_id,
+            current_message=None,
+            trim_if_needed=False,
+        )
+        _ = messages
+        return int(estimated_tokens)
+
+    def _build_current_context_messages(
+        self,
+        session: Session,
+        *,
+        channel: str | None,
+        chat_id: str | None,
+        current_message: str | None,
+        memory_context: str | None = None,
+        resume_notice: str | None = None,
+        trim_if_needed: bool = False,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Build the exact current prompt shape and return it with its estimate."""
         context_window = self._get_context_window_size()
         history, _ = session.get_history(
             max_messages=max(1, session.get_visible_message_count()),
@@ -761,14 +781,16 @@ class AgentLoop:
         )
         messages = self._build_messages_with_prompt_budget(
             history=history,
-            current_message=None,
+            current_message=current_message,
             skill_names=self.skill_names,
             channel=channel,
             chat_id=chat_id,
+            memory_context=memory_context,
+            resume_notice=resume_notice,
             extra_system_messages=self._latest_compaction_system_messages(session),
-            trim_if_needed=False,
+            trim_if_needed=trim_if_needed,
         )
-        return int(self._estimate_prompt_tokens(messages))
+        return messages, int(self._estimate_prompt_tokens(messages))
 
     def _build_messages_with_prompt_budget(
         self,
@@ -966,6 +988,7 @@ class AgentLoop:
                     keep_recent_tokens=self._COMPACTION_KEEP_RECENT_TOKENS,
                     threshold_ratio=self._COMPACTION_THRESHOLD_RATIO,
                     reasoning_effort=self.reasoning_effort,
+                    force=True,
                 )
 
                 if entry is None:
@@ -1103,7 +1126,7 @@ class AgentLoop:
         compaction_threshold = self._get_compaction_threshold()
         emergency_threshold = self._get_emergency_prompt_threshold()
         logger.info(
-            "Prompt estimate for {}: tokens={} compaction_threshold={} emergency_threshold={}",
+            "Assembled prompt check for {}: tokens={} compaction_threshold={} emergency_threshold={}",
             context_label,
             estimated_tokens,
             compaction_threshold,
@@ -1117,12 +1140,12 @@ class AgentLoop:
                 chat_id=chat_id,
                 input_tokens=estimated_tokens,
                 context_window=self._get_context_window_size(),
-                reason=f"current prompt estimate ({estimated_tokens} > {compaction_threshold})",
+                reason=f"assembled prompt estimate ({estimated_tokens} > {compaction_threshold})",
             )
             messages = build_messages(False)
             estimated_tokens = self._estimate_prompt_tokens(messages)
             logger.info(
-                "Prompt estimate after compaction for {}: tokens={} emergency_threshold={}",
+                "Assembled prompt after compaction for {}: tokens={} emergency_threshold={}",
                 context_label,
                 estimated_tokens,
                 emergency_threshold,
@@ -1132,7 +1155,7 @@ class AgentLoop:
             messages = build_messages(True)
             estimated_tokens = self._estimate_prompt_tokens(messages)
             logger.info(
-                "Prompt estimate after emergency trim for {}: tokens={} emergency_threshold={}",
+                "Assembled prompt after emergency trim for {}: tokens={} emergency_threshold={}",
                 context_label,
                 estimated_tokens,
                 emergency_threshold,
@@ -2028,19 +2051,14 @@ class AgentLoop:
                 initial_messages,
                 session=session,
                 checkpoint_start=turn_start,
-                rebuild_messages=lambda: self._build_messages_with_prompt_budget(
-                    history=session.get_history(
-                        max_messages=max(1, session.get_visible_message_count()),
-                        context_window=context_window,
-                        protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
-                    )[0],
-                    current_message=None,
-                    skill_names=self.skill_names,
+                rebuild_messages=lambda: self._build_current_context_messages(
+                    session,
                     channel=channel,
                     chat_id=chat_id,
-                    extra_system_messages=self._latest_compaction_system_messages(session),
+                    current_message=None,
+                    resume_notice=self._RESUME_SYSTEM_MESSAGE,
                     trim_if_needed=True,
-                ),
+                )[0],
             )
             self._save_turn(session, all_msgs, turn_start)
             self.sessions.save_state(session)
@@ -2113,74 +2131,27 @@ class AgentLoop:
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
 
-        # Token-based compaction: check if the session's last known input token count
-        # exceeds 75% of the model's context window.
-        _needs_compaction = False
-        _compaction_reason = "none"
-        _token_count = 0
         _context_window = self._get_context_window_size()
         if session.key not in self._consolidating:
-            fresh_snapshot_tokens = _usage_snapshot_tokens(session)
-            if fresh_snapshot_tokens is not None:
-                _token_count = int(fresh_snapshot_tokens)
-            else:
-                _token_count = int(self._last_input_tokens.get(session.key, 0) or 0)
-
-            baseline_messages, _ = session.get_history(
-                max_messages=max(1, session.get_visible_message_count()),
-                context_window=_context_window,
-                prune_tool_results=False,
-            )
             pressure_messages, _ = session.get_history(
                 max_messages=max(1, session.get_visible_message_count()),
                 context_window=_context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
-            baseline_tokens = sum(estimate_message_tokens(msg) for msg in baseline_messages)
-            post_prune_tokens = sum(estimate_message_tokens(msg) for msg in pressure_messages)
-            decision_tokens = _decision_tokens_with_pruning_ceiling(
-                baseline_tokens=baseline_tokens,
-                post_prune_tokens=post_prune_tokens,
-                api_tokens_ceiling=fresh_snapshot_tokens,
-                fallback_tokens=_token_count if _token_count > 0 else None,
-            )
-            if decision_tokens is not None:
-                _token_count = int(decision_tokens)
-            _needs_compaction = should_compact(
-                pressure_messages,
-                context_window=_context_window,
-                reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
-                last_input_tokens=decision_tokens,
-                threshold_ratio=self._COMPACTION_THRESHOLD_RATIO,
-            )
-            threshold = int((_context_window - self._COMPACTION_RESERVE_TOKENS) * self._COMPACTION_THRESHOLD_RATIO)
+            fresh_snapshot_tokens = _usage_snapshot_tokens(session)
+            current_snapshot_tokens = int(fresh_snapshot_tokens) if fresh_snapshot_tokens is not None else 0
             logger.info(
-                "Structured compaction check for {}: tokens={} threshold={} total_messages={} visible_messages={}",
+                "Structured compaction precheck for {}: current_snapshot_tokens={} threshold={} total_messages={} visible_messages={} (decision deferred to assembled prompt)",
                 session.key,
-                _token_count,
-                threshold,
+                current_snapshot_tokens,
+                int((_context_window - self._COMPACTION_RESERVE_TOKENS) * self._COMPACTION_THRESHOLD_RATIO),
                 session.get_message_count(),
                 len(pressure_messages),
             )
-            if _needs_compaction:
-                if _token_count > 0:
-                    _compaction_reason = f"tokens ({_token_count} > {threshold})"
-                else:
-                    _compaction_reason = "estimated token pressure"
         else:
             logger.debug(
-                "Skipping compaction check for {}: consolidation already in progress",
+                "Skipping compaction precheck for {}: consolidation already in progress",
                 session.key,
-            )
-
-        if _needs_compaction:
-            await self._run_structured_compaction(
-                session=session,
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                input_tokens=_token_count,
-                context_window=_context_window,
-                reason=_compaction_reason,
             )
 
         resume_notice = self._resume_notice_for_state(session.detect_resume_state(), msg.content)
@@ -2311,19 +2282,15 @@ class AgentLoop:
             on_progress=_tracked_progress,
             session=session,
             checkpoint_start=turn_start,
-            rebuild_messages=lambda: self._build_messages_with_prompt_budget(
-                history=session.get_history(
-                    max_messages=max(1, session.get_visible_message_count()),
-                    context_window=_context_window,
-                    protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
-                )[0],
-                current_message=None,
-                skill_names=self.skill_names,
+            rebuild_messages=lambda: self._build_current_context_messages(
+                session,
                 channel=msg.channel,
                 chat_id=msg.chat_id,
-                extra_system_messages=self._latest_compaction_system_messages(session),
+                current_message=None,
+                memory_context=memory_context,
+                resume_notice=resume_notice,
                 trim_if_needed=True,
-            ),
+            )[0],
         )
 
         self._save_turn(session, all_msgs, turn_start)

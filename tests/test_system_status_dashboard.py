@@ -66,7 +66,7 @@ def test_collect_system_status_uses_persisted_usage_snapshot_after_restart():
     assert agent.is_idle is False
 
 
-def test_collect_system_status_prefers_higher_live_tokens_over_snapshot():
+def test_collect_system_status_prefers_snapshot_over_stale_live_tokens():
     router = SimpleNamespace(
         agents={
             "nanobot-dev": SimpleNamespace(
@@ -92,8 +92,8 @@ def test_collect_system_status_prefers_higher_live_tokens_over_snapshot():
 
     status = collect_system_status(router)
     agent = status.agents[0]
-    assert agent.current_input_tokens == 30000
-    assert round(agent.utilization_pct, 2) == 0.30
+    assert agent.current_input_tokens == 25000
+    assert round(agent.utilization_pct, 2) == 0.25
 
 
 def test_channel_topic_uses_model_string_only():

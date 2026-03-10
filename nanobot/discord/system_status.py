@@ -108,23 +108,32 @@ def _usage_snapshot_total(metadata: dict[str, Any]) -> int:
 
 
 def _collect_session_usage(loop: Any) -> dict[str, dict[str, Any]]:
-    """Collect persisted + in-memory usage info for each non-cron session."""
+    """Collect current session usage for each non-cron session.
+
+    Prefer persisted usage_snapshot totals because they track the current built
+    prompt window. Fall back to in-memory _last_input_tokens only when the
+    snapshot is unavailable.
+    """
     usage: dict[str, dict[str, Any]] = {}
     for session_info in loop.sessions.list_sessions():
         key = str(session_info.get("key", "") or "")
         if not key or key.startswith("cron:"):
             continue
 
-        tokens = int(loop._last_input_tokens.get(key, 0) or 0)
+        live_tokens = int(loop._last_input_tokens.get(key, 0) or 0)
+        snapshot_tokens = 0
         try:
             session = loop.sessions.get_or_create(key)
-            tokens = max(tokens, _usage_snapshot_total(session.metadata))
+            snapshot_tokens = _usage_snapshot_total(session.metadata)
         except Exception:
             logger.exception("SystemStatusDashboard: Failed loading session metadata for {}", key)
 
+        tokens = snapshot_tokens if snapshot_tokens > 0 else live_tokens
         usage[key] = {
             **session_info,
             "tokens": max(0, tokens),
+            "live_tokens": max(0, live_tokens),
+            "snapshot_tokens": max(0, snapshot_tokens),
         }
     return usage
 

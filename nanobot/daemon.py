@@ -35,7 +35,7 @@ def setup_daemon_logging() -> None:
         rotation="10 MB",
         retention="7 days",
         compression="gz",
-        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message}",
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message} | extra={extra}",
         level="DEBUG",
         backtrace=True,
         diagnose=True,

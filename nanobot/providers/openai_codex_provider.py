@@ -268,6 +268,35 @@ def _is_retryable_codex_error(exc: Exception) -> bool:
             return True
         if exc.status_code == 429:
             return exc.error_code != 'insufficient_quota'
+        # Responses/Codex can emit terminal SSE error events without an HTTP status.
+        # Treat upstream/server/incomplete failures as retryable unless they are clearly
+        # quota/auth/permission problems.
+        retryable_error_types = {'server_error', 'internal_error', 'timeout_error'}
+        retryable_error_codes = {
+            'server_error',
+            'internal_error',
+            'timeout',
+            'overloaded',
+            'temporarily_unavailable',
+        }
+        non_retryable_error_types = {
+            'authentication_error',
+            'permission_error',
+            'invalid_request_error',
+            'quota_exceeded',
+        }
+        non_retryable_error_codes = {
+            'insufficient_quota',
+            'invalid_api_key',
+            'invalid_request',
+            'permission_denied',
+        }
+        if exc.error_type in non_retryable_error_types or exc.error_code in non_retryable_error_codes:
+            return False
+        if exc.error_type in retryable_error_types or exc.error_code in retryable_error_codes:
+            return True
+        if (exc.response_status or '').lower() in {'failed', 'incomplete'}:
+            return True
     cause = getattr(exc, '__cause__', None) or getattr(exc, '__context__', None)
     if isinstance(cause, Exception) and _is_retryable_codex_error(cause):
         return True
@@ -277,6 +306,7 @@ def _is_retryable_codex_error(exc: Exception) -> bool:
         'http 502',
         'http 503',
         'http 504',
+        'server_error',
         'upstream connect error',
         'disconnect/reset before headers',
         'transport failure reason',

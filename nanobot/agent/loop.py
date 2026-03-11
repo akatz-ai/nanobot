@@ -130,6 +130,7 @@ class AgentLoop:
         background_model: str | None = None,
         context_window_override: int | None = None,
         background_context_window_override: int | None = None,
+        emergency_trim_threshold: int | None = None,
         max_iterations: int = 40,
         temperature: float = 0.1,
         max_tokens: int = 4096,
@@ -157,6 +158,7 @@ class AgentLoop:
         self.background_model = background_model or self.model
         self.context_window_override = context_window_override
         self.background_context_window_override = background_context_window_override
+        self.emergency_trim_threshold_override = emergency_trim_threshold
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -668,31 +670,36 @@ class AgentLoop:
             int((context_window - self._COMPACTION_RESERVE_TOKENS) * self._COMPACTION_THRESHOLD_RATIO),
         )
 
-    def _get_emergency_prompt_threshold(self) -> int:
-        """Return the last-resort prompt threshold after output reservation."""
-        context_window = max(int(self._get_context_window_size()), 1)
-        output_reserve = max(int(self.max_tokens), 1)
-        return max(
-            512,
-            context_window - output_reserve - self._EMERGENCY_TRIM_SAFETY_TOKENS,
-        )
+    def _get_emergency_prompt_threshold(self) -> int | None:
+        """Return the optional last-resort trim threshold.
+
+        If unset, emergency front-trimming is disabled and the provider overflow
+        retry path remains the only fallback beyond compaction.
+        """
+        override = self.emergency_trim_threshold_override
+        if override is None:
+            return None
+        try:
+            threshold = int(override)
+        except (TypeError, ValueError):
+            return None
+        if threshold <= 0:
+            return None
+        return max(512, threshold)
 
     def _get_prompt_input_budget(self) -> int:
         """Return the soft prompt-input budget used between compactions.
 
-        Compaction still triggers at ``_COMPACTION_THRESHOLD_RATIO``, but the
-        preflight path should allow append-only growth after compaction until we
-        approach the real provider limit. The hard emergency limit remains
-        ``context_window - output_reserve - safety_margin``.
+        Compaction still triggers at ``_COMPACTION_THRESHOLD_RATIO``. If no
+        explicit emergency trim threshold is configured, this soft budget falls
+        back to the append-only prompt budget ratio alone.
         """
         context_window = max(int(self._get_context_window_size()), 1)
-        return max(
-            512,
-            min(
-                int(context_window * self._PROMPT_BUDGET_RATIO),
-                self._get_emergency_prompt_threshold(),
-            ),
-        )
+        soft_budget = max(512, int(context_window * self._PROMPT_BUDGET_RATIO))
+        emergency_threshold = self._get_emergency_prompt_threshold()
+        if emergency_threshold is None:
+            return soft_budget
+        return max(512, min(soft_budget, emergency_threshold))
 
     @staticmethod
     def _estimate_prompt_tokens(messages: list[dict[str, Any]]) -> int:
@@ -832,6 +839,9 @@ class AgentLoop:
         initial_estimate = self._estimate_prompt_tokens(messages)
         estimated = initial_estimate
         trimmed = 0
+
+        if emergency_threshold is None:
+            return messages
 
         if trim_if_needed and estimated > emergency_threshold and history_window:
             # Estimate tokens per message for batch trimming
@@ -1130,7 +1140,7 @@ class AgentLoop:
             context_label,
             estimated_tokens,
             compaction_threshold,
-            emergency_threshold,
+            emergency_threshold if emergency_threshold is not None else "disabled",
         )
 
         if estimated_tokens > compaction_threshold and session.key not in self._consolidating:
@@ -1151,7 +1161,7 @@ class AgentLoop:
                 emergency_threshold,
             )
 
-        if estimated_tokens > emergency_threshold:
+        if emergency_threshold is not None and estimated_tokens > emergency_threshold:
             messages = build_messages(True)
             estimated_tokens = self._estimate_prompt_tokens(messages)
             logger.info(

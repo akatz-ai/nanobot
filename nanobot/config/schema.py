@@ -237,6 +237,7 @@ class AgentDefaults(Base):
     background_model: str | None = None  # Optional cheaper model for compaction/consolidation tasks.
     context_window: int | None = None
     background_context_window: int | None = None
+    emergency_trim_threshold: int | None = None  # Disabled by default unless explicitly configured.
     max_tokens: int = 100_000
     temperature: float = 0.1
     max_tool_iterations: int = 40
@@ -251,6 +252,7 @@ class AgentProfile(Base):
     background_model: str | None = None
     context_window: int | None = None
     background_context_window: int | None = None
+    emergency_trim_threshold: int | None = None
     session_store: Literal["jsonl", "sqlite"] | None = None
     max_tokens: int | None = None
     temperature: float | None = None
@@ -282,6 +284,11 @@ class AgentProfile(Base):
                 if self.background_context_window is not None
                 else defaults.background_context_window
             ),
+            emergency_trim_threshold=(
+                self.emergency_trim_threshold
+                if self.emergency_trim_threshold is not None
+                else defaults.emergency_trim_threshold
+            ),
             session_store=(
                 self.session_store
                 if self.session_store is not None
@@ -311,6 +318,7 @@ class ResolvedAgentProfile(Base):
     background_model: str | None = None
     context_window: int | None = None
     background_context_window: int | None = None
+    emergency_trim_threshold: int | None = None
     session_store: Literal["jsonl", "sqlite"] = "jsonl"
     max_tokens: int
     temperature: float

@@ -31,6 +31,7 @@ from nanobot.channels.discord import DiscordChannel
 from nanobot.config.loader import get_config_path, get_data_dir, get_state_path, load_base_config, load_config, load_config_data, save_config
 from nanobot.config.state import StateStore
 from nanobot.cron.service import CronService
+from nanobot.session.context_inspection import build_context_inspection_response
 from nanobot.session.context_log import load_context_log
 from nanobot.session.extraction_log import load_extraction_log
 from nanobot.session.manager import SessionManager
@@ -689,50 +690,6 @@ def _load_primary_session_bundle(name: str, profile: dict[str, Any]) -> dict[str
     }
 
 
-def _compaction_state_for_message_index(
-    compaction_events: list[dict[str, Any]],
-    user_message_index: int,
-) -> dict[str, Any] | None:
-    candidates = []
-    for event in compaction_events:
-        post_context = event.get("post_context")
-        if not isinstance(post_context, dict):
-            continue
-        first_kept = _coerce_int(post_context.get("first_kept_index"), -1)
-        if 0 <= first_kept <= user_message_index:
-            candidates.append(event)
-    if not candidates:
-        return None
-    return max(
-        candidates,
-        key=lambda event: _coerce_int(
-            (event.get("post_context") or {}).get("first_kept_index"),
-            -1,
-        ),
-    )
-
-
-def _build_context_turn_payload(
-    turn: dict[str, Any],
-    previous_turn: dict[str, Any] | None,
-    first_kept_index: int,
-    messages_in_window: int,
-    total_session_messages: int,
-) -> dict[str, Any]:
-    payload = dict(turn)
-    payload["first_kept_index"] = first_kept_index
-    payload["messages_in_window"] = messages_in_window
-    payload["session_message_count"] = total_session_messages
-    payload["system_prompt_changed_since_previous"] = (
-        previous_turn is not None
-        and previous_turn.get("system_prompt_hash") != turn.get("system_prompt_hash")
-    )
-    payload["previous_system_prompt_hash"] = (
-        previous_turn.get("system_prompt_hash") if previous_turn else None
-    )
-    return payload
-
-
 def _build_live_context_response(
     *,
     agent_name: str,
@@ -743,102 +700,16 @@ def _build_live_context_response(
     if session_bundle is None:
         raise HTTPException(status_code=404, detail=f"No primary session found for '{agent_name}'")
 
-    session_path = session_bundle["path"]
-    metadata = session_bundle["metadata"]
-    messages = session_bundle["messages"]
-    usage_summary = session_bundle["usage_summary"] or {}
-    turns = load_context_log(session_path)
-    compaction_events = agent_session_compaction_sync(session_path)
-
-    if requested_turn_index is None:
-        selected_turn = turns[-1] if turns else None
-    else:
-        selected_turn = next(
-            (entry for entry in turns if _coerce_int(entry.get("turn_index"), -1) == requested_turn_index),
-            None,
-        )
-        if selected_turn is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Turn {requested_turn_index} not found for '{agent_name}'",
-            )
-
-    latest_turn = turns[-1] if turns else None
-    total_session_messages = len(messages)
     model = _resolved_agent_model(profile, _load_config().get("agents", {}).get("defaults", {}))
-    context_window = _context_window_for_model(model, usage_summary)
-    current_tokens = _current_context_tokens(metadata, usage_summary, context_window)
-    utilization_pct = round(current_tokens / context_window * 100, 1) if context_window else 0.0
-
-    fallback_last_consolidated = _coerce_int(metadata.get("last_consolidated"), 0)
-    first_kept_index = fallback_last_consolidated
-    last_consolidated = fallback_last_consolidated
-    visible_messages = messages
-    turn_payload = None
-
-    if selected_turn is not None:
-        selected_turn_index = _coerce_int(selected_turn.get("turn_index"), 0)
-        previous_turn = next(
-            (
-                entry for entry in turns
-                if _coerce_int(entry.get("turn_index"), -1) == selected_turn_index - 1
-            ),
-            None,
+    try:
+        return build_context_inspection_response(
+            agent_name=agent_name,
+            session_bundle=session_bundle,
+            model=model,
+            requested_turn_index=requested_turn_index,
         )
-        user_message_index = _coerce_int(selected_turn.get("user_message_index"), len(messages) - 1)
-        compaction_state = _compaction_state_for_message_index(compaction_events, user_message_index)
-        if compaction_state:
-            post_context = compaction_state.get("post_context") or {}
-            first_kept_index = _coerce_int(post_context.get("first_kept_index"), first_kept_index)
-            last_consolidated = _coerce_int(
-                post_context.get("new_last_consolidated"),
-                last_consolidated,
-            )
-        else:
-            first_kept_index = 0 if requested_turn_index is not None else fallback_last_consolidated
-            last_consolidated = min(user_message_index, fallback_last_consolidated)
-
-        end_index = total_session_messages if requested_turn_index is None else min(total_session_messages, user_message_index + 1)
-        start_index = max(0, min(first_kept_index, end_index))
-        visible_messages = messages[start_index:end_index]
-        turn_payload = _build_context_turn_payload(
-            selected_turn,
-            previous_turn,
-            start_index,
-            len(visible_messages),
-            total_session_messages,
-        )
-    else:
-        start_index = max(0, first_kept_index)
-        visible_messages = messages[start_index:]
-
-    response = {
-        "agent": agent_name,
-        "session_key": session_bundle["key"],
-        "session_file": session_path.name,
-        "context_window": context_window,
-        "current_tokens": current_tokens,
-        "utilization_pct": utilization_pct,
-        "total_messages": total_session_messages,
-        "first_kept_index": max(0, first_kept_index),
-        "messages_in_window": len(visible_messages),
-        "last_consolidated": max(0, last_consolidated),
-        "turns_available": len(turns),
-        "messages": visible_messages,
-        "turn": turn_payload,
-        "latest_turn": (
-            turn_payload if requested_turn_index is None else (
-                _build_context_turn_payload(
-                    latest_turn,
-                    turns[-2] if len(turns) > 1 else None,
-                    max(0, first_kept_index),
-                    len(messages[max(0, first_kept_index):]),
-                    total_session_messages,
-                ) if latest_turn else None
-            )
-        ),
-    }
-    return response
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 def _recent_activity_entry(agent: str, msg: dict[str, Any]) -> dict[str, Any] | None:
@@ -1059,6 +930,29 @@ async def list_agents():
     for name, profile in profiles.items():
         agents.append(_build_agent_record(name, profile, defaults, ws))
     return {"agents": agents}
+
+
+def _find_agent_profile_by_session_id(session_id: str) -> tuple[str, dict[str, Any]] | None:
+    cfg = _load_config()
+    profiles = cfg.get("agents", {}).get("profiles", {})
+    for name, profile in profiles.items():
+        if not isinstance(profile, dict):
+            continue
+        bundle = _load_primary_session_bundle(name, profile)
+        if bundle is None:
+            continue
+        if bundle.get("key") == session_id:
+            return name, profile
+    return None
+
+
+@app.get("/api/context/{sessionId}")
+async def session_context(sessionId: str):
+    match = _find_agent_profile_by_session_id(sessionId)
+    if match is None:
+        raise HTTPException(status_code=404, detail=f"Session '{sessionId}' not found")
+    agent_name, profile = match
+    return _build_live_context_response(agent_name=agent_name, profile=profile)
 
 
 @app.get("/api/agents/{name}/context/live")

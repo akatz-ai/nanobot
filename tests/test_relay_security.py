@@ -12,6 +12,7 @@ from nanobot.relay.security import (
 
 
 def test_route_allowlist_matches_dynamic_paths_and_blocks_writes() -> None:
+    assert is_route_allowed("GET", "/api/context/discord:123")
     assert is_route_allowed("GET", "/api/agents/alice/context/live")
     assert is_route_allowed("POST", "/api/graph/search")
     assert is_route_allowed("POST", "/api/agents")

@@ -1,0 +1,117 @@
+---
+schema_version: 1
+id: context-compaction-seam-v1
+title: "Context/Compaction seam \u2014 expose PromptAssemblyResult to API/dashboard"
+status: active
+priority: 1
+created_at: '2026-03-11T21:28:24Z'
+updated_at: '2026-03-11T22:29:49Z'
+---
+
+## Tasks
+- [x] context-compaction-seam-v1.0 Lock shared seam scope: confirm which shared artifacts advance now (acceptance, contract, evals, fixtures) and record exact payload/visibility targets {claim_by=codex@sqlite-test claim_at=2026-03-11T21:32:14Z}
+- [>] context-compaction-seam-v1.1 Implement nanobot backend/API exposure for PromptAssemblyResult-aligned compaction/context data, including pre/post snapshot provenance and manual /compact visibility {deps=[context-compaction-seam-v1.0] claim_by=codex@sqlite-test claim_at=2026-03-11T21:42:21Z}
+- [ ] context-compaction-seam-v1.2 Update dashboard consumption/rendering for assembled prompt estimate, threshold, reserved headroom, stable vs dynamic sections, visible slice labeling, and pre/post snapshot provenance {deps=[context-compaction-seam-v1.1]}
+- [ ] context-compaction-seam-v1.3 Add/update repo-local backend + dashboard tests and any fixture-driven regression coverage for the exposed seam {deps=[context-compaction-seam-v1.2]}
+- [ ] context-compaction-seam-v1.4 Run focused browser/manual validation (Playwright/agent-browser as applicable), capture proof, and reconcile any shared artifact deltas before calling the slice complete {deps=[context-compaction-seam-v1.3]}
+
+## Notes
+### Task 1 progress
+
+- Extracted the canonical backend/session context-inspection builder into `nanobot/session/context_inspection.py` so `dashboard/app.py` now delegates instead of reconstructing `promptAssembly` inline.
+- `GET /api/context/{sessionId}` and the agent-scoped context routes now share the same builder path via `_build_live_context_response`.
+- Tightened seam behavior to keep `triggerSnapshot` anchored to the pre-trigger snapshot while preferring the compaction log post snapshot for `postCompactionSnapshot`.
+- Added focused builder/route regressions for required `promptAssembly` fields, stable vs turn-scoped section mapping, nullable provider-observed tokens, pre/post snapshot provenance, and session-scoped route behavior.
+- Shared artifacts were re-checked for alignment, but not changed in this turn; this was repo-local preparatory work in service of the shared Slice 1 contract target.
+
+### Task 0 seam lock
+
+Minimal seam delta decision:
+- Shared-artifact advancing slice, but surgical.
+- The shared API contract already contains a skeletal `ContextInspectionResponse` / `PromptAssemblyResult` shape.
+- Therefore the first-class shared artifact changes now are:
+  1. `agentshq-platform/contracts/api/openapi.yaml` — tighten the existing schema to the minimal fields the nanobot API will actually expose.
+  2. `agentshq-platform/fixtures/sessions/compaction/*` — add or update fixture coverage for below-threshold, triggered compaction, pre/post snapshots, and manual-compaction provenance.
+- Shared acceptance features remain unchanged for now unless implementation shows insufficiency or contradiction.
+- A premature manual-compaction acceptance scenario was removed during audit cleanup because it widened scope beyond the minimal seam task without explicit approval.
+- Shared evals remain unchanged for now unless the exposed seam leaves ambiguity around provenance, snapshot source, or extraction-linkage wording.
+
+Fields that must be exposed in the minimal seam:
+- `sessionId`
+- `promptAssembly.assembledPromptTokens`
+- `promptAssembly.providerObservedPromptTokens` (nullable)
+- `promptAssembly.compactionThresholdTokens`
+- `promptAssembly.reservedHeadroomTokens`
+- `promptAssembly.stablePrefixTokens`
+- `promptAssembly.dynamicTurnTokens`
+- `promptAssembly.visibleConversationSliceTokens`
+- `promptAssembly.compactionTriggered`
+- `promptAssembly.triggerSnapshot`
+- `promptAssembly.preCompactionSnapshot`
+- `promptAssembly.postCompactionSnapshot`
+- `promptAssembly.sections` with enough section metadata to distinguish stable vs turn-scoped slices
+
+Fields that should stay repo-local / deferred for later unless already trivial:
+- broader extraction run linkage beyond current compaction/extraction logs
+- new acceptance wording for pre-compaction orchestration details
+- broad UI promises not already present in Slice 1 artifacts
+
+Current artifact state vs seam:
+- Acceptance artifacts are sufficient as behavioral targets.
+- Contract exists but is not yet proven to match live nanobot API payloads; this is the artifact that must change first if names/shape differ.
+- Evals can remain unchanged unless contract/payload review reveals missing operator-truth checks.
+## OS Context
+- Classification: Type B | Type C | Type D
+- Relevant Slice: Slice 1
+- Ownership Label: shared-artifact advancing
+- Source Specs / Docs:
+  - /data/projects/nanobot/docs/context-architecture-v2-spec.md
+  - /data/projects/nanobot/docs/session-architecture-migration-spec-v2.md
+  - /data/projects/nanobot/docs/cache-preserving-compaction-spec.md
+- Shared Artifacts Checked:
+  - /data/projects/agentshq-platform/acceptance/cross-product/explain-compaction.feature
+  - /data/projects/agentshq-platform/acceptance/cross-product/inspect-context-from-dashboard.feature
+  - /data/projects/agentshq-platform/acceptance/cross-product/compaction-summary-boundary.feature
+  - /data/projects/agentshq-platform/contracts/api/openapi.yaml
+  - /data/projects/agentshq-platform/evals/cross-product/context-accuracy.yaml
+  - /data/projects/agentshq-platform/evals/cross-product/compaction-summary-integrity.yaml
+- Shared Artifacts To Update:
+  - agentshq-platform/contracts/api/openapi.yaml
+  - agentshq-platform/fixtures/sessions/compaction/*
+  - agentshq-platform/evals/cross-product/context-accuracy.yaml (only if seam payload/provenance needs stronger evaluation wording)
+  - agentshq-platform/evals/cross-product/compaction-summary-integrity.yaml (only if seam payload/extraction-status visibility needs stronger evaluation wording)
+  - acceptance feature text only if seam scope reveals an insufficiency or contradiction
+- manual-compaction continuity/provenance acceptance remains deferred to a follow-on task unless UI/runtime work in this slice makes it unavoidable
+- Repos Touched:
+  - /data/projects/nanobot
+  - /data/projects/agentshq-platform
+- Validation Required:
+  - nanobot backend/context/compaction/dashboard API tests
+  - contract-aware API validation against the exposed prompt-assembly seam
+  - dashboard-focused UI/workflow validation in the owning frontend/runtime surface
+  - focused manual proof of compaction explanation + time-travel context view
+- Human Approval Needed:
+  - Yes, before changing acceptance wording or materially widening the shared API contract beyond the minimal seam delta
+- Exit Criteria:
+  - PromptAssemblyResult-aligned data is exposed through the nanobot API/dashboard seam
+  - dashboard-visible compaction/context fields satisfy Slice 1 shared artifacts
+  - pre/post compaction snapshots are distinguishable in operator-visible surfaces
+  - manual /compact and automatic compaction share the same visible provenance path
+- contract/fixture changes are minimal and explicit
+
+### 2026-03-11 backend seam extraction
+
+- This increment stays Slice 1 and keeps acceptance scope unchanged.
+- Ownership for this code change is repo-local preparatory: nanobot now has a backend/session-level canonical context inspection builder while still targeting the shared `GET /api/context/{sessionId}` contract.
+- Implemented a new backend seam in `nanobot/session/context_inspection.py` that assembles the contract-aligned `ContextInspectionResponse` / `promptAssembly` payload from session bundle, context log, and compaction log artifacts.
+- `nanobot/dashboard/app.py` now delegates session and agent-scoped context inspection responses to that backend builder instead of reconstructing prompt-assembly payloads inline.
+- Added focused regression coverage for required promptAssembly fields, section stable/turn-scoped mapping, pre/post snapshot precedence, nullable provider-observed tokens, and session-scoped route delegation.
+- Shared artifacts were re-checked before the extraction and remain unchanged in this increment:
+  - `/data/projects/agentshq-platform/contracts/api/openapi.yaml`
+  - `/data/projects/agentshq-platform/docs/playbooks/first-vertical-slice-map.md`
+  - `/data/projects/agentshq-platform/fixtures/sessions/compaction/README.md`
+- Deliberately deferred:
+  - dashboard UI consumption changes beyond existing route compatibility
+  - acceptance wording changes
+  - broader refactors outside the canonical context-inspection seam
+  - repo-local tests and focused UI/manual validations pass

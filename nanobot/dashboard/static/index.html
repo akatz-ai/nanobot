@@ -1128,6 +1128,13 @@ function statMini(label, value) {
     html('div', { className: 'stat-value', style: 'font-size:18px;' }, value),
   ]);
 }
+function statDetail(label, value, sub = '', tone = '') {
+  return html('div', { className: 'stat-card' }, [
+    html('div', { className: 'stat-label' }, label),
+    html('div', { className: `stat-value ${tone}` }, value),
+    sub ? html('div', { className: 'stat-sub' }, sub) : null,
+  ]);
+}
 function renderInfoRow(label, value) { return html('tr', {}, [html('td', { style: 'width:150px;color:var(--text-muted);' }, label), html('td', { className: 'mono', style: 'font-size:12px;' }, value)]); }
 function controlField(label, value, onInput) {
   return html('div', {}, [
@@ -1139,6 +1146,149 @@ function classifyRole(role) { if (role === 'user') return 'user'; if (role === '
 function shouldShowMsg(role) { const key = 'show' + role.charAt(0).toUpperCase() + role.slice(1); return sessionFilterState[key]; }
 function buildConsolidationMarker(lastConsolidated) { return html('div', { className: 'timeline-marker' }, [html('span', {}, `▲ Consolidated through message #${lastConsolidated}`), html('div', { className: 'line' })]); }
 function buildPromptWindowMarker(firstKeptIndex) { return html('div', { className: 'timeline-marker', style: 'color:var(--accent-blue);' }, [html('span', {}, `▼ LLM prompt window starts at message #${firstKeptIndex}`), html('div', { className: 'line', style: 'border-top-color:rgba(91,156,245,0.35);' })]); }
+const PROMPT_SECTION_LABELS = {
+  system_base: 'System Prompt',
+  memory_md: 'MEMORY.md',
+  session_summary: 'Compaction Summary',
+  current_user: 'Current User Turn',
+  history_user: 'Conversation History (User)',
+  history_assistant: 'Conversation History (Assistant)',
+  history_tool: 'Conversation History (Tool)',
+  resume_notice: 'Resume Notice',
+  system_other: 'Session Metadata',
+};
+function humanizeLabel(value) {
+  return String(value || '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+function promptSectionDisplayLabel(label) {
+  return PROMPT_SECTION_LABELS[label] || humanizeLabel(label || 'section');
+}
+function promptSnapshotDisplayLabel(snapshotId) {
+  const labels = {
+    pre_compaction: 'Pre-compaction snapshot',
+    post_compaction: 'Post-compaction snapshot',
+    provider_observed: 'Provider-observed state',
+    stale_snapshot: 'Stored snapshot',
+  };
+  return labels[snapshotId] || humanizeLabel(snapshotId || 'snapshot');
+}
+function promptTriggerNarrative(snapshotId) {
+  const narratives = {
+    pre_compaction: 'Trigger state is anchored to the pre-compaction snapshot.',
+    post_compaction: 'Trigger state is anchored to the post-compaction rebuild.',
+    provider_observed: 'Trigger state prefers provider-observed prompt usage when it exists.',
+    stale_snapshot: 'Trigger state comes from the newest stored snapshot and may lag the live window.',
+  };
+  return narratives[snapshotId] || 'Trigger state is anchored to the latest available prompt snapshot.';
+}
+function promptSectionScope(section) {
+  if (section?.stable) return { text: 'Stable prefix', className: 'pill pill-purple' };
+  if (section?.turnScoped) return { text: 'Turn-scoped', className: 'pill pill-amber' };
+  return { text: 'Visible slice', className: 'pill pill-blue' };
+}
+function promptSectionSourceLabel(source) {
+  const value = String(source || '');
+  if (!value || value.startsWith('history:') || value.startsWith('message:')) return '';
+  if (value === 'system_prompt') return 'System prompt source';
+  if (value === 'current_user') return 'Current user input';
+  return value;
+}
+function promptSnapshotNote(title, snapshotId) {
+  if (title === 'Pre-Compaction Snapshot') return 'Captured before compaction decisions.';
+  if (title === 'Post-Compaction Snapshot') return 'Rebuilt prompt after compaction.';
+  return promptSnapshotDisplayLabel(snapshotId);
+}
+function buildPromptSnapshotCard(title, snapshot, isTriggerSource = false) {
+  if (!snapshot) return null;
+  return html('div', { className: 'card card-sm', style: 'margin-bottom:0;padding:18px;background:var(--bg-elevated);' }, [
+    html('div', { className: 'toolbar', style: 'margin-bottom:12px;' }, [
+      html('div', {}, [
+        html('div', { className: 'card-title' }, title),
+        html('div', { className: 'card-subtitle mono' }, `${promptSnapshotDisplayLabel(snapshot.snapshotId)} · ${promptSnapshotNote(title, snapshot.snapshotId)}`),
+      ]),
+      isTriggerSource ? html('span', { className: 'pill pill-amber' }, 'Trigger source') : null,
+    ]),
+    html('div', { className: 'section-grid' }, [
+      statMini('Assembled', fmtTokens(snapshot.assembledPromptTokens || 0)),
+      statMini('Stable Prefix', fmtTokens(snapshot.stablePrefixTokens || 0)),
+      statMini('Dynamic Turn', fmtTokens(snapshot.dynamicTurnTokens || 0)),
+      statMini('Visible Slice', fmtTokens(snapshot.visibleConversationSliceTokens || 0)),
+    ]),
+  ]);
+}
+function buildPromptAssemblyCard(prompt, contextWindow) {
+  if (!prompt) {
+    return html('div', { className: 'card' }, [
+      html('div', { className: 'card-header' }, [
+        html('div', {}, [
+          html('div', { className: 'card-title' }, 'Prompt Assembly'),
+          html('div', { className: 'card-subtitle' }, 'Canonical prompt accounting was not captured for this snapshot.'),
+        ]),
+      ]),
+    ]);
+  }
+  const headerStats = [
+    statDetail('Assembled Prompt', fmtTokens(prompt.assembledPromptTokens || 0), 'Estimated assembled prompt tokens for this snapshot.', prompt.compactionTriggered ? 'amber' : ''),
+    prompt.providerObservedPromptTokens !== null && prompt.providerObservedPromptTokens !== undefined
+      ? statDetail('Provider Observed', fmtTokens(prompt.providerObservedPromptTokens || 0), 'Observed prompt tokens reported by the provider.', 'blue')
+      : null,
+    statDetail('Compaction Threshold', fmtTokens(prompt.compactionThresholdTokens || 0), contextWindow ? `${fmtPercent((prompt.compactionThresholdTokens || 0) / contextWindow * 100, 1)} of ${fmtTokens(contextWindow)} total window.` : 'Configured compaction trigger for this model.'),
+    statDetail('Reserved Headroom', fmtTokens(prompt.reservedHeadroomTokens || 0), contextWindow ? `${fmtPercent((prompt.reservedHeadroomTokens || 0) / contextWindow * 100, 1)} held back from the full window.` : 'Held back separately from the threshold.'),
+  ].filter(Boolean);
+  const sections = Array.isArray(prompt.sections) ? prompt.sections : [];
+  const sectionsList = html('div', { style: 'display:flex;flex-direction:column;gap:10px;' });
+  sections.forEach((section) => {
+    const scope = promptSectionScope(section);
+    const meta = [humanizeLabel(section.kind || 'section')];
+    const sourceLabel = promptSectionSourceLabel(section.source);
+    if (sourceLabel && !['section', section.label, section.id].includes(section.source)) meta.push(sourceLabel);
+    sectionsList.appendChild(html('div', { className: 'message-tool-call', style: 'margin:0;' }, [
+      html('div', { className: 'toolbar' }, [
+        html('div', {}, [
+          html('div', { className: 'card-title' }, promptSectionDisplayLabel(section.label)),
+          html('div', { className: 'card-subtitle mono' }, meta.join(' · ')),
+        ]),
+        html('div', { className: 'toolbar-group' }, [
+          html('span', { className: scope.className }, scope.text),
+          html('span', { className: 'pill pill-muted' }, fmtTokens(section.tokenEstimate || 0)),
+        ]),
+      ]),
+    ]));
+  });
+  return html('div', { className: 'card' }, [
+    html('div', { className: 'card-header' }, [
+      html('div', {}, [
+        html('div', { className: 'card-title' }, 'Prompt Assembly'),
+        html('div', { className: 'card-subtitle' }, 'Canonical prompt accounting for this snapshot. Visible slice metrics cover the current conversation only, not the full context window.'),
+      ]),
+      html('div', { className: 'toolbar-group' }, [
+        html('span', { className: `pill ${prompt.compactionTriggered ? 'pill-amber' : 'pill-green'}` }, prompt.compactionTriggered ? 'Compaction triggered' : 'Within threshold'),
+        html('span', { className: 'pill pill-blue' }, promptSnapshotDisplayLabel(prompt.triggerSnapshot)),
+      ]),
+    ]),
+    html('div', { className: 'stat-grid', style: `grid-template-columns:repeat(${Math.min(headerStats.length || 1, 4)}, minmax(0, 1fr));` }, headerStats),
+    html('div', { className: 'section-grid', style: 'margin-top:14px;' }, [
+      statDetail('Stable Prefix', fmtTokens(prompt.stablePrefixTokens || 0), 'Stable cached prefix held across turns.', 'green'),
+      statDetail('Dynamic Turn', fmtTokens(prompt.dynamicTurnTokens || 0), 'Turn-scoped additions layered onto the prefix.', 'amber'),
+      statDetail('Visible Conversation Slice', fmtTokens(prompt.visibleConversationSliceTokens || 0), 'Current conversation only. This is not the full context window.', 'blue'),
+    ]),
+    html('div', { className: 'card card-sm', style: 'margin-top:14px;margin-bottom:0;padding:18px;background:var(--bg-elevated);' }, [
+      html('div', { className: 'card-title' }, 'Snapshot Provenance'),
+      html('div', { className: 'card-subtitle', style: 'margin-top:6px;' }, promptTriggerNarrative(prompt.triggerSnapshot)),
+      html('div', { className: 'grid-2', style: 'margin-top:14px;' }, [
+        buildPromptSnapshotCard('Pre-Compaction Snapshot', prompt.preCompactionSnapshot, prompt.triggerSnapshot === 'pre_compaction'),
+        prompt.postCompactionSnapshot ? buildPromptSnapshotCard('Post-Compaction Snapshot', prompt.postCompactionSnapshot, prompt.triggerSnapshot === 'post_compaction') : null,
+      ]),
+    ]),
+    sections.length ? html('div', { className: 'card card-sm', style: 'margin-top:14px;margin-bottom:0;padding:18px;background:var(--bg-elevated);' }, [
+      html('div', { className: 'card-title' }, 'Prompt Sections'),
+      html('div', { className: 'card-subtitle', style: 'margin-top:6px;margin-bottom:12px;' }, 'Stable prefix and turn-scoped sections are labeled explicitly. Remaining conversation history stays in the visible slice.'),
+      sectionsList,
+    ]) : null,
+  ]);
+}
 async function renderRoute() {
   const token = ++state.renderToken;
   const view = state.view;
@@ -1647,8 +1797,9 @@ async function renderContextTab(agentName, container, token) {
     container.appendChild(renderEmpty('🧠', 'No context log found', 'The session exists, but no per-turn context snapshots were recorded yet.'));
     return;
   }
+  container.appendChild(buildPromptAssemblyCard(data.promptAssembly, data.context_window));
   const contextCard = html('div', { className: 'card' }, [
-    html('div', { className: 'card-header' }, [html('div', {}, [html('div', { className: 'card-title' }, 'Injected Context'), html('div', { className: 'card-subtitle' }, `${fmtNumber(turn.total_messages || 0)} total messages at snapshot · ${fmtNumber(turnTotalChars(turn))} chars`)]), html('div', { className: 'toolbar-group' }, [html('span', { className: 'pill pill-purple' }, `hash:${turn.system_prompt_hash || '—'}`), (turn.system_prompt_changed_since_previous || turn.system_prompt_changed) ? html('span', { className: 'pill pill-amber' }, 'Prompt changed') : null])]),
+    html('div', { className: 'card-header' }, [html('div', {}, [html('div', { className: 'card-title' }, 'Captured Context Sections'), html('div', { className: 'card-subtitle' }, `${fmtNumber(turn.total_messages || 0)} total messages at snapshot · ${fmtNumber(turnTotalChars(turn))} chars · raw turn details behind the canonical prompt assembly above`)]), html('div', { className: 'toolbar-group' }, [html('span', { className: 'pill pill-purple' }, `hash:${turn.system_prompt_hash || '—'}`), (turn.system_prompt_changed_since_previous || turn.system_prompt_changed) ? html('span', { className: 'pill pill-amber' }, 'Prompt changed') : null])]),
   ]);
   const staticCount = turn.static_prefix_system_count || 0;
   const dynamicCount = turn.dynamic_system_count || 0;

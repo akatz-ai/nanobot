@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 
 if TYPE_CHECKING:
+    from nanobot.agent.context import PromptAssemblyResult
     from nanobot.session.manager import PruneResult
 
 
@@ -113,6 +114,7 @@ class TurnContextLogger:
         resume_notice: str | None,
         user_message_index: int | None = None,
         prune_result: PruneResult | None = None,
+        prompt_assembly: "PromptAssemblyResult | None" = None,
     ) -> None:
         """Record the context for one turn.
 
@@ -132,6 +134,7 @@ class TurnContextLogger:
                 resume_notice=resume_notice,
                 user_message_index=user_message_index,
                 prune_result=prune_result,
+                prompt_assembly=prompt_assembly,
             )
         except Exception:
             logger.opt(exception=True).warning(
@@ -146,6 +149,7 @@ class TurnContextLogger:
         resume_notice: str | None,
         user_message_index: int | None,
         prune_result: PruneResult | None = None,
+        prompt_assembly: "PromptAssemblyResult | None" = None,
     ) -> None:
         # Extract system messages and the base system prompt
         system_messages: list[dict[str, Any]] = []
@@ -231,6 +235,9 @@ class TurnContextLogger:
                 "messages_protected": prune_result.messages_protected,
                 "total_tool_messages": prune_result.total_tool_messages,
             }
+
+        if prompt_assembly is not None:
+            entry["prompt_assembly"] = prompt_assembly.to_dict()
 
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with open(self._path, "a", encoding="utf-8") as f:

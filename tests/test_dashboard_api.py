@@ -42,6 +42,23 @@ def test_agents_spa_contains_create_and_clone_flows() -> None:
     assert "api('/api/agents'" in index_html
 
 
+def test_context_spa_renders_canonical_prompt_assembly_labels() -> None:
+    index_html = (Path(__file__).resolve().parents[1] / "nanobot" / "dashboard" / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "buildPromptAssemblyCard(data.promptAssembly, data.context_window)" in index_html
+    assert "Prompt Assembly" in index_html
+    assert "Provider Observed" in index_html
+    assert "Reserved Headroom" in index_html
+    assert "Visible Conversation Slice" in index_html
+    assert "Current conversation only. This is not the full context window." in index_html
+    assert "Snapshot Provenance" in index_html
+    assert "Pre-Compaction Snapshot" in index_html
+    assert "Post-Compaction Snapshot" in index_html
+    assert "Prompt Sections" in index_html
+
+
 def test_build_prompt_assembly_payload_maps_required_contract_fields() -> None:
     payload = context_inspection.build_prompt_assembly_payload(
         {
@@ -52,6 +69,7 @@ def test_build_prompt_assembly_payload_maps_required_contract_fields() -> None:
                 "budget": {
                     "compaction_trigger_tokens": 70000,
                     "reserve_tokens": 18000,
+                    "compaction_threshold_ratio": 0.7,
                 },
                 "pre_compaction_snapshot": {
                     "trigger_snapshot": "pre_compaction",
@@ -106,6 +124,8 @@ def test_build_prompt_assembly_payload_maps_required_contract_fields() -> None:
     assert payload is not None
     assert payload["assembledPromptTokens"] == 58000
     assert payload["providerObservedPromptTokens"] is None
+    assert payload["contextWindowTokens"] == 200000
+    assert payload["compactionThresholdRatio"] == 0.7
     assert payload["compactionThresholdTokens"] == 70000
     assert payload["reservedHeadroomTokens"] == 18000
     assert payload["stablePrefixTokens"] == 22000
@@ -197,6 +217,7 @@ def test_build_context_inspection_response_prefers_compaction_log_post_snapshot(
                     "budget": {
                         "compaction_trigger_tokens": 70000,
                         "reserve_tokens": 18000,
+                        "compaction_threshold_ratio": 0.7,
                     },
                     "pre_compaction_snapshot": {
                         "assembled_prompt_tokens": 64000,
@@ -336,6 +357,8 @@ def test_agent_context_live_exposes_prompt_assembly_contract(monkeypatch, tmp_pa
             "promptAssembly": {
                 "assembledPromptTokens": 58000,
                 "providerObservedPromptTokens": 59000,
+                "contextWindowTokens": 200000,
+                "compactionThresholdRatio": 0.7,
                 "compactionThresholdTokens": 70000,
                 "reservedHeadroomTokens": 18000,
                 "stablePrefixTokens": 22000,
@@ -395,6 +418,8 @@ def test_agent_context_live_exposes_prompt_assembly_contract(monkeypatch, tmp_pa
     prompt = payload["promptAssembly"]
     assert prompt["assembledPromptTokens"] == 58000
     assert prompt["providerObservedPromptTokens"] == 59000
+    assert prompt["contextWindowTokens"] == 200000
+    assert prompt["compactionThresholdRatio"] == 0.7
     assert prompt["compactionThresholdTokens"] == 70000
     assert prompt["reservedHeadroomTokens"] == 18000
     assert prompt["stablePrefixTokens"] == 22000

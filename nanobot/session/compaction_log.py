@@ -54,6 +54,9 @@ class CompactionEvent:
         utilization_pct: float,
         total_messages: int,
         last_consolidated: int,
+        trigger_source: str | None = None,
+        trigger_reason: str | None = None,
+        manual: bool | None = None,
     ) -> None:
         self.data["trigger"] = {
             "input_tokens": input_tokens,
@@ -62,6 +65,9 @@ class CompactionEvent:
             "utilization_pct": round(utilization_pct, 1),
             "total_messages": total_messages,
             "last_consolidated": last_consolidated,
+            "trigger_source": trigger_source or "automatic",
+            "trigger_reason": trigger_reason,
+            "manual": bool(manual) if manual is not None else False,
         }
 
     # ── Pre-compaction context layout ─────────────────────────────────
@@ -74,6 +80,7 @@ class CompactionEvent:
         history_chars: int,
         conversation_messages: int,
         conversation_start_index: int,
+        prompt_assembly_snapshot: dict[str, Any] | None = None,
     ) -> None:
         self.data["pre_context"] = {
             "system_prompt_chars": system_prompt_chars,
@@ -82,6 +89,8 @@ class CompactionEvent:
             "conversation_messages": conversation_messages,
             "conversation_start_index": conversation_start_index,
         }
+        if prompt_assembly_snapshot:
+            self.data["pre_context"]["prompt_assembly_snapshot"] = prompt_assembly_snapshot
 
     # ── Per-batch extraction info ─────────────────────────────────────
 
@@ -127,6 +136,7 @@ class CompactionEvent:
         file_ops_modified_count: int = 0,
         is_iterative_update: bool = False,
         cut_point_type: str = "clean",
+        prompt_assembly_snapshot: dict[str, Any] | None = None,
     ) -> None:
         self.data["post_context"] = {
             "first_kept_index": first_kept_index,
@@ -141,6 +151,8 @@ class CompactionEvent:
             "is_iterative_update": is_iterative_update,
             "cut_point_type": cut_point_type,
         }
+        if prompt_assembly_snapshot:
+            self.data["post_context"]["prompt_assembly_snapshot"] = prompt_assembly_snapshot
 
     # ── Final result ──────────────────────────────────────────────────
 

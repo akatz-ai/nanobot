@@ -882,6 +882,34 @@ class TestConsolidationDeduplicationGuard:
             f"Expected serialized consolidation, observed concurrency={max_active}"
         )
 
+    @pytest.mark.asyncio
+    async def test_compact_command_reports_busy_when_consolidation_in_progress(
+        self, tmp_path: Path
+    ) -> None:
+        from nanobot.agent.loop import AgentLoop
+        from nanobot.bus.events import InboundMessage
+        from nanobot.bus.queue import MessageBus
+
+        bus = MessageBus()
+        provider = MagicMock()
+        provider.get_default_model.return_value = "test-model"
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+
+        session = loop.sessions.get_or_create("cli:test")
+        session.add_message("user", "hello")
+        session.add_message("assistant", "world")
+        loop._consolidating.add(session.key)
+
+        try:
+            response = await loop._process_message(
+                InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/compact")
+            )
+        finally:
+            loop._consolidating.discard(session.key)
+
+        assert response is not None
+        assert "already in progress" in response.content.lower()
+
     def test_background_task_tracking_removed(self, tmp_path: Path) -> None:
         """Synchronous compaction should not keep background consolidation task refs."""
         from nanobot.agent.loop import AgentLoop

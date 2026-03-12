@@ -6,6 +6,7 @@ import mimetypes
 import platform
 import re
 import time
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,52 @@ from typing import Any
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 from nanobot.agent.workspace import get_global_skills_dir
+
+
+@dataclass(frozen=True)
+class PromptSection:
+    kind: str
+    role: str
+    cache_scope: str
+    source: str
+    message_count: int
+    char_count: int
+    estimated_tokens: int
+    provider_tokens: int | None = None
+    content_preview: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PromptBudget:
+    context_window: int
+    reserve_tokens: int
+    effective_prompt_budget: int
+    compaction_threshold_ratio: float
+    compaction_trigger_tokens: int
+    emergency_trim_ratio: float | None
+    emergency_trigger_tokens: int | None
+
+
+@dataclass(frozen=True)
+class PromptAssemblyResult:
+    session_key: str
+    built_at: str
+    provider_name: str
+    model_name: str
+    sections: list[PromptSection]
+    messages: list[dict[str, Any]]
+    estimated_total_tokens: int
+    provider_observed_total_tokens: int | None
+    budget: PromptBudget
+    should_compact: bool
+    compaction_reason: str | None
+    compaction_candidate_range: tuple[int, int] | None
+    pre_compaction_snapshot: dict[str, Any]
+    post_compaction_snapshot: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 class ContextBuilder:
@@ -370,6 +417,207 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             messages.append({"role": "user", "content": user_content})
 
         return messages
+
+    @staticmethod
+    @staticmethod
+    def _estimate_tokens_from_content(content: Any) -> int:
+        if isinstance(content, str):
+            return max(0, len(content) // 3)
+        if isinstance(content, list):
+            total = 0
+            for item in content:
+                if isinstance(item, str):
+                    total += max(0, len(item) // 3)
+                elif isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        total += max(0, len(text) // 3)
+                    else:
+                        total += max(0, len(str(item)) // 3)
+            return total
+        if isinstance(content, dict):
+            text = content.get("text")
+            if isinstance(text, str):
+                return max(0, len(text) // 3)
+        return max(0, len(str(content or "")) // 3)
+
+    @classmethod
+    def _message_char_count(cls, message: dict[str, Any]) -> int:
+        content = message.get("content")
+        if isinstance(content, str):
+            return len(content)
+        if isinstance(content, list):
+            return len(cls._content_to_text(content))
+        if isinstance(content, dict):
+            return len(str(content.get("text") or ""))
+        return len(str(content or ""))
+
+    @classmethod
+    def _content_to_text(cls, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "\n".join(parts)
+        if isinstance(content, dict):
+            text = content.get("text")
+            if isinstance(text, str):
+                return text
+        return str(content or "")
+
+    def build_prompt_assembly_result(
+        self,
+        *,
+        session_key: str,
+        provider_name: str,
+        model_name: str,
+        messages: list[dict[str, Any]],
+        context_window: int,
+        reserve_tokens: int,
+        compaction_threshold_ratio: float,
+        emergency_trim_ratio: float | None,
+        current_message: str | None,
+        provider_observed_total_tokens: int | None = None,
+        compaction_candidate_range: tuple[int, int] | None = None,
+        total_tokens_override: int | None = None,
+    ) -> PromptAssemblyResult:
+        sections: list[PromptSection] = []
+        static_prefix_tokens = 0
+        dynamic_turn_tokens = 0
+        visible_history_tokens = 0
+        first_non_system = next(
+            (idx for idx, msg in enumerate(messages) if msg.get("role") != "system"),
+            len(messages),
+        )
+
+        for idx, message in enumerate(messages):
+            role = str(message.get("role") or "")
+            content = message.get("content")
+            text = self._content_to_text(content)
+            char_count = self._message_char_count(message)
+            estimated_tokens = self._estimate_tokens_from_content(content)
+            cache_scope = "history"
+            kind = role or "unknown"
+            source = f"message:{idx}"
+            metadata: dict[str, Any] = {"message_index": idx}
+
+            if role == "system":
+                cache_scope = "static_prefix" if idx < first_non_system else "dynamic_system"
+                if idx == 0:
+                    kind = "system_base"
+                    source = "system_prompt"
+                elif "<memory_file_data>" in text or "Long-term Memory" in text:
+                    kind = "memory_md"
+                    source = "MEMORY.md"
+                elif self._is_compaction_summary(text):
+                    kind = "session_summary"
+                    source = "compaction:latest"
+                elif "system restart" in text or "interrupted mid-turn" in text:
+                    kind = "resume_notice"
+                    source = "resume_notice"
+                else:
+                    kind = "system_other"
+                    source = f"system:{idx}"
+            elif role == "user":
+                if current_message is not None and idx == len(messages) - 1:
+                    cache_scope = "current_turn"
+                    kind = "current_user"
+                    source = "current_user"
+                    if text.startswith("[Current Session]\n"):
+                        prefix, sep, body = text.partition("\n---\n\n")
+                        metadata["turn_context"] = prefix if sep else text
+                        metadata["user_body"] = body if sep else None
+                else:
+                    cache_scope = "history"
+                    kind = "history_user"
+                    source = f"history:user:{idx}"
+            elif role == "assistant":
+                cache_scope = "history"
+                kind = "history_assistant"
+                source = f"history:assistant:{idx}"
+            elif role == "tool":
+                cache_scope = "history"
+                kind = "history_tool"
+                source = f"history:tool:{idx}"
+
+            section = PromptSection(
+                kind=kind,
+                role=role or "unknown",
+                cache_scope=cache_scope,
+                source=source,
+                message_count=1,
+                char_count=char_count,
+                estimated_tokens=estimated_tokens,
+                content_preview=(text[:240] if text else None),
+                metadata=metadata,
+            )
+            sections.append(section)
+
+            if cache_scope == "static_prefix":
+                static_prefix_tokens += estimated_tokens
+            elif cache_scope in {"dynamic_system", "current_turn"}:
+                dynamic_turn_tokens += estimated_tokens
+            elif cache_scope == "history":
+                visible_history_tokens += estimated_tokens
+
+        effective_prompt_budget = max(512, context_window - reserve_tokens)
+        compaction_trigger_tokens = max(512, int(context_window * compaction_threshold_ratio))
+        emergency_trigger_tokens = (
+            max(512, int(context_window * emergency_trim_ratio))
+            if emergency_trim_ratio is not None
+            else None
+        )
+        estimated_total_tokens = (
+            int(total_tokens_override)
+            if total_tokens_override is not None
+            else sum(section.estimated_tokens for section in sections)
+        )
+        should_compact = estimated_total_tokens > compaction_trigger_tokens
+        compaction_reason = (
+            f"assembled prompt estimate ({estimated_total_tokens} > {compaction_trigger_tokens})"
+            if should_compact
+            else None
+        )
+
+        budget = PromptBudget(
+            context_window=context_window,
+            reserve_tokens=reserve_tokens,
+            effective_prompt_budget=effective_prompt_budget,
+            compaction_threshold_ratio=compaction_threshold_ratio,
+            compaction_trigger_tokens=compaction_trigger_tokens,
+            emergency_trim_ratio=emergency_trim_ratio,
+            emergency_trigger_tokens=emergency_trigger_tokens,
+        )
+        pre_snapshot = {
+            "assembled_prompt_tokens": estimated_total_tokens,
+            "stable_cached_prefix_tokens": static_prefix_tokens,
+            "dynamic_turn_tokens": dynamic_turn_tokens,
+            "visible_conversation_slice_tokens": visible_history_tokens,
+            "trigger_snapshot": "pre_compaction",
+        }
+
+        return PromptAssemblyResult(
+            session_key=session_key,
+            built_at=datetime.now().isoformat(),
+            provider_name=provider_name,
+            model_name=model_name,
+            sections=sections,
+            messages=messages,
+            estimated_total_tokens=estimated_total_tokens,
+            provider_observed_total_tokens=provider_observed_total_tokens,
+            budget=budget,
+            should_compact=should_compact,
+            compaction_reason=compaction_reason,
+            compaction_candidate_range=compaction_candidate_range,
+            pre_compaction_snapshot=pre_snapshot,
+        )
 
     @staticmethod
     def _build_retrieved_memory_block(memory_context: str | None) -> str | None:

@@ -353,10 +353,10 @@ async def test_full_session_e2e_with_compaction(tmp_path: Path) -> None:
     assert all(prefix == pre_compaction_prefixes[0] for prefix in pre_compaction_prefixes[1:])
 
     session = loop.sessions.get_or_create("discord:123")
-    session.metadata["usage_snapshot"] = {
-        "total_input_tokens": 180_000,
-        "message_index": len(session.messages),
-    }
+    pressure_payload = "y" * 40000
+    for i in range(6, 36):
+        session.add_message("user", f"pressure-user-{i} {pressure_payload}")
+        session.add_message("assistant", f"pressure-assistant-{i} {pressure_payload}")
 
     turn6 = _payload("turn-6")
     retrieval_map[turn6] = "- [fact] retrieval for turn 6"
@@ -405,8 +405,12 @@ async def test_full_session_e2e_with_compaction(tmp_path: Path) -> None:
     persisted_user_messages = [
         msg for msg in persisted_session.messages if msg.get("role") == "user"
     ]
-    assert persisted_user_messages
-    assert all(msg["content"].startswith("[Current Session]\n") for msg in persisted_user_messages)
+    prefixed_persisted_user_messages = [
+        msg for msg in persisted_user_messages if isinstance(msg.get("content"), str) and msg["content"].startswith("[Current Session]\n")
+    ]
+    assert prefixed_persisted_user_messages
+    assert any("retrieval for turn 6" in msg["content"] for msg in prefixed_persisted_user_messages)
+    assert any("retrieval for turn 7" in msg["content"] for msg in prefixed_persisted_user_messages)
 
 
 def test_old_sessions_with_system_messages_still_work(tmp_path: Path) -> None:
@@ -474,3 +478,52 @@ def test_get_history_no_summary_injection(tmp_path: Path) -> None:
     for msg in history:
         if msg["role"] == "system" and "## Goal" in msg.get("content", ""):
             pytest.fail("get_history() should not inject compaction summary in V2")
+
+
+def test_prompt_assembly_result_classifies_static_dynamic_and_history_sections(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_workspace(workspace)
+    builder = ContextBuilder(workspace)
+
+    history = [
+        {"role": "user", "content": "earlier question"},
+        {"role": "assistant", "content": "earlier answer"},
+    ]
+    messages = builder.build_messages(
+        history=history,
+        current_message="current question",
+        channel="discord",
+        chat_id="123",
+        model="openai-codex/gpt-5.4",
+        background_model="openai-codex/gpt-5.3-codex-spark",
+        memory_context="- [fact] Prior decision",
+        extra_system_messages=[_structured_summary("Session Summary")],
+    )
+
+    assembly = builder.build_prompt_assembly_result(
+        session_key="discord:123",
+        provider_name="FakeProvider",
+        model_name="openai-codex/gpt-5.4",
+        messages=messages,
+        context_window=200_000,
+        reserve_tokens=16_384,
+        compaction_threshold_ratio=0.75,
+        emergency_trim_ratio=0.95,
+        current_message="current question",
+    )
+
+    assert assembly.session_key == "discord:123"
+    assert assembly.budget.compaction_trigger_tokens == 150_000
+    assert assembly.pre_compaction_snapshot["trigger_snapshot"] == "pre_compaction"
+    assert assembly.pre_compaction_snapshot["stable_cached_prefix_tokens"] > 0
+    assert assembly.pre_compaction_snapshot["dynamic_turn_tokens"] > 0
+    assert assembly.pre_compaction_snapshot["visible_conversation_slice_tokens"] > 0
+
+    kinds = [section.kind for section in assembly.sections]
+    assert "system_base" in kinds
+    assert "memory_md" in kinds
+    assert "session_summary" in kinds
+    assert "current_user" in kinds
+    assert "history_user" in kinds
+    assert "history_assistant" in kinds

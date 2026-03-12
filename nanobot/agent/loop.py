@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
-from nanobot.agent.context import ContextBuilder
+from nanobot.agent.context import ContextBuilder, PromptAssemblyResult
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.batch import BatchTool
@@ -667,18 +667,19 @@ class AgentLoop:
         context_window = max(int(self._get_context_window_size()), 1)
         return max(
             512,
-            int((context_window - self._COMPACTION_RESERVE_TOKENS) * self._COMPACTION_THRESHOLD_RATIO),
+            int(context_window * self._COMPACTION_THRESHOLD_RATIO),
         )
 
     def _get_emergency_prompt_threshold(self) -> int | None:
-        """Return the optional last-resort trim threshold.
+        """Return the last-resort trim threshold.
 
-        If unset, emergency front-trimming is disabled and the provider overflow
-        retry path remains the only fallback beyond compaction.
+        Default behavior keeps an emergency trim ceiling aligned with the soft
+        append-only budget unless explicitly disabled with a non-positive
+        override.
         """
         override = self.emergency_trim_threshold_override
         if override is None:
-            return None
+            return max(512, int(self._get_context_window_size() * self._PROMPT_BUDGET_RATIO))
         try:
             threshold = int(override)
         except (TypeError, ValueError):
@@ -758,15 +759,14 @@ class AgentLoop:
         chat_id: str | None = None,
     ) -> int:
         """Estimate the current full prompt window for the session without a new user turn."""
-        messages, estimated_tokens = self._build_current_context_messages(
+        assembly = self._build_current_context_messages(
             session,
             channel=channel,
             chat_id=chat_id,
             current_message=None,
             trim_if_needed=False,
         )
-        _ = messages
-        return int(estimated_tokens)
+        return int(assembly.estimated_total_tokens)
 
     def _build_current_context_messages(
         self,
@@ -778,8 +778,8 @@ class AgentLoop:
         memory_context: str | None = None,
         resume_notice: str | None = None,
         trim_if_needed: bool = False,
-    ) -> tuple[list[dict[str, Any]], int]:
-        """Build the exact current prompt shape and return it with its estimate."""
+    ) -> PromptAssemblyResult:
+        """Build the exact current prompt shape and return its canonical prompt assembly."""
         context_window = self._get_context_window_size()
         history, _ = session.get_history(
             max_messages=max(1, session.get_visible_message_count()),
@@ -797,7 +797,22 @@ class AgentLoop:
             extra_system_messages=self._latest_compaction_system_messages(session),
             trim_if_needed=trim_if_needed,
         )
-        return messages, int(self._estimate_prompt_tokens(messages))
+        return self.context.build_prompt_assembly_result(
+            session_key=session.key,
+            provider_name=type(self.provider).__name__,
+            model_name=self.model,
+            messages=messages,
+            context_window=context_window,
+            reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
+            compaction_threshold_ratio=self._COMPACTION_THRESHOLD_RATIO,
+            emergency_trim_ratio=(
+                None
+                if self._get_emergency_prompt_threshold() is None
+                else self._get_emergency_prompt_threshold() / max(context_window, 1)
+            ),
+            current_message=current_message,
+            total_tokens_override=self._estimate_prompt_tokens(messages),
+        )
 
     def _build_messages_with_prompt_budget(
         self,
@@ -920,6 +935,7 @@ class AgentLoop:
         context_window: int | None = None,
         reason: str,
         send_notices: bool = True,
+        prompt_assembly: PromptAssemblyResult | None = None,
     ) -> None:
         """Run the existing structured compaction flow synchronously."""
         if session.key in self._consolidating:
@@ -938,6 +954,7 @@ class AgentLoop:
         )
         compaction_started_at = time.monotonic()
         compaction_event = CompactionEvent(session.key)
+        trigger_source = "manual" if "manual" in reason.lower() else "automatic"
         compaction_event.set_trigger(
             input_tokens=input_tokens,
             threshold=threshold,
@@ -945,6 +962,9 @@ class AgentLoop:
             utilization_pct=(input_tokens / resolved_context_window * 100 if resolved_context_window else 0),
             total_messages=len(session.messages),
             last_consolidated=session.last_consolidated,
+            trigger_source=trigger_source,
+            trigger_reason=reason,
+            manual=(trigger_source == "manual"),
         )
 
         lock = self._get_consolidation_lock(session.key)
@@ -967,24 +987,53 @@ class AgentLoop:
 
                 memory_md_chars = len(self.context.memory.read_long_term() or "")
                 visible_start, visible_end = session.get_visible_bounds()
+                pre_snapshot_payload = {
+                    "assembled_prompt_tokens": int(input_tokens),
+                    "trigger_snapshot": "pre_compaction",
+                }
+                if prompt_assembly is not None:
+                    pre_snapshot_payload = dict(prompt_assembly.pre_compaction_snapshot)
+                    pre_snapshot_payload.update(
+                        {
+                            "message_index": session.get_message_count(),
+                            "source": "compaction_trigger",
+                            "revision": self._session_revision(session),
+                            "provider_name": prompt_assembly.provider_name,
+                            "model_name": prompt_assembly.model_name,
+                            "budget": {
+                                "context_window": prompt_assembly.budget.context_window,
+                                "reserve_tokens": prompt_assembly.budget.reserve_tokens,
+                                "effective_prompt_budget": prompt_assembly.budget.effective_prompt_budget,
+                                "compaction_threshold_ratio": prompt_assembly.budget.compaction_threshold_ratio,
+                                "compaction_trigger_tokens": prompt_assembly.budget.compaction_trigger_tokens,
+                                "emergency_trim_ratio": prompt_assembly.budget.emergency_trim_ratio,
+                                "emergency_trigger_tokens": prompt_assembly.budget.emergency_trigger_tokens,
+                            },
+                        }
+                    )
+                else:
+                    pre_snapshot_payload.update(
+                        {
+                            "message_index": session.get_message_count(),
+                            "source": "compaction_trigger",
+                            "revision": self._session_revision(session),
+                        }
+                    )
+
                 compaction_event.set_pre_compaction_context(
                     system_prompt_chars=len(self.context.build_system_prompt() or ""),
                     memory_md_chars=memory_md_chars,
                     history_chars=0,
                     conversation_messages=max(0, visible_end - visible_start),
                     conversation_start_index=visible_start,
+                    prompt_assembly_snapshot=pre_snapshot_payload,
                 )
 
                 if input_tokens > 0:
                     self.sessions.apply_state(
                         session,
                         metadata_updates={
-                            "compaction_trigger_snapshot": {
-                                "total_input_tokens": int(input_tokens),
-                                "message_index": session.get_message_count(),
-                                "source": "compaction_trigger",
-                                "revision": self._session_revision(session),
-                            }
+                            "compaction_trigger_snapshot": pre_snapshot_payload,
                         },
                     )
 
@@ -1068,6 +1117,37 @@ class AgentLoop:
                         channel=channel,
                         chat_id=chat_id,
                     )
+                    post_assembly = self._build_current_context_messages(
+                        session,
+                        channel=channel,
+                        chat_id=chat_id,
+                        current_message=None,
+                        trim_if_needed=False,
+                    )
+                    post_snapshot_payload = dict(post_assembly.pre_compaction_snapshot)
+                    post_snapshot_payload.update(
+                        {
+                            "trigger_snapshot": "post_compaction",
+                            "message_index": session.get_message_count(),
+                            "source": "post_compaction_rebuild",
+                            "revision": self._session_revision(session),
+                            "provider_name": post_assembly.provider_name,
+                            "model_name": post_assembly.model_name,
+                            "budget": {
+                                "context_window": post_assembly.budget.context_window,
+                                "reserve_tokens": post_assembly.budget.reserve_tokens,
+                                "effective_prompt_budget": post_assembly.budget.effective_prompt_budget,
+                                "compaction_threshold_ratio": post_assembly.budget.compaction_threshold_ratio,
+                                "compaction_trigger_tokens": post_assembly.budget.compaction_trigger_tokens,
+                                "emergency_trim_ratio": post_assembly.budget.emergency_trim_ratio,
+                                "emergency_trigger_tokens": post_assembly.budget.emergency_trigger_tokens,
+                            },
+                        }
+                    )
+                    self.sessions.apply_state(
+                        session,
+                        metadata_updates={"post_compaction_snapshot": post_snapshot_payload},
+                    )
                     self.sessions.save_state(session)
 
                     compaction_event.set_post_compaction_context(
@@ -1083,6 +1163,7 @@ class AgentLoop:
                         file_ops_modified_count=len(entry.file_ops.get("modified_files", [])),
                         is_iterative_update=bool(entry.previous_summary),
                         cut_point_type=str(plan_meta.get("cut_point_type", "clean")),
+                        prompt_assembly_snapshot=post_snapshot_payload,
                     )
                     if memory_compact_result:
                         compaction_event.data["memory_md_compaction"] = memory_compact_result
@@ -1127,13 +1208,13 @@ class AgentLoop:
         session: Session,
         channel: str | None,
         chat_id: str | None,
-        build_messages: Callable[[bool], list[dict[str, Any]]],
+        build_messages: Callable[[bool], PromptAssemblyResult],
         context_label: str,
-    ) -> list[dict[str, Any]]:
+    ) -> PromptAssemblyResult:
         """Build, compact if needed, then apply emergency trim as a last resort."""
-        messages = build_messages(False)
-        estimated_tokens = self._estimate_prompt_tokens(messages)
-        compaction_threshold = self._get_compaction_threshold()
+        assembly = build_messages(False)
+        estimated_tokens = int(assembly.estimated_total_tokens)
+        compaction_threshold = int(assembly.budget.compaction_trigger_tokens)
         emergency_threshold = self._get_emergency_prompt_threshold()
         logger.info(
             "Assembled prompt check for {}: tokens={} compaction_threshold={} emergency_threshold={}",
@@ -1143,17 +1224,18 @@ class AgentLoop:
             emergency_threshold if emergency_threshold is not None else "disabled",
         )
 
-        if estimated_tokens > compaction_threshold and session.key not in self._consolidating:
+        if assembly.should_compact and session.key not in self._consolidating:
             await self._run_structured_compaction(
                 session=session,
                 channel=channel,
                 chat_id=chat_id,
                 input_tokens=estimated_tokens,
                 context_window=self._get_context_window_size(),
-                reason=f"assembled prompt estimate ({estimated_tokens} > {compaction_threshold})",
+                reason=assembly.compaction_reason or f"assembled prompt estimate ({estimated_tokens} > {compaction_threshold})",
+                prompt_assembly=assembly,
             )
-            messages = build_messages(False)
-            estimated_tokens = self._estimate_prompt_tokens(messages)
+            assembly = build_messages(False)
+            estimated_tokens = int(assembly.estimated_total_tokens)
             logger.info(
                 "Assembled prompt after compaction for {}: tokens={} emergency_threshold={}",
                 context_label,
@@ -1162,8 +1244,8 @@ class AgentLoop:
             )
 
         if emergency_threshold is not None and estimated_tokens > emergency_threshold:
-            messages = build_messages(True)
-            estimated_tokens = self._estimate_prompt_tokens(messages)
+            assembly = build_messages(True)
+            estimated_tokens = int(assembly.estimated_total_tokens)
             logger.info(
                 "Assembled prompt after emergency trim for {}: tokens={} emergency_threshold={}",
                 context_label,
@@ -1171,16 +1253,13 @@ class AgentLoop:
                 emergency_threshold,
             )
 
-        # Always refresh the persisted current-context estimate for the prompt
-        # we are about to send. Dashboards should use this canonical field when
-        # provider-reported usage is not yet available.
         self._persist_current_context_snapshot(
             session,
             total_input_tokens=int(estimated_tokens),
             source="estimated_current_prompt",
         )
 
-        return messages
+        return assembly
 
     def _refresh_estimated_token_snapshot(
         self,
@@ -1801,13 +1880,13 @@ class AgentLoop:
                 message_tool.start_turn()
 
         context_window = self._get_context_window_size()
-        def _build_resume_prompt(trim_if_needed: bool) -> list[dict[str, Any]]:
+        def _build_resume_prompt(trim_if_needed: bool) -> PromptAssemblyResult:
             history, _ = session.get_history(
                 max_messages=max(1, session.get_visible_message_count()),
                 context_window=context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
-            return self._build_messages_with_prompt_budget(
+            messages = self._build_messages_with_prompt_budget(
                 history=history,
                 current_message=None,
                 skill_names=self.skill_names,
@@ -1817,14 +1896,29 @@ class AgentLoop:
                 extra_system_messages=self._latest_compaction_system_messages(session),
                 trim_if_needed=trim_if_needed,
             )
+            return self.context.build_prompt_assembly_result(
+                session_key=session.key,
+                provider_name=type(self.provider).__name__,
+                model_name=self.model,
+                messages=messages,
+                context_window=context_window,
+                reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
+                compaction_threshold_ratio=self._COMPACTION_THRESHOLD_RATIO,
+                emergency_trim_ratio=(
+                    None if self._get_emergency_prompt_threshold() is None else self._get_emergency_prompt_threshold() / max(context_window, 1)
+                ),
+                current_message=None,
+                total_tokens_override=self._estimate_prompt_tokens(messages),
+            )
 
-        initial_messages = await self._finalize_prompt_for_send(
+        initial_assembly = await self._finalize_prompt_for_send(
             session=session,
             channel=channel,
             chat_id=chat_id,
             context_label=f"resume:{session.key}",
             build_messages=_build_resume_prompt,
         )
+        initial_messages = initial_assembly.messages
         _, prune_result = session.get_history(
             max_messages=max(1, session.get_visible_message_count()),
             context_window=context_window,
@@ -1836,6 +1930,7 @@ class AgentLoop:
             resume_notice=self._RESUME_SYSTEM_MESSAGE,
             user_message_index=session.get_message_count(),
             prune_result=prune_result,
+            prompt_assembly=initial_assembly,
         )
         self._get_usage_logger(session).new_turn()
         self.subagents.set_skill_index(self.context.get_last_skills_summary())
@@ -2017,13 +2112,13 @@ class AgentLoop:
                 context_window=context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
-            def _build_system_prompt(trim_if_needed: bool) -> list[dict[str, Any]]:
+            def _build_system_prompt(trim_if_needed: bool) -> PromptAssemblyResult:
                 history, _ = session.get_history(
                     max_messages=max(1, session.get_visible_message_count()),
                     context_window=context_window,
                     protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
                 )
-                return self._build_messages_with_prompt_budget(
+                messages = self._build_messages_with_prompt_budget(
                     history=history,
                     current_message=msg.content,
                     skill_names=self.skill_names,
@@ -2034,14 +2129,29 @@ class AgentLoop:
                     extra_system_messages=self._latest_compaction_system_messages(session),
                     trim_if_needed=trim_if_needed,
                 )
+                return self.context.build_prompt_assembly_result(
+                    session_key=session.key,
+                    provider_name=type(self.provider).__name__,
+                    model_name=self.model,
+                    messages=messages,
+                    context_window=context_window,
+                    reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
+                    compaction_threshold_ratio=self._COMPACTION_THRESHOLD_RATIO,
+                    emergency_trim_ratio=(
+                        None if self._get_emergency_prompt_threshold() is None else self._get_emergency_prompt_threshold() / max(context_window, 1)
+                    ),
+                    current_message=msg.content,
+                    total_tokens_override=self._estimate_prompt_tokens(messages),
+                )
 
-            initial_messages = await self._finalize_prompt_for_send(
+            initial_assembly = await self._finalize_prompt_for_send(
                 session=session,
                 channel=channel,
                 chat_id=chat_id,
                 context_label=f"{channel}:{chat_id}",
                 build_messages=_build_system_prompt,
             )
+            initial_messages = initial_assembly.messages
             history, prune_result = session.get_history(
                 max_messages=max(1, session.get_visible_message_count()),
                 context_window=context_window,
@@ -2053,6 +2163,7 @@ class AgentLoop:
                 resume_notice=resume_notice,
                 user_message_index=session.get_message_count(),
                 prune_result=prune_result,
+                prompt_assembly=initial_assembly,
             )
             self._get_usage_logger(session).new_turn()
             self.subagents.set_skill_index(self.context.get_last_skills_summary())
@@ -2068,7 +2179,7 @@ class AgentLoop:
                     current_message=None,
                     resume_notice=self._RESUME_SYSTEM_MESSAGE,
                     trim_if_needed=True,
-                )[0],
+                ).messages,
             )
             self._save_turn(session, all_msgs, turn_start)
             self.sessions.save_state(session)
@@ -2137,9 +2248,58 @@ class AgentLoop:
             self.sessions.invalidate(session.key)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="New session started.")
+        if cmd == "/compact":
+            if session.key in self._consolidating:
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="Compaction already in progress.",
+                )
+            before_count = session.get_message_count()
+            prompt_assembly = self._build_current_context_messages(
+                session,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                current_message=None,
+                trim_if_needed=False,
+            )
+            estimated_tokens = max(
+                int(prompt_assembly.estimated_total_tokens),
+                self._get_compaction_threshold() + 1,
+            )
+            await self._run_structured_compaction(
+                session=session,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                input_tokens=estimated_tokens,
+                context_window=self._get_context_window_size(),
+                reason="manual /compact command",
+                send_notices=False,
+                prompt_assembly=prompt_assembly,
+            )
+            after_entry = session.get_last_compaction()
+            if after_entry is None or after_entry.first_kept_index <= 0:
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="Nothing to compact yet.",
+                )
+            after_count = session.get_message_count()
+            compacted_messages = max(0, min(after_entry.first_kept_index, before_count, after_count))
+            if compacted_messages <= 0:
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="Nothing to compact yet.",
+                )
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=f"Compaction complete. Preserved current session and compacted {compacted_messages} message(s).",
+            )
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
+                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/compact — Compact the current session without clearing it\n/stop — Stop the current task\n/help — Show available commands")
 
         _context_window = self._get_context_window_size()
         if session.key not in self._consolidating:
@@ -2218,13 +2378,13 @@ class AgentLoop:
             context_window=_context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
         )
-        def _build_live_prompt(trim_if_needed: bool) -> list[dict[str, Any]]:
+        def _build_live_prompt(trim_if_needed: bool) -> PromptAssemblyResult:
             history, _ = session.get_history(
                 max_messages=max(1, session.get_visible_message_count()),
                 context_window=_context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
-            return self._build_messages_with_prompt_budget(
+            messages = self._build_messages_with_prompt_budget(
                 history=history,
                 current_message=msg.content,
                 skill_names=self.skill_names,
@@ -2236,14 +2396,29 @@ class AgentLoop:
                 extra_system_messages=self._latest_compaction_system_messages(session),
                 trim_if_needed=trim_if_needed,
             )
+            return self.context.build_prompt_assembly_result(
+                session_key=session.key,
+                provider_name=type(self.provider).__name__,
+                model_name=self.model,
+                messages=messages,
+                context_window=_context_window,
+                reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
+                compaction_threshold_ratio=self._COMPACTION_THRESHOLD_RATIO,
+                emergency_trim_ratio=(
+                    None if self._get_emergency_prompt_threshold() is None else self._get_emergency_prompt_threshold() / max(_context_window, 1)
+                ),
+                current_message=msg.content,
+                total_tokens_override=self._estimate_prompt_tokens(messages),
+            )
 
-        initial_messages = await self._finalize_prompt_for_send(
+        initial_assembly = await self._finalize_prompt_for_send(
             session=session,
             channel=msg.channel,
             chat_id=msg.chat_id,
             context_label=session.key,
             build_messages=_build_live_prompt,
         )
+        initial_messages = initial_assembly.messages
         history, prune_result = session.get_history(
             max_messages=max(1, session.get_visible_message_count()),
             context_window=_context_window,
@@ -2265,6 +2440,7 @@ class AgentLoop:
             resume_notice=resume_notice,
             user_message_index=session.get_message_count(),
             prune_result=prune_result,
+            prompt_assembly=initial_assembly,
         )
         self._get_usage_logger(session).new_turn()
         self.subagents.set_skill_index(self.context.get_last_skills_summary())
@@ -2300,7 +2476,7 @@ class AgentLoop:
                 memory_context=memory_context,
                 resume_notice=resume_notice,
                 trim_if_needed=True,
-            )[0],
+            ).messages,
         )
 
         self._save_turn(session, all_msgs, turn_start)

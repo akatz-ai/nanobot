@@ -16,6 +16,7 @@ from nanobot.session.compaction import (
     compact_session,
     estimate_message_tokens,
 )
+from nanobot.session.compaction_log import load_compaction_log
 from nanobot.session.manager import SessionManager
 
 
@@ -176,11 +177,11 @@ async def test_iterative_structured_compaction_uses_previous_summary(tmp_path: P
         InboundMessage(channel="cli", sender_id="user", chat_id="test", content="first")
     )
 
-    for i in range(28):
+    for i in range(32):
         session.add_message("user", f"Followup question {i} {payload}")
         session.add_message("assistant", f"Followup answer {i} {payload}")
     session.metadata["usage_snapshot"] = {
-        "total_input_tokens": 185_000,
+        "total_input_tokens": 195_000,
         "message_index": len(session.messages),
         "source": "provider_usage",
     }
@@ -268,8 +269,9 @@ async def test_compaction_check_uses_visible_history_when_usage_missing(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_preflight_prompt_budget_preserves_history_under_soft_budget(tmp_path: Path) -> None:
+async def test_preflight_prompt_budget_preserves_history_when_under_explicit_emergency_threshold(tmp_path: Path) -> None:
     loop = _make_structured_loop(tmp_path)
+    loop.emergency_trim_threshold_override = 200_000
     prompt_budget = loop._get_prompt_input_budget()
     emergency_threshold = loop._get_emergency_prompt_threshold()
 
@@ -292,8 +294,9 @@ async def test_preflight_prompt_budget_preserves_history_under_soft_budget(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_preflight_prompt_budget_emergency_trim_only_over_threshold(tmp_path: Path) -> None:
+async def test_preflight_prompt_budget_emergency_trim_only_over_explicit_threshold(tmp_path: Path) -> None:
     loop = _make_structured_loop(tmp_path)
+    loop.emergency_trim_threshold_override = 150_000
     emergency_threshold = loop._get_emergency_prompt_threshold()
 
     history, untrimmed_messages, untrimmed_estimate = _prompt_with_targeted_pressure(
@@ -677,7 +680,7 @@ async def test_process_message_compacts_from_assembled_prompt_only(
         }
         loop._last_input_tokens.pop(session.key, None)
 
-        monkeypatch.setattr(loop, "_estimate_prompt_tokens", lambda messages: 12_000)
+        monkeypatch.setattr(loop, "_estimate_prompt_tokens", lambda messages: 24_000)
         compact_mock = AsyncMock(return_value=None)
         monkeypatch.setattr(loop, "_run_structured_compaction", compact_mock)
 
@@ -688,7 +691,7 @@ async def test_process_message_compacts_from_assembled_prompt_only(
         assert response is not None
         assert compact_mock.await_count == 1
         assert "assembled prompt estimate" in compact_mock.await_args.kwargs["reason"]
-        assert compact_mock.await_args.kwargs["input_tokens"] == 12_000
+        assert compact_mock.await_args.kwargs["input_tokens"] == 24_000
     finally:
         if original_window is None:
             loop.MODEL_CONTEXT_WINDOWS.pop(loop.model, None)
@@ -756,10 +759,11 @@ async def test_compact_session_ignores_stale_snapshot_ceiling(
     session.metadata["usage_snapshot"] = {
         "total_input_tokens": 8_000,
         "message_index": len(session.messages) - 500,
+        "source": "provider_usage",
     }
 
     baseline_history = [{"role": "user", "content": "x" * 45_000}]
-    pressure_history = [{"role": "user", "content": "y" * 35_000}]
+    pressure_history = [{"role": "user", "content": "y" * 70_000}]
 
     def _fake_get_history(*args, **kwargs):
         if kwargs.get("prune_tool_results") is False:
@@ -806,3 +810,129 @@ async def test_new_command_clears_last_input_token_cache(tmp_path: Path) -> None
     assert response is not None
     assert "new session started" in response.content.lower()
     assert session.key not in loop._last_input_tokens
+
+
+@pytest.mark.asyncio
+async def test_compact_command_runs_manual_compaction_without_clearing_session(tmp_path: Path) -> None:
+    loop = _make_structured_loop(tmp_path)
+    session = loop.sessions.get_or_create("cli:test")
+    session.add_message("user", "hello")
+    session.add_message("assistant", "world")
+
+    async def _fake_run_structured_compaction(**kwargs):
+        target_session = kwargs["session"]
+        target_session.append_compaction(
+            summary=_structured_summary("Manual compaction"),
+            first_kept_index=2,
+            tokens_before=1234,
+            file_ops={"read_files": [], "modified_files": []},
+            previous_summary=None,
+        )
+
+    loop._run_structured_compaction = AsyncMock(side_effect=_fake_run_structured_compaction)
+
+    response = await loop._process_message(
+        InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/compact")
+    )
+
+    assert response is not None
+    assert "compaction complete" in response.content.lower()
+    assert session.get_message_count() == 2
+    assert len(session.compactions) == 1
+    loop._run_structured_compaction.assert_awaited_once()
+    kwargs = loop._run_structured_compaction.await_args.kwargs
+    assert kwargs["reason"] == "manual /compact command"
+    assert kwargs["send_notices"] is False
+
+
+@pytest.mark.asyncio
+async def test_compact_command_reports_noop_when_no_compaction_entry_created(tmp_path: Path) -> None:
+    loop = _make_structured_loop(tmp_path)
+    session = loop.sessions.get_or_create("cli:test")
+    session.add_message("user", "hello")
+    session.add_message("assistant", "world")
+    loop._run_structured_compaction = AsyncMock(return_value=None)
+
+    response = await loop._process_message(
+        InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/compact")
+    )
+
+    assert response is not None
+    assert "nothing to compact yet" in response.content.lower()
+    assert session.get_message_count() == 2
+    assert len(session.compactions) == 0
+
+
+@pytest.mark.asyncio
+async def test_compact_command_persists_manual_trigger_metadata_in_compaction_log(tmp_path: Path) -> None:
+    loop = _make_structured_loop(tmp_path)
+    loop.provider.chat = AsyncMock(
+        side_effect=[
+            LLMResponse(content=_structured_summary("Manual compaction")),
+        ]
+    )
+    loop._consolidate_memory = AsyncMock(return_value=True)
+
+    session = loop.sessions.get_or_create("cli:test")
+    _add_long_messages(session, turns=40)
+
+    response = await loop._process_message(
+        InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/compact")
+    )
+
+    assert response is not None
+    assert "compaction complete" in response.content.lower()
+
+    session_path = loop.sessions.get_session_path(session.key)
+    entries = load_compaction_log(session_path)
+    assert entries, "Expected compaction log entries to be written"
+    trigger = entries[-1]["trigger"]
+    assert trigger["trigger_source"] == "manual"
+    assert trigger["trigger_reason"] == "manual /compact command"
+    assert trigger["manual"] is True
+
+
+@pytest.mark.asyncio
+async def test_help_lists_compact_command(tmp_path: Path) -> None:
+    loop = _make_structured_loop(tmp_path)
+
+    response = await loop._process_message(
+        InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/help")
+    )
+
+    assert response is not None
+    assert "/compact" in response.content
+
+
+@pytest.mark.asyncio
+async def test_compaction_log_records_distinct_pre_and_post_prompt_snapshots(tmp_path: Path) -> None:
+    loop = _make_structured_loop(tmp_path)
+    loop.provider.chat = AsyncMock(return_value=LLMResponse(content=_structured_summary("Manual compaction")))
+    loop._consolidate_memory = AsyncMock(return_value=True)
+
+    session = loop.sessions.get_or_create("cli:test")
+    _add_long_messages(session, turns=40)
+
+    response = await loop._process_message(
+        InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/compact")
+    )
+
+    assert response is not None
+    session_path = loop.sessions.get_session_path(session.key)
+    entries = load_compaction_log(session_path)
+    assert entries
+    event = entries[-1]
+
+    pre_snapshot = event["pre_context"]["prompt_assembly_snapshot"]
+    post_snapshot = event["post_context"]["prompt_assembly_snapshot"]
+
+    assert pre_snapshot["trigger_snapshot"] == "pre_compaction"
+    assert post_snapshot["trigger_snapshot"] == "post_compaction"
+    assert pre_snapshot["assembled_prompt_tokens"] > post_snapshot["assembled_prompt_tokens"]
+    assert pre_snapshot["budget"]["compaction_trigger_tokens"] == post_snapshot["budget"]["compaction_trigger_tokens"]
+    assert pre_snapshot["stable_cached_prefix_tokens"] >= 0
+    assert post_snapshot["stable_cached_prefix_tokens"] >= 0
+
+    refreshed = loop.sessions.get_or_create(session.key)
+    assert refreshed.metadata["compaction_trigger_snapshot"]["trigger_snapshot"] == "pre_compaction"
+    assert refreshed.metadata["post_compaction_snapshot"]["trigger_snapshot"] == "post_compaction"

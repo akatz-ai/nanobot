@@ -696,7 +696,8 @@ def should_compact(
     threshold_ratio: float = 0.75,
 ) -> bool:
     """Decide whether compaction should run based on token pressure."""
-    threshold = (context_window - reserve_tokens) * threshold_ratio
+    _ = reserve_tokens
+    threshold = context_window * threshold_ratio
     if last_input_tokens is not None:
         return float(last_input_tokens) > float(threshold)
 

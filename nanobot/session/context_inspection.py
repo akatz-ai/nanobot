@@ -254,6 +254,8 @@ def build_prompt_assembly_payload(
             if provider_observed_total_tokens is not None
             else None
         ),
+        "contextWindowTokens": context_window,
+        "compactionThresholdRatio": budget.get("compaction_threshold_ratio"),
         "compactionThresholdTokens": compaction_threshold_tokens,
         "reservedHeadroomTokens": reserve_tokens,
         "stablePrefixTokens": _coerce_int(pre_snapshot.get("stablePrefixTokens"), 0),

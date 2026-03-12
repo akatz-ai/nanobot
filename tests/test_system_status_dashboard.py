@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from nanobot.discord.system_status import _channel_topic, _current_snapshot_tokens, collect_system_status
+from nanobot.discord.system_status import _channel_topic, _current_snapshot_tokens, collect_system_status, render_dashboard
 
 
 class _FakeSessions:
@@ -142,3 +142,62 @@ def test_current_snapshot_tokens_rejects_stale_revision():
 
 def test_channel_topic_uses_model_string_only():
     assert _channel_topic("nanobot-dev", "openai-codex/gpt-5.4") == "openai-codex/gpt-5.4"
+
+
+def test_render_dashboard_shows_per_agent_thresholds_and_current_snapshot_disclaimer():
+    status = collect_system_status(
+        SimpleNamespace(
+            agents={
+                "alpha": SimpleNamespace(
+                    profile=SimpleNamespace(model="openai-codex/gpt-5.4", discord_channels=["123"]),
+                    loop=_FakeLoop(
+                        model="openai-codex/gpt-5.4",
+                        context_window=200_000,
+                        sessions={
+                            "discord:123": {
+                                "message_count": 10,
+                                "revision": 1,
+                                "metadata": {
+                                    "usage_snapshot": {
+                                        "total_input_tokens": 90_000,
+                                        "message_index": 10,
+                                        "source": "provider_usage",
+                                        "revision": 1,
+                                    }
+                                },
+                            }
+                        },
+                    ),
+                ),
+                "beta": SimpleNamespace(
+                    profile=SimpleNamespace(model="openai-codex/gpt-5.4", discord_channels=["456"]),
+                    loop=_FakeLoop(
+                        model="openai-codex/gpt-5.4",
+                        context_window=100_000,
+                        sessions={
+                            "discord:456": {
+                                "message_count": 8,
+                                "revision": 2,
+                                "metadata": {
+                                    "usage_snapshot": {
+                                        "total_input_tokens": 25_000,
+                                        "message_index": 8,
+                                        "source": "provider_usage",
+                                        "revision": 2,
+                                    }
+                                },
+                            }
+                        },
+                    ),
+                ),
+            }
+        )
+    )
+
+    rendered = render_dashboard(status)
+    content = rendered[0]["components"][0]["content"]
+
+    assert "Compaction threshold: 150k (75% of window)" in content
+    assert "Compaction threshold: 75k (75% of window)" in content
+    assert "Thresholds are shown per agent" in content
+    assert "not a historical trigger value" in content

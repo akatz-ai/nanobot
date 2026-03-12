@@ -30,7 +30,6 @@ COMPONENTS_V2_FLAG = 1 << 15  # 32768 — IS_COMPONENTS_V2
 
 DEFAULT_POLL_INTERVAL_S = 60  # 1 minute
 BAR_WIDTH = 20  # characters for progress bar
-COMPACTION_THRESHOLD = 0.75  # 75% of context window (must match AgentLoop._COMPACTION_THRESHOLD_RATIO)
 
 # ── Visual ─────────────────────────────────────────────────────────────────
 
@@ -316,14 +315,19 @@ def render_dashboard(status: SystemStatus) -> list[dict[str, Any]]:
         # Model short name (strip provider prefix)
         model_short = agent.model.split("/")[-1] if "/" in agent.model else agent.model
 
+        threshold_pct = (agent.compaction_threshold / agent.context_window * 100) if agent.context_window else 0
+        threshold_str = f"Compaction threshold: {_format_tokens(agent.compaction_threshold)} ({threshold_pct:.0f}% of window)"
+
         if agent.is_idle:
             lines.append(f"{emoji} **{agent.agent_id}** · `{model_short}`")
             lines.append(f"　Context: `{bar}`  idle")
+            lines.append(f"　{threshold_str}")
         else:
             lines.append(f"{emoji} **{agent.agent_id}** · `{model_short}`")
             lines.append(
                 f"　Context: `{bar}`  **{pct_str}** ({tokens_str})"
             )
+            lines.append(f"　{threshold_str}")
             # Stats line
             parts = []
             if agent.total_turns:
@@ -338,7 +342,7 @@ def render_dashboard(status: SystemStatus) -> list[dict[str, Any]]:
         lines.append("")
 
     # Footer
-    lines.append(f"-# Compacts at {int(COMPACTION_THRESHOLD * 100)}% · Updated <t:{int(status.polled_at)}:R>")
+    lines.append(f"-# Thresholds are shown per agent. Current context usage is the latest assembled snapshot, not a historical trigger value · Updated <t:{int(status.polled_at)}:R>")
 
     content = "\n".join(lines)
 

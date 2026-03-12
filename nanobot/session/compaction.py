@@ -100,8 +100,6 @@ SUMMARY_COMPRESSION_MAX_TOKENS = 1_600
 USAGE_SNAPSHOT_MAX_MESSAGE_LAG = 100
 _USAGE_SNAPSHOT_VALID_SOURCES = {
     "provider_usage",
-    "estimated_current_prompt",
-    "recomputed_current_context",
 }
 
 
@@ -695,14 +693,12 @@ def should_compact(
     last_input_tokens: int | None = None,
     threshold_ratio: float = 0.75,
 ) -> bool:
-    """Decide whether compaction should run based on token pressure."""
-    _ = reserve_tokens
+    """Decide whether normal compaction should run based on provider-backed usage."""
+    _ = (messages, reserve_tokens)
     threshold = context_window * threshold_ratio
-    if last_input_tokens is not None:
-        return float(last_input_tokens) > float(threshold)
-
-    estimated_total = sum(estimate_message_tokens(msg) for msg in messages)
-    return float(estimated_total) > float(threshold)
+    if last_input_tokens is None:
+        return False
+    return float(last_input_tokens) > float(threshold)
 
 
 def _usage_snapshot_tokens(
@@ -781,7 +777,7 @@ async def compact_session(
         post_prune_tokens=post_prune_tokens,
         api_tokens_ceiling=last_input_tokens,
         fallback_tokens=last_input_tokens,
-        default_to_estimate=True,
+        default_to_estimate=force,
     )
     if not force and not should_compact(
         pressure_messages,

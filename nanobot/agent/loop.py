@@ -37,7 +37,7 @@ from nanobot.session.evidence import (
 )
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMProvider
+from nanobot.providers.base import LLMProvider, effective_total_input_tokens
 from nanobot.session.compaction import (
     _usage_snapshot_tokens,
     compact_session,
@@ -925,6 +925,21 @@ class AgentLoop:
         )
         return any(pattern in normalized for pattern in patterns)
 
+    def _resolve_notice_target(
+        self,
+        session: Session,
+        *,
+        channel: str | None,
+        chat_id: str | None,
+    ) -> tuple[str | None, str | None]:
+        if channel and chat_id:
+            return channel, chat_id
+        origin_channel = session.metadata.get("origin_channel")
+        origin_chat_id = session.metadata.get("origin_chat_id")
+        if isinstance(origin_channel, str) and origin_channel and isinstance(origin_chat_id, str) and origin_chat_id:
+            return origin_channel, origin_chat_id
+        return channel, chat_id
+
     async def _run_structured_compaction(
         self,
         *,
@@ -945,6 +960,11 @@ class AgentLoop:
             )
             return
 
+        notice_channel, notice_chat_id = self._resolve_notice_target(
+            session,
+            channel=channel,
+            chat_id=chat_id,
+        )
         resolved_context_window = context_window or self._get_context_window_size()
         threshold = self._get_compaction_threshold()
         logger.info(
@@ -971,11 +991,11 @@ class AgentLoop:
         self._consolidating.add(session.key)
         try:
             async with lock:
-                if send_notices and channel is not None and chat_id is not None:
+                if send_notices and notice_channel is not None and notice_chat_id is not None:
                     try:
                         await self.bus.publish_outbound(OutboundMessage(
-                            channel=channel,
-                            chat_id=chat_id,
+                            channel=notice_channel,
+                            chat_id=notice_chat_id,
                             content="⏳ *Compacting session* — summarizing older context to free up space...",
                             metadata={"_system_notice": True},
                         ))
@@ -1172,11 +1192,11 @@ class AgentLoop:
                         error=None if extraction_ok else "memory extraction failed",
                         total_duration_ms=int((time.monotonic() - compaction_started_at) * 1000),
                     )
-                    if extraction_ok and send_notices and channel is not None and chat_id is not None:
+                    if extraction_ok and send_notices and notice_channel is not None and notice_chat_id is not None:
                         try:
                             await self.bus.publish_outbound(OutboundMessage(
-                                channel=channel,
-                                chat_id=chat_id,
+                                channel=notice_channel,
+                                chat_id=notice_chat_id,
                                 content=(
                                     "⚙️ *Session compacted* — older context has been "
                                     "summarized. Continuing with your message..."
@@ -1211,52 +1231,23 @@ class AgentLoop:
         build_messages: Callable[[bool], PromptAssemblyResult],
         context_label: str,
     ) -> PromptAssemblyResult:
-        """Build, compact if needed, then apply emergency trim as a last resort."""
+        """Build the prompt without pre-send history trimming.
+
+        Normal prompt mutation now happens only via persistent tool pruning and
+        structured compaction. If the provider later rejects the request for
+        overflow, the loop handles that via compaction-and-retry rather than a
+        local emergency trim path.
+        """
         assembly = build_messages(False)
         estimated_tokens = int(assembly.estimated_total_tokens)
         compaction_threshold = int(assembly.budget.compaction_trigger_tokens)
         emergency_threshold = self._get_emergency_prompt_threshold()
         logger.info(
-            "Assembled prompt check for {}: tokens={} compaction_threshold={} emergency_threshold={}",
+            "Assembled prompt check for {}: tokens={} compaction_threshold={} emergency_threshold={} (no pre-send trim)",
             context_label,
             estimated_tokens,
             compaction_threshold,
             emergency_threshold if emergency_threshold is not None else "disabled",
-        )
-
-        if assembly.should_compact and session.key not in self._consolidating:
-            await self._run_structured_compaction(
-                session=session,
-                channel=channel,
-                chat_id=chat_id,
-                input_tokens=estimated_tokens,
-                context_window=self._get_context_window_size(),
-                reason=assembly.compaction_reason or f"assembled prompt estimate ({estimated_tokens} > {compaction_threshold})",
-                prompt_assembly=assembly,
-            )
-            assembly = build_messages(False)
-            estimated_tokens = int(assembly.estimated_total_tokens)
-            logger.info(
-                "Assembled prompt after compaction for {}: tokens={} emergency_threshold={}",
-                context_label,
-                estimated_tokens,
-                emergency_threshold,
-            )
-
-        if emergency_threshold is not None and estimated_tokens > emergency_threshold:
-            assembly = build_messages(True)
-            estimated_tokens = int(assembly.estimated_total_tokens)
-            logger.info(
-                "Assembled prompt after emergency trim for {}: tokens={} emergency_threshold={}",
-                context_label,
-                estimated_tokens,
-                emergency_threshold,
-            )
-
-        self._persist_current_context_snapshot(
-            session,
-            total_input_tokens=int(estimated_tokens),
-            source="estimated_current_prompt",
         )
 
         return assembly
@@ -1371,6 +1362,12 @@ class AgentLoop:
         session: Session | None = None,
         checkpoint_start: int | None = None,
         rebuild_messages: Callable[[], list[dict[str, Any]]] | None = None,
+        prompt_assembly: PromptAssemblyResult | None = None,
+        memory_context: str | None = None,
+        turn_context_text: str | None = None,
+        channel: str | None = None,
+        chat_id: str | None = None,
+        query_message_seq: int | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
         session_key_token = None
@@ -1390,6 +1387,7 @@ class AgentLoop:
         _consecutive_errors: int = 0
         _MAX_CONSECUTIVE_ERRORS = 5  # Raised from 3 — less aggressive
         _overflow_retry_used = False
+        _provider_usage_compaction_used = False
 
         try:
             if session is not None and checkpoint_start is not None:
@@ -1495,13 +1493,12 @@ class AgentLoop:
                     output_tokens = response.usage.get("completion_tokens", 0)
                     cache_read = response.usage.get("cache_read_input_tokens", 0)
                     cache_creation = response.usage.get("cache_creation_input_tokens", 0)
-                    # Anthropic's input_tokens only reports non-cached tokens.
-                    # Total context = input_tokens + cache_read + cache_creation.
-                    total_input = input_tokens + cache_read + cache_creation
+                    total_input = effective_total_input_tokens(response.usage)
                     if total_input:
+                        total_input = int(total_input)
                         self._persist_current_context_snapshot(
                             session,
-                            total_input_tokens=int(total_input),
+                            total_input_tokens=total_input,
                             source="provider_usage",
                         )
                         context_window = self._get_context_window_size()
@@ -1518,13 +1515,65 @@ class AgentLoop:
                         )
                         # Write to sidecar usage log
                         usage_logger = self._get_usage_logger(session)
-                        usage_logger.log_usage(
+                        usage_entry = usage_logger.log_usage(
                             usage=response.usage,
                             iteration=iteration,
                             context_window=context_window,
                             model=self.model,
                             finish_reason=response.finish_reason,
                         )
+                        record_provider_call = getattr(self.sessions, "record_provider_call", None)
+                        if callable(record_provider_call):
+                            try:
+                                produced_start = len(session.messages) if session is not None else None
+                                record_provider_call(
+                                    session,
+                                    turn=int(usage_entry.get("turn", 0) if isinstance(usage_entry, dict) else getattr(usage_logger, "_turn", 0)),
+                                    iteration=iteration,
+                                    provider_name=type(self.provider).__name__,
+                                    model=self.model,
+                                    finish_reason=response.finish_reason,
+                                    usage=response.usage,
+                                    context_window=context_window,
+                                    produced_message_seq_start=produced_start,
+                                    produced_message_seq_end=None,
+                                    prompt_messages=list(messages),
+                                    prompt_assembly=prompt_assembly.to_dict() if prompt_assembly is not None else None,
+                                    memory_context=memory_context,
+                                    turn_context_text=turn_context_text,
+                                    channel=channel,
+                                    chat_id=chat_id,
+                                    query_message_seq=query_message_seq,
+                                )
+                            except Exception:
+                                logger.opt(exception=True).warning("Failed to persist provider_call for {}", session.key)
+                        if (
+                            total_input > self._get_compaction_threshold()
+                            and not _provider_usage_compaction_used
+                            and session.key not in self._consolidating
+                            and rebuild_messages is not None
+                        ):
+                            logger.info(
+                                "Provider-reported input tokens exceeded compaction threshold for {}: {} > {}",
+                                session.key,
+                                total_input,
+                                self._get_compaction_threshold(),
+                            )
+                            _provider_usage_compaction_used = True
+                            await self._run_structured_compaction(
+                                session=session,
+                                channel=None,
+                                chat_id=None,
+                                input_tokens=total_input,
+                                context_window=context_window,
+                                reason=(
+                                    f"provider usage ({total_input} > "
+                                    f"{self._get_compaction_threshold()})"
+                                ),
+                            )
+                            messages = rebuild_messages()
+                            checkpoint_cursor = len(messages)
+                            continue
 
                 # --- Layer 1: Truncation guard ---
                 # When output hits max_tokens, tool call JSON may be truncated,
@@ -1702,8 +1751,22 @@ class AgentLoop:
                         thinking_blocks=response.thinking_blocks,
                     )
                     if session is not None and checkpoint_cursor < len(messages):
+                        persisted_start = len(session.messages)
                         session.checkpoint(messages[checkpoint_cursor:])
+                        persisted_end = len(session.messages) - 1
                         checkpoint_cursor = len(messages)
+                        if hasattr(self.sessions, "list_provider_calls") and hasattr(self.sessions, "_conn"):
+                            try:
+                                provider_calls = self.sessions.list_provider_calls(session.key)
+                                if provider_calls:
+                                    latest = provider_calls[-1]
+                                    self.sessions._conn.execute(
+                                        "UPDATE provider_call SET produced_message_seq_start = COALESCE(produced_message_seq_start, ?), produced_message_seq_end = ? WHERE id = ?",
+                                        (persisted_start, persisted_end, latest["id"]),
+                                    )
+                                    self.sessions._conn.commit()
+                            except Exception:
+                                logger.opt(exception=True).warning("Failed to update provider_call message linkage for {}", session.key)
                         prune_method = getattr(self.sessions, "prune_old_tool_results", None)
                         if callable(prune_method):
                             prune_method(
@@ -1938,6 +2001,12 @@ class AgentLoop:
             initial_messages,
             session=session,
             checkpoint_start=None,
+            prompt_assembly=initial_assembly,
+            memory_context=None,
+            turn_context_text=None,
+            channel=channel,
+            chat_id=chat_id,
+            query_message_seq=session.get_message_count(),
         )
 
         self._save_turn(session, all_msgs, len(initial_messages))
@@ -2180,6 +2249,12 @@ class AgentLoop:
                     resume_notice=self._RESUME_SYSTEM_MESSAGE,
                     trim_if_needed=True,
                 ).messages,
+                prompt_assembly=initial_assembly,
+                memory_context=memory_context,
+                turn_context_text=self.context._build_runtime_context(channel, chat_id),
+                channel=channel,
+                chat_id=chat_id,
+                query_message_seq=session.get_message_count(),
             )
             self._save_turn(session, all_msgs, turn_start)
             self.sessions.save_state(session)
@@ -2193,9 +2268,8 @@ class AgentLoop:
         session = self.sessions.get_or_create(key)
         self._normalize_interrupted_mid_tool_session(session)
         metadata = msg.metadata or {}
-        if key.startswith("cron:"):
-            session.metadata.setdefault("origin_channel", msg.channel)
-            session.metadata.setdefault("origin_chat_id", msg.chat_id)
+        session.metadata["origin_channel"] = msg.channel
+        session.metadata["origin_chat_id"] = msg.chat_id
 
         # Slash commands
         cmd = msg.content.strip().lower()
@@ -2311,7 +2385,7 @@ class AgentLoop:
             fresh_snapshot_tokens = _usage_snapshot_tokens(session)
             current_snapshot_tokens = int(fresh_snapshot_tokens) if fresh_snapshot_tokens is not None else 0
             logger.info(
-                "Structured compaction precheck for {}: current_snapshot_tokens={} threshold={} total_messages={} visible_messages={} (decision deferred to assembled prompt)",
+                "Structured compaction precheck for {}: current_snapshot_tokens={} threshold={} total_messages={} visible_messages={} (normal compaction waits for provider usage or overflow)",
                 session.key,
                 current_snapshot_tokens,
                 int((_context_window - self._COMPACTION_RESERVE_TOKENS) * self._COMPACTION_THRESHOLD_RATIO),
@@ -2477,6 +2551,12 @@ class AgentLoop:
                 resume_notice=resume_notice,
                 trim_if_needed=True,
             ).messages,
+            prompt_assembly=initial_assembly,
+            memory_context=memory_context,
+            turn_context_text=self.context._build_runtime_context(msg.channel, msg.chat_id),
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            query_message_seq=session.get_message_count(),
         )
 
         self._save_turn(session, all_msgs, turn_start)

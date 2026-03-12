@@ -97,8 +97,6 @@ def _get_worker_uptime() -> float | None:
 
 _CURRENT_CONTEXT_SNAPSHOT_SOURCES = {
     "provider_usage",
-    "estimated_current_prompt",
-    "recomputed_current_context",
 }
 
 
@@ -117,7 +115,13 @@ def _usage_snapshot_total(metadata: dict[str, Any]) -> int:
 
 
 def _current_snapshot_tokens(loop: Any, session: Any) -> int:
-    """Return a fresh current-context snapshot token count if available."""
+    """Return the latest plausible current-context snapshot token count.
+
+    For operator-facing status surfaces, keep the most recent persisted assembled
+    snapshot visible across restarts even if the session row revision has moved
+    slightly since the snapshot was written. Message-index freshness remains the
+    primary staleness guard here.
+    """
     raw = getattr(session, "metadata", {}).get("usage_snapshot")
     if not isinstance(raw, dict):
         return 0
@@ -137,14 +141,6 @@ def _current_snapshot_tokens(loop: Any, session: Any) -> int:
         session_count = None
     if session_count is not None and abs(session_count - message_index) > 100:
         return 0
-    snapshot_revision = raw.get("revision")
-    current_revision = getattr(session, "_sqlite_revision", None)
-    if snapshot_revision is not None and current_revision is not None:
-        try:
-            if int(snapshot_revision) != int(current_revision):
-                return 0
-        except (TypeError, ValueError):
-            return 0
     return tokens
 
 
@@ -342,7 +338,7 @@ def render_dashboard(status: SystemStatus) -> list[dict[str, Any]]:
         lines.append("")
 
     # Footer
-    lines.append(f"-# Thresholds are shown per agent. Current context usage is the latest assembled snapshot, not a historical trigger value · Updated <t:{int(status.polled_at)}:R>")
+    lines.append(f"-# Thresholds are shown per agent. Current context usage is the latest provider-reported input snapshot, not a local estimate or historical trigger value · Updated <t:{int(status.polled_at)}:R>")
 
     content = "\n".join(lines)
 

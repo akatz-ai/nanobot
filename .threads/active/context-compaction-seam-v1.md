@@ -116,3 +116,23 @@ Current artifact state vs seam:
   - acceptance wording changes
   - broader refactors outside the canonical context-inspection seam
   - repo-local tests and focused UI/manual validations pass
+
+### 2026-03-11 provider-authoritative compaction/status follow-up
+
+- New repo-local acceptance direction has now been set in `/data/projects/nanobot/acceptance/discord/system-status-context-threshold.feature`.
+- This follow-up remains Type B / Slice 1 / shared-artifact advancing, but the immediate implementation step is repo-local within `nanobot`.
+- Product contract clarified:
+  - Discord system status must show the latest persisted **provider-reported total input tokens**.
+  - Normal compaction must trigger **immediately after** a provider response whose total input tokens exceed the threshold.
+  - Normal compaction must **not** trigger from local pre-send estimates.
+  - Provider overflow error is the only pre-response recovery signal and should trigger compaction + one retry.
+  - Internal token estimation should no longer act as a first-class trigger path for compaction or operator-visible status.
+- Intended implementation seam:
+  - `nanobot/agent/loop.py` — remove normal estimate-driven pre-send compaction from `_finalize_prompt_for_send(...)`; keep provider-overflow recovery; trigger compaction from post-response provider usage.
+  - `nanobot/discord/system_status.py` — tighten canonical displayed token source to provider-backed usage.
+  - `nanobot/session/compaction.py` — narrow normal compaction decision inputs to provider-backed usage / overflow recovery and remove estimate-driven trigger behavior where practical.
+- Required validation for the follow-up implementation:
+  - `pytest -q tests/test_system_status_dashboard.py`
+  - targeted compaction tests in `tests/test_compaction_integration.py`
+  - confirm no pre-response estimate-only compaction remains in the normal path
+  - confirm provider overflow still compacts and retries once

@@ -74,7 +74,7 @@ def test_collect_system_status_uses_persisted_usage_snapshot_after_restart():
     assert agent.is_idle is False
 
 
-def test_collect_system_status_prefers_snapshot_over_stale_live_tokens():
+def test_collect_system_status_ignores_estimated_snapshot_and_live_fallback_is_not_canonical():
     router = SimpleNamespace(
         agents={
             "nanobot-dev": SimpleNamespace(
@@ -104,8 +104,43 @@ def test_collect_system_status_prefers_snapshot_over_stale_live_tokens():
 
     status = collect_system_status(router)
     agent = status.agents[0]
-    assert agent.current_input_tokens == 25000
-    assert round(agent.utilization_pct, 2) == 0.25
+    assert agent.current_input_tokens == 30000
+    assert round(agent.utilization_pct, 2) == 0.30
+
+
+def test_collect_system_status_prefers_refreshed_post_compaction_snapshot_over_stale_high_live_tokens():
+    router = SimpleNamespace(
+        agents={
+            "general": SimpleNamespace(
+                profile=SimpleNamespace(model="openai-codex/gpt-5.4", discord_channels=["123"]),
+                loop=_FakeLoop(
+                    model="openai-codex/gpt-5.4",
+                    context_window=200000,
+                    sessions={
+                        "discord:123": {
+                            "message_count": 6502,
+                            "revision": 1565,
+                            "metadata": {
+                                "usage_snapshot": {
+                                    "total_input_tokens": 31051,
+                                    "message_index": 6499,
+                                    "source": "provider_usage",
+                                    "revision": 1561,
+                                }
+                            },
+                            "updated_at": "2026-03-11T17:44:27.127837",
+                        }
+                    },
+                    live_tokens={"discord:123": 109000},
+                ),
+            )
+        }
+    )
+
+    status = collect_system_status(router)
+    agent = status.agents[0]
+    assert agent.current_input_tokens == 31051
+    assert round(agent.utilization_pct, 4) == round(31051 / 200000, 4)
 
 
 def test_current_snapshot_tokens_rejects_non_current_context_sources():
@@ -124,7 +159,7 @@ def test_current_snapshot_tokens_rejects_non_current_context_sources():
     assert _current_snapshot_tokens(SimpleNamespace(), session) == 0
 
 
-def test_current_snapshot_tokens_rejects_stale_revision():
+def test_current_snapshot_tokens_allows_recent_revision_mismatch_for_status():
     session = SimpleNamespace(
         metadata={
             "usage_snapshot": {
@@ -136,6 +171,22 @@ def test_current_snapshot_tokens_rejects_stale_revision():
         },
         _sqlite_revision=2,
         get_message_count=lambda: 10,
+    )
+    assert _current_snapshot_tokens(SimpleNamespace(), session) == 25000
+
+
+def test_current_snapshot_tokens_rejects_stale_message_index_even_if_source_is_valid():
+    session = SimpleNamespace(
+        metadata={
+            "usage_snapshot": {
+                "total_input_tokens": 25000,
+                "message_index": 10,
+                "source": "provider_usage",
+                "revision": 1,
+            }
+        },
+        _sqlite_revision=50,
+        get_message_count=lambda: 250,
     )
     assert _current_snapshot_tokens(SimpleNamespace(), session) == 0
 
@@ -200,4 +251,5 @@ def test_render_dashboard_shows_per_agent_thresholds_and_current_snapshot_discla
     assert "Compaction threshold: 150k (75% of window)" in content
     assert "Compaction threshold: 75k (75% of window)" in content
     assert "Thresholds are shown per agent" in content
-    assert "not a historical trigger value" in content
+    assert "latest provider-reported input snapshot" in content
+    assert "not a local estimate or historical trigger value" in content

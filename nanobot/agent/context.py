@@ -694,6 +694,23 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         """Backward-compatible alias for the V2 inline retrieved memory block."""
         return ContextBuilder._build_retrieved_memory_block(memory_context)
 
+    def build_turn_context_payload(
+        self,
+        *,
+        channel: str | None,
+        chat_id: str | None,
+        model: str | None,
+        background_model: str | None,
+        memory_context: str | None,
+    ) -> str:
+        return self._build_turn_context(
+            channel=channel,
+            chat_id=chat_id,
+            model=model,
+            background_model=background_model,
+            memory_context=memory_context,
+        )
+
     def _build_turn_context(
         self,
         channel: str | None,

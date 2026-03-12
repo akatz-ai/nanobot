@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nanobot.agent.loop import AgentLoop
+from nanobot.agent.context import PromptAssemblyResult, PromptBudget
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMResponse
@@ -85,8 +86,17 @@ async def test_full_structured_compaction_flow(tmp_path: Path) -> None:
 
     loop.provider.chat = AsyncMock(
         side_effect=[
+            LLMResponse(
+                content="first pass",
+                tool_calls=[],
+                usage={"prompt_tokens": 180_000, "completion_tokens": 50},
+            ),
             LLMResponse(content=_structured_summary("First")),
-            LLMResponse(content="ok", tool_calls=[]),
+            LLMResponse(
+                content="ok",
+                tool_calls=[],
+                usage={"prompt_tokens": 20_000, "completion_tokens": 50},
+            ),
         ]
     )
 
@@ -119,8 +129,8 @@ async def test_full_structured_compaction_flow(tmp_path: Path) -> None:
     assert len(session.compactions) == 1
     usage_snapshot = session.metadata.get("usage_snapshot")
     assert isinstance(usage_snapshot, dict)
-    assert int(usage_snapshot.get("total_input_tokens", 0)) > 0
-    assert int(loop._last_input_tokens.get(session.key, 0)) > 0
+    assert int(usage_snapshot.get("total_input_tokens", 0)) == 20_000
+    assert int(loop._last_input_tokens.get(session.key, 0)) == 20_000
     assert extraction_calls and extraction_calls[0] is not None
     assert session.last_consolidated > 0
 
@@ -144,14 +154,18 @@ async def test_iterative_structured_compaction_uses_previous_summary(tmp_path: P
     async def _chat_side_effect(*args, **kwargs):
         messages = kwargs.get("messages") or []
         if messages and messages[0].get("content") == SUMMARIZATION_SYSTEM_PROMPT:
-            # Return different summaries for each compaction pass.
             count = sum(
                 1
                 for call in loop.provider.chat.await_args_list
                 if call.kwargs.get("messages", [{}])[0].get("content") == SUMMARIZATION_SYSTEM_PROMPT
             )
             return LLMResponse(content=_structured_summary(f"Pass {count + 1}"))
-        return LLMResponse(content="ok", tool_calls=[])
+        prompt_tokens = 180_000 if len(loop.provider.chat.await_args_list) == 0 else 195_000
+        return LLMResponse(
+            content="ok",
+            tool_calls=[],
+            usage={"prompt_tokens": prompt_tokens, "completion_tokens": 100},
+        )
 
     loop.provider.chat = AsyncMock(side_effect=_chat_side_effect)
 
@@ -167,11 +181,6 @@ async def test_iterative_structured_compaction_uses_previous_summary(tmp_path: P
     for i in range(40):
         session.add_message("user", f"Question {i} {payload}")
         session.add_message("assistant", f"Answer {i} {payload}")
-    session.metadata["usage_snapshot"] = {
-        "total_input_tokens": 180_000,
-        "message_index": len(session.messages),
-        "source": "provider_usage",
-    }
 
     await loop._process_message(
         InboundMessage(channel="cli", sender_id="user", chat_id="test", content="first")
@@ -180,11 +189,6 @@ async def test_iterative_structured_compaction_uses_previous_summary(tmp_path: P
     for i in range(32):
         session.add_message("user", f"Followup question {i} {payload}")
         session.add_message("assistant", f"Followup answer {i} {payload}")
-    session.metadata["usage_snapshot"] = {
-        "total_input_tokens": 195_000,
-        "message_index": len(session.messages),
-        "source": "provider_usage",
-    }
 
     await loop._process_message(
         InboundMessage(channel="cli", sender_id="user", chat_id="test", content="second")
@@ -231,6 +235,59 @@ async def test_noop_structured_compaction_under_threshold(tmp_path: Path) -> Non
 
     assert session.compactions == []
     consolidate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_compaction_notices_fall_back_to_persisted_origin_target(tmp_path: Path) -> None:
+    loop = _make_structured_loop(tmp_path)
+    loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+
+    async def _fake_consolidate(sess, archive_all: bool = False, extraction_range=None):
+        if extraction_range:
+            sess.last_consolidated = extraction_range[1]
+        return True
+
+    loop._consolidate_memory = _fake_consolidate
+
+    session = loop.sessions.get_or_create("discord:test-thread")
+    session.metadata["origin_channel"] = "discord"
+    session.metadata["origin_chat_id"] = "thread-42"
+    payload = "x" * 6000
+    for i in range(40):
+        session.add_message("user", f"Question {i} {payload}")
+        session.add_message("assistant", f"Answer {i} {payload}")
+    session.metadata["usage_snapshot"] = {
+        "total_input_tokens": 180_000,
+        "message_index": len(session.messages),
+        "source": "provider_usage",
+    }
+    loop.sessions.save(session)
+
+    published: list = []
+
+    async def _capture_outbound(msg):
+        published.append(msg)
+
+    loop.bus.publish_outbound = _capture_outbound
+
+    await loop._run_structured_compaction(
+        session=session,
+        channel=None,
+        chat_id=None,
+        input_tokens=180_000,
+        context_window=loop._get_context_window_size(),
+        reason="provider usage (180000 > threshold)",
+        send_notices=True,
+        prompt_assembly=None,
+    )
+
+    assert len(published) == 2
+    assert published[0].channel == "discord"
+    assert published[0].chat_id == "thread-42"
+    assert "Compacting session" in published[0].content
+    assert published[1].channel == "discord"
+    assert published[1].chat_id == "thread-42"
+    assert "Session compacted" in published[1].content
 
 
 @pytest.mark.asyncio
@@ -320,32 +377,43 @@ async def test_preflight_prompt_budget_emergency_trim_only_over_explicit_thresho
 
 
 @pytest.mark.asyncio
-async def test_post_build_compaction_uses_current_prompt_estimate(tmp_path: Path) -> None:
+async def test_provider_usage_above_threshold_triggers_immediate_compaction(tmp_path: Path) -> None:
     loop = _make_structured_loop(tmp_path)
     loop.provider.chat = AsyncMock(
         side_effect=[
-            LLMResponse(content=_structured_summary("Current Estimate")),
-            LLMResponse(content="ok", tool_calls=[]),
+            LLMResponse(
+                content="first pass",
+                tool_calls=[],
+                usage={"prompt_tokens": 180_000, "completion_tokens": 100},
+            ),
+            LLMResponse(content=_structured_summary("Provider Trigger")),
+            LLMResponse(
+                content="ok",
+                tool_calls=[],
+                usage={"prompt_tokens": 20_000, "completion_tokens": 100},
+            ),
         ]
     )
     loop._consolidate_memory = AsyncMock(return_value=True)
 
     session = loop.sessions.get_or_create("cli:test")
-    _add_long_messages(session, turns=240)
+    _add_long_messages(session, turns=40)
     session.metadata["usage_snapshot"] = {
         "total_input_tokens": 100,
         "message_index": len(session.messages),
+        "source": "provider_usage",
     }
 
     await loop._process_message(
-        InboundMessage(channel="cli", sender_id="user", chat_id="test", content="compact after build")
+        InboundMessage(channel="cli", sender_id="user", chat_id="test", content="compact after provider reply")
     )
 
     assert len(session.compactions) == 1
-    assert loop.provider.chat.await_count == 2
-    final_prompt = loop.provider.chat.await_args_list[-1].kwargs["messages"]
-    final_estimate = sum(estimate_message_tokens(msg) for msg in final_prompt)
-    assert final_estimate <= loop._get_emergency_prompt_threshold()
+    assert loop.provider.chat.await_count == 3
+    usage_snapshot = session.metadata.get("usage_snapshot")
+    assert isinstance(usage_snapshot, dict)
+    assert usage_snapshot.get("source") == "provider_usage"
+    assert int(usage_snapshot.get("total_input_tokens", 0)) == 20_000
 
 
 @pytest.mark.asyncio
@@ -435,6 +503,7 @@ async def test_failure_recovery_on_summary_error(tmp_path: Path) -> None:
     session.metadata["usage_snapshot"] = {
         "total_input_tokens": 180_000,
         "message_index": len(session.messages),
+        "source": "provider_usage",
     }
 
     await loop._process_message(
@@ -444,7 +513,7 @@ async def test_failure_recovery_on_summary_error(tmp_path: Path) -> None:
     assert session.compactions == []
     usage_snapshot = session.metadata.get("usage_snapshot")
     assert isinstance(usage_snapshot, dict)
-    assert usage_snapshot.get("source") in {"recomputed_current_context", "estimated_current_prompt", "provider_usage"}
+    assert usage_snapshot.get("source") == "provider_usage"
     assert int(usage_snapshot.get("total_input_tokens", 0)) > 0
 
 
@@ -453,8 +522,9 @@ async def test_memory_extraction_called_with_explicit_range(tmp_path: Path) -> N
     loop = _make_structured_loop(tmp_path)
     loop.provider.chat = AsyncMock(
         side_effect=[
+            LLMResponse(content="first pass", tool_calls=[], usage={"prompt_tokens": 180_000, "completion_tokens": 50}),
             LLMResponse(content=_structured_summary("Extract")),
-            LLMResponse(content="ok", tool_calls=[]),
+            LLMResponse(content="ok", tool_calls=[], usage={"prompt_tokens": 20_000, "completion_tokens": 50}),
         ]
     )
 
@@ -466,11 +536,6 @@ async def test_memory_extraction_called_with_explicit_range(tmp_path: Path) -> N
     for i in range(40):
         session.add_message("user", f"Question {i} {payload}")
         session.add_message("assistant", f"Answer {i} {payload}")
-    session.metadata["usage_snapshot"] = {
-        "total_input_tokens": 180_000,
-        "message_index": len(session.messages),
-        "source": "provider_usage",
-    }
 
     await loop._process_message(
         InboundMessage(channel="cli", sender_id="user", chat_id="test", content="extract")
@@ -547,11 +612,16 @@ async def test_concurrent_structured_compactions_are_serialized(tmp_path: Path) 
     for i in range(42):
         session.add_message("user", f"Question {i} {payload}")
         session.add_message("assistant", f"Answer {i} {payload}")
-    session.metadata["usage_snapshot"] = {
-        "total_input_tokens": 190_000,
-        "message_index": len(session.messages),
-        "source": "provider_usage",
-    }
+    loop.provider.chat = AsyncMock(
+        side_effect=[
+            LLMResponse(content="one", tool_calls=[], usage={"prompt_tokens": 190_000, "completion_tokens": 50}),
+            LLMResponse(content="two", tool_calls=[], usage={"prompt_tokens": 190_000, "completion_tokens": 50}),
+            LLMResponse(content=_structured_summary("Concurrent")),
+            LLMResponse(content=_structured_summary("Concurrent")),
+            LLMResponse(content="post-compact", tool_calls=[], usage={"prompt_tokens": 20_000, "completion_tokens": 50}),
+            LLMResponse(content="post-compact", tool_calls=[], usage={"prompt_tokens": 20_000, "completion_tokens": 50}),
+        ]
+    )
 
     await asyncio.gather(
         loop._process_message(
@@ -571,8 +641,17 @@ async def test_save_reload_round_trip_with_compaction_and_messages(tmp_path: Pat
     loop = _make_structured_loop(tmp_path)
     loop.provider.chat = AsyncMock(
         side_effect=[
+            LLMResponse(
+                content="first pass",
+                tool_calls=[],
+                usage={"prompt_tokens": 180_000, "completion_tokens": 50},
+            ),
             LLMResponse(content=_structured_summary("Roundtrip")),
-            LLMResponse(content="ok", tool_calls=[]),
+            LLMResponse(
+                content="ok",
+                tool_calls=[],
+                usage={"prompt_tokens": 20_000, "completion_tokens": 50},
+            ),
         ]
     )
 
@@ -659,7 +738,7 @@ async def test_process_message_does_not_compact_from_snapshot_only(
 
 
 @pytest.mark.asyncio
-async def test_process_message_compacts_from_assembled_prompt_only(
+async def test_process_message_does_not_compact_from_assembled_prompt_estimate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -689,14 +768,58 @@ async def test_process_message_compacts_from_assembled_prompt_only(
         )
 
         assert response is not None
-        assert compact_mock.await_count == 1
-        assert "assembled prompt estimate" in compact_mock.await_args.kwargs["reason"]
-        assert compact_mock.await_args.kwargs["input_tokens"] == 24_000
+        compact_mock.assert_not_awaited()
     finally:
         if original_window is None:
             loop.MODEL_CONTEXT_WINDOWS.pop(loop.model, None)
         else:
             loop.MODEL_CONTEXT_WINDOWS[loop.model] = original_window
+
+
+@pytest.mark.asyncio
+async def test_finalize_prompt_for_send_never_uses_emergency_trim_build_path(tmp_path: Path) -> None:
+    loop = _make_structured_loop(tmp_path)
+    session = loop.sessions.get_or_create("cli:test")
+
+    calls: list[bool] = []
+
+    def _build_messages(trim_for_emergency: bool) -> PromptAssemblyResult:
+        calls.append(trim_for_emergency)
+        return PromptAssemblyResult(
+            session_key=session.key,
+            built_at="2026-03-11T23:00:00Z",
+            provider_name="OpenAICodexProvider",
+            model_name=loop.model,
+            sections=[],
+            messages=[{"role": "user", "content": "hello"}],
+            estimated_total_tokens=250_000,
+            provider_observed_total_tokens=None,
+            budget=PromptBudget(
+                context_window=200_000,
+                reserve_tokens=16_384,
+                effective_prompt_budget=183_616,
+                compaction_threshold_ratio=0.75,
+                compaction_trigger_tokens=150_000,
+                emergency_trim_ratio=0.9,
+                emergency_trigger_tokens=180_000,
+            ),
+            should_compact=False,
+            compaction_reason=None,
+            compaction_candidate_range=None,
+            pre_compaction_snapshot={},
+            post_compaction_snapshot=None,
+        )
+
+    result = await loop._finalize_prompt_for_send(
+        session=session,
+        channel="cli",
+        chat_id="test",
+        build_messages=_build_messages,
+        context_label="cli:test",
+    )
+
+    assert result.estimated_total_tokens == 250_000
+    assert calls == [False]
 
 
 @pytest.mark.asyncio
@@ -784,8 +907,8 @@ async def test_compact_session_ignores_stale_snapshot_ceiling(
         keep_recent_tokens=8,
     )
 
-    assert entry is not None
-    assert provider.chat.await_count >= 1
+    assert entry is None
+    provider.chat.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -872,6 +995,7 @@ async def test_compact_command_persists_manual_trigger_metadata_in_compaction_lo
         ]
     )
     loop._consolidate_memory = AsyncMock(return_value=True)
+    loop.context.memory.compact_memory_md = AsyncMock(return_value=None)
 
     session = loop.sessions.get_or_create("cli:test")
     _add_long_messages(session, turns=40)

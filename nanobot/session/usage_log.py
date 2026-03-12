@@ -17,6 +17,8 @@ from typing import Any
 
 from loguru import logger
 
+from nanobot.providers.base import effective_total_input_tokens
+
 
 class TokenUsageLogger:
     """Append-only sidecar log of per-call token usage.
@@ -72,7 +74,7 @@ class TokenUsageLogger:
         context_window: int,
         model: str | None = None,
         finish_reason: str | None = None,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         """Record token usage from one API call.
 
         Args:
@@ -84,7 +86,7 @@ class TokenUsageLogger:
             finish_reason: How the response ended (stop, length, tool_use, etc.)
         """
         try:
-            self._write_entry(
+            return self._write_entry(
                 usage=usage,
                 iteration=iteration,
                 context_window=context_window,
@@ -95,6 +97,7 @@ class TokenUsageLogger:
             logger.opt(exception=True).warning(
                 "Failed to write usage log entry to {}", self._path
             )
+            return None
 
     def _write_entry(
         self,
@@ -104,14 +107,12 @@ class TokenUsageLogger:
         context_window: int,
         model: str | None,
         finish_reason: str | None,
-    ) -> None:
+    ) -> dict[str, Any]:
         input_tokens = usage.get("prompt_tokens", 0)
         output_tokens = usage.get("completion_tokens", 0)
         cache_read = usage.get("cache_read_input_tokens", 0)
         cache_creation = usage.get("cache_creation_input_tokens", 0)
-        # Anthropic's input_tokens only reports non-cached tokens.
-        # Total context = input_tokens + cache_read + cache_creation.
-        total_input = input_tokens + cache_read + cache_creation
+        total_input = effective_total_input_tokens(usage)
 
         self._cumulative_input += total_input
         self._cumulative_output += output_tokens
@@ -150,6 +151,7 @@ class TokenUsageLogger:
             os.fsync(f.fileno())
 
         self._call_count += 1
+        return entry
 
     @property
     def cumulative_input(self) -> int:

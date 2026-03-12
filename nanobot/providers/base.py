@@ -5,6 +5,34 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+_USAGE_PROMPT_TOKENS_SEMANTICS_NON_CACHED = "non_cached_only"
+_USAGE_PROMPT_TOKENS_SEMANTICS_TOTAL = "total_including_cached"
+
+
+def effective_total_input_tokens(usage: dict[str, Any] | None) -> int:
+    """Return normalized total input tokens across provider semantics.
+
+    Anthropic reports non-cached prompt tokens and separate cache counters.
+    Codex/Responses appears to report total prompt size in ``prompt_tokens``
+    while also breaking out cached tokens for accounting.
+    """
+    if not isinstance(usage, dict):
+        return 0
+
+    prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+    cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+    cache_creation = int(usage.get("cache_creation_input_tokens", 0) or 0)
+    semantics = str(
+        usage.get("prompt_tokens_semantics")
+        or _USAGE_PROMPT_TOKENS_SEMANTICS_NON_CACHED
+    ).strip().lower()
+
+    if semantics == _USAGE_PROMPT_TOKENS_SEMANTICS_TOTAL:
+        return max(0, prompt_tokens)
+
+    return max(0, prompt_tokens + cache_read + cache_creation)
+
+
 @dataclass
 class ToolCallRequest:
     """A tool call request from the LLM."""

@@ -5,15 +5,15 @@ title: "Context/Compaction seam \u2014 expose PromptAssemblyResult to API/dashbo
 status: active
 priority: 1
 created_at: '2026-03-11T21:28:24Z'
-updated_at: '2026-03-11T22:29:49Z'
+updated_at: '2026-03-11T23:30:37Z'
 ---
 
 ## Tasks
 - [x] context-compaction-seam-v1.0 Lock shared seam scope: confirm which shared artifacts advance now (acceptance, contract, evals, fixtures) and record exact payload/visibility targets {claim_by=codex@sqlite-test claim_at=2026-03-11T21:32:14Z}
 - [>] context-compaction-seam-v1.1 Implement nanobot backend/API exposure for PromptAssemblyResult-aligned compaction/context data, including pre/post snapshot provenance and manual /compact visibility {deps=[context-compaction-seam-v1.0] claim_by=codex@sqlite-test claim_at=2026-03-11T21:42:21Z}
-- [ ] context-compaction-seam-v1.2 Update dashboard consumption/rendering for assembled prompt estimate, threshold, reserved headroom, stable vs dynamic sections, visible slice labeling, and pre/post snapshot provenance {deps=[context-compaction-seam-v1.1]}
-- [ ] context-compaction-seam-v1.3 Add/update repo-local backend + dashboard tests and any fixture-driven regression coverage for the exposed seam {deps=[context-compaction-seam-v1.2]}
-- [ ] context-compaction-seam-v1.4 Run focused browser/manual validation (Playwright/agent-browser as applicable), capture proof, and reconcile any shared artifact deltas before calling the slice complete {deps=[context-compaction-seam-v1.3]}
+- [x] context-compaction-seam-v1.2 Add/update repo-local API/serialization coverage for assembled prompt estimate, threshold, reserved headroom, stable vs dynamic sections, visible slice labeling, and pre/post snapshot provenance {deps=[context-compaction-seam-v1.1] claim_by=codex@nanobot claim_at=2026-03-11T23:25:57Z}
+- [ ] context-compaction-seam-v1.3 Port the operator-facing context/compaction UI to `agentshq-app` using the canonical control-plane seam, keeping the legacy nanobot HTML dashboard deprecated/reference-only {deps=[context-compaction-seam-v1.2]}
+- [ ] context-compaction-seam-v1.4 Run focused browser/manual validation in `agentshq-app` (Playwright/agent-browser as applicable), capture proof, and reconcile any shared artifact deltas before calling the slice complete {deps=[context-compaction-seam-v1.3]}
 
 ## Notes
 ### Task 1 progress
@@ -23,6 +23,7 @@ updated_at: '2026-03-11T22:29:49Z'
 - Tightened seam behavior to keep `triggerSnapshot` anchored to the pre-trigger snapshot while preferring the compaction log post snapshot for `postCompactionSnapshot`.
 - Added focused builder/route regressions for required `promptAssembly` fields, stable vs turn-scoped section mapping, nullable provider-observed tokens, pre/post snapshot provenance, and session-scoped route behavior.
 - Shared artifacts were re-checked for alignment, but not changed in this turn; this was repo-local preparatory work in service of the shared Slice 1 contract target.
+- The legacy `nanobot/dashboard/static/index.html` surface is now considered deprecated/reference-only. Future operator-facing browser UI work for this seam belongs in `agentshq-app`, while nanobot remains the control-plane API and Discord runtime UI host.
 
 ### Task 0 seam lock
 
@@ -86,15 +87,15 @@ Current artifact state vs seam:
   - /data/projects/nanobot
   - /data/projects/agentshq-platform
 - Validation Required:
-  - nanobot backend/context/compaction/dashboard API tests
+  - nanobot backend/context/compaction control-plane API tests
   - contract-aware API validation against the exposed prompt-assembly seam
-  - dashboard-focused UI/workflow validation in the owning frontend/runtime surface
+  - `agentshq-app` UI/workflow validation for the operator-facing browser surface
   - focused manual proof of compaction explanation + time-travel context view
 - Human Approval Needed:
   - Yes, before changing acceptance wording or materially widening the shared API contract beyond the minimal seam delta
 - Exit Criteria:
-  - PromptAssemblyResult-aligned data is exposed through the nanobot API/dashboard seam
-  - dashboard-visible compaction/context fields satisfy Slice 1 shared artifacts
+  - PromptAssemblyResult-aligned data is exposed through the nanobot control-plane API seam
+  - operator-visible compaction/context fields in `agentshq-app` satisfy Slice 1 shared artifacts
   - pre/post compaction snapshots are distinguishable in operator-visible surfaces
   - manual /compact and automatic compaction share the same visible provenance path
 - contract/fixture changes are minimal and explicit

@@ -20,4 +20,12 @@ __pycache__/
 poetry.lock
 .pytest_cache/
 botpy.log
-tests/
+
+# Test sources should be tracked; ignore only generated artifacts/cache.
+tests/**/__pycache__/
+tests/**/*.pyc
+tests/**/*.pyo
+tests/**/*.pyd
+tests/.pytest_cache/
+tests/tmp/
+tests/artifacts/

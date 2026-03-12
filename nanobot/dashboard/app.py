@@ -1846,6 +1846,41 @@ def _resolve_session_path(name: str, key: str) -> Path:
     raise HTTPException(404, f"Session '{key}' not found")
 
 
+def _sqlite_manager_for_agent(name: str) -> SQLiteSessionManager:
+    return SQLiteSessionManager(_agent_dir(name))
+
+
+def _provider_call_summary_payload(call: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": call.get("id"),
+        "call_index": call.get("call_index"),
+        "turn": call.get("turn"),
+        "iteration": call.get("iteration"),
+        "provider_name": call.get("provider_name"),
+        "model": call.get("model"),
+        "finish_reason": call.get("finish_reason"),
+        "total_input_tokens": call.get("total_input_tokens"),
+        "output_tokens": call.get("output_tokens"),
+        "utilization_pct": call.get("utilization_pct"),
+        "assembly_snapshot_id": call.get("assembly_snapshot_id"),
+        "produced_message_seq_start": call.get("produced_message_seq_start"),
+        "produced_message_seq_end": call.get("produced_message_seq_end"),
+        "created_at": call.get("created_at"),
+    }
+
+
+def _compaction_summary_payload(compaction: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(compaction, dict):
+        return None
+    return {
+        "id": compaction.get("id"),
+        "boundary_seq": compaction.get("boundary_seq"),
+        "tokens_before": compaction.get("tokens_before"),
+        "previous_summary": compaction.get("previous_summary"),
+        "created_at": compaction.get("created_at"),
+    }
+
+
 def _parse_session_paginated(
     path: Path,
     *,
@@ -1894,6 +1929,72 @@ def _parse_session_paginated(
             total += 1
 
     return metadata, messages, total, compactions
+
+
+@app.get("/api/agents/{name}/sessions/{key:path}/provider-calls")
+async def agent_session_provider_calls(name: str, key: str):
+    manager = _sqlite_manager_for_agent(name)
+    session = manager.get_or_create(key)
+    calls = manager.list_provider_calls(session.key)
+    return {
+        "session_key": session.key,
+        "provider_calls": [_provider_call_summary_payload(call) for call in calls],
+        "count": len(calls),
+    }
+
+
+@app.get("/api/agents/{name}/sessions/{key:path}/provider-calls/{call_id}")
+async def agent_session_provider_call_detail(name: str, key: str, call_id: int):
+    manager = _sqlite_manager_for_agent(name)
+    session = manager.get_or_create(key)
+    provider_call = manager.get_provider_call(session.key, call_id)
+    if provider_call is None:
+        raise HTTPException(status_code=404, detail=f"Provider call '{call_id}' not found for session '{session.key}'")
+
+    assembly_snapshot = None
+    retrieved_memory_snapshot = None
+    turn_context_snapshot = None
+    compaction_summary = None
+    related_prune_event = None
+
+    assembly_snapshot_id = provider_call.get("assembly_snapshot_id")
+    if assembly_snapshot_id is not None:
+        assembly_snapshot = manager.get_prompt_assembly_snapshot(session.key, int(assembly_snapshot_id))
+        if assembly_snapshot is not None:
+            retrieved_memory_snapshot_id = assembly_snapshot.get("retrieved_memory_snapshot_id")
+            if retrieved_memory_snapshot_id is not None:
+                retrieved_memory_snapshot = manager.get_retrieved_memory_snapshot(session.key, int(retrieved_memory_snapshot_id))
+            turn_context_snapshot_id = assembly_snapshot.get("turn_context_snapshot_id")
+            if turn_context_snapshot_id is not None:
+                turn_context_snapshot = manager.get_turn_context_snapshot(session.key, int(turn_context_snapshot_id))
+            compaction_id = assembly_snapshot.get("compaction_id")
+            if compaction_id is not None:
+                compaction_summary = _compaction_summary_payload(manager.get_compaction(session.key, int(compaction_id)))
+
+    related_prune_event = manager.find_related_tool_prune_event(
+        session.key,
+        turn=provider_call.get("turn"),
+        call_index=provider_call.get("call_index"),
+        assembly_snapshot_id=provider_call.get("assembly_snapshot_id"),
+    )
+
+    return {
+        "session_key": session.key,
+        "provider_call": provider_call,
+        "prompt_assembly_snapshot": assembly_snapshot,
+        "retrieved_memory_snapshot": retrieved_memory_snapshot,
+        "turn_context_snapshot": turn_context_snapshot,
+        "related_prune_event": related_prune_event,
+        "compaction_summary": compaction_summary,
+    }
+
+
+@app.get("/api/agents/{name}/sessions/{key:path}/prompt-pressure")
+async def agent_session_prompt_pressure(name: str, key: str):
+    manager = _sqlite_manager_for_agent(name)
+    session = manager.get_or_create(key)
+    history = manager.build_prompt_pressure_history(session.key)
+    return history
 
 
 @app.get("/api/agents/{name}/sessions/{key:path}")

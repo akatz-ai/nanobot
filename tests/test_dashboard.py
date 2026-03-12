@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -407,3 +408,165 @@ def test_primary_session_path_resolves_sqlite_backed_discord_session(dashboard_c
     assert record['primaryChannelId'] == '1234567890'
     assert record['contextTokens'] == 45678
     assert record['contextPct'] == round(45678 / 200000 * 100, 1)
+
+
+def _seed_provider_audit_session(workspace: Path, fake_home: Path) -> tuple[SQLiteSessionManager, int]:
+    agent_dir = workspace / 'agents' / 'audit-agent'
+    agent_dir.mkdir(parents=True, exist_ok=True)
+
+    config = json.loads((fake_home / '.nanobot' / 'config.json').read_text(encoding='utf-8'))
+    config['agents']['defaults']['sessionStore'] = 'sqlite'
+    config['agents']['profiles']['audit-agent'] = {
+        'displayName': 'Audit Agent',
+        'discordChannels': ['999'],
+        'model': 'openai-codex/gpt-5.4',
+    }
+    (fake_home / '.nanobot' / 'config.json').write_text(json.dumps(config), encoding='utf-8')
+    dashboard_app._config_cache = None
+
+    manager = SQLiteSessionManager(agent_dir)
+    session = manager.get_or_create('discord:999')
+    session.checkpoint([
+        {'role': 'user', 'content': 'Need help', 'timestamp': '2026-03-10T16:00:00+00:00'},
+        {'role': 'tool', 'content': 'large tool result', 'tool_name': 'search', 'tool_call_id': 'tool-1', 'timestamp': '2026-03-10T16:00:01+00:00'},
+        {'role': 'assistant', 'content': 'Here is a reply', 'timestamp': '2026-03-10T16:00:02+00:00'},
+    ])
+    manager.save(session)
+
+    manager.record_tool_prune_event(
+        session,
+        turn=1,
+        iteration=1,
+        trigger_call_index=0,
+        reason='pre_provider_call',
+        estimated_tokens_before=1200,
+        estimated_tokens_after=900,
+        estimated_tokens_saved=300,
+        items=[{
+            'message_seq': 1,
+            'tool_call_id': 'tool-1',
+            'tool_name': 'search',
+            'replacement_kind': 'summary_stub',
+            'original_content_chars': 2048,
+            'estimated_tokens_removed': 300,
+        }],
+        created_at='2026-03-10T16:00:03+00:00',
+    )
+
+    with manager._lock:
+        manager._conn.execute(
+            """
+            INSERT INTO compaction (session_key, boundary_seq, summary, tokens_before, file_ops_json, previous_summary, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session.key,
+                1,
+                'Earlier discussion summary',
+                1500,
+                '{}',
+                None,
+                '2026-03-10T16:00:04+00:00',
+            ),
+        )
+        manager._conn.commit()
+
+    call_id = manager.record_provider_call(
+        session,
+        turn=1,
+        iteration=1,
+        provider_name='openai',
+        model='openai-codex/gpt-5.4',
+        finish_reason='stop',
+        usage={'prompt_tokens': 700, 'completion_tokens': 120},
+        context_window=200000,
+        produced_message_seq_start=2,
+        produced_message_seq_end=2,
+        prompt_messages=[
+            {'role': 'system', 'content': 'System prompt'},
+            {'role': 'user', 'content': 'Need help'},
+        ],
+        prompt_assembly={
+            'estimated_total_tokens': 700,
+            'sections': [
+                {'cache_scope': 'history', 'source': 'history:user', 'metadata': {'message_index': 0}},
+                {'cache_scope': 'history', 'source': 'history:assistant', 'metadata': {'message_index': 2}},
+            ],
+            'pre_compaction_snapshot': {
+                'stable_cached_prefix_tokens': 100,
+                'dynamic_turn_tokens': 80,
+                'visible_conversation_slice_tokens': 520,
+            },
+        },
+        memory_context='memory item one\nmemory item two',
+        turn_context_text='channel=discord chat=999 now=2026-03-10',
+        channel='discord',
+        chat_id='999',
+        query_message_seq=0,
+        created_at='2026-03-10T16:00:05+00:00',
+    )
+
+    return manager, call_id
+
+
+def test_provider_call_list_endpoint_returns_summaries(dashboard_client) -> None:
+    client, fake_home, workspace = dashboard_client
+    _manager, call_id = _seed_provider_audit_session(workspace, fake_home)
+
+    response = client.get('/api/agents/audit-agent/sessions/discord:999/provider-calls')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['session_key'] == 'discord:999'
+    assert payload['count'] == 1
+    call = payload['provider_calls'][0]
+    assert call['id'] == call_id
+    assert call['call_index'] == 0
+    assert call['turn'] == 1
+    assert call['iteration'] == 1
+    assert call['provider_name'] == 'openai'
+    assert call['model'] == 'openai-codex/gpt-5.4'
+    assert call['finish_reason'] == 'stop'
+    assert call['total_input_tokens'] == 700
+    assert call['output_tokens'] == 120
+    assert call['assembly_snapshot_id'] is not None
+    assert call['produced_message_seq_start'] == 2
+    assert call['produced_message_seq_end'] == 2
+
+
+def test_provider_call_detail_endpoint_returns_linked_snapshots(dashboard_client) -> None:
+    client, fake_home, workspace = dashboard_client
+    manager, call_id = _seed_provider_audit_session(workspace, fake_home)
+
+    response = client.get(f'/api/agents/audit-agent/sessions/discord:999/provider-calls/{call_id}')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['provider_call']['id'] == call_id
+    assert payload['prompt_assembly_snapshot']['assembled_prompt_tokens_est'] == 700
+    assert payload['retrieved_memory_snapshot']['content_text'] == 'memory item one\nmemory item two'
+    assert payload['turn_context_snapshot']['rendered_text'] == 'channel=discord chat=999 now=2026-03-10'
+    assert payload['related_prune_event']['reason'] == 'pre_provider_call'
+    assert payload['compaction_summary']['id'] == payload['prompt_assembly_snapshot']['compaction_id']
+    assert manager.get_provider_call('discord:999', call_id) is not None
+
+
+def test_prompt_pressure_endpoint_correlates_provider_prune_and_compaction_evidence(dashboard_client) -> None:
+    client, fake_home, workspace = dashboard_client
+    _manager, _call_id = _seed_provider_audit_session(workspace, fake_home)
+
+    response = client.get('/api/agents/audit-agent/sessions/discord:999/prompt-pressure')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['session_key'] == 'discord:999'
+    assert payload['approximate'] is True
+    assert 'not exact per-message token attribution' in payload['attribution']
+    assert len(payload['provider_calls']) == 1
+    assert len(payload['prune_events']) == 1
+    assert len(payload['compaction_events']) == 1
+    assert len(payload['timeline']) == 1
+    timeline_entry = payload['timeline'][0]
+    assert timeline_entry['provider']['total_input_tokens'] == 700
+    assert timeline_entry['prune_events'][0]['estimated_tokens_saved'] == 300
+    assert timeline_entry['compaction_events'][0]['summary'] == 'Earlier discussion summary'

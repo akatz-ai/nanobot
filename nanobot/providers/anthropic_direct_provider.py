@@ -9,12 +9,7 @@ import httpx
 import json_repair
 from loguru import logger
 
-from nanobot.providers.base import (
-    LLMProvider,
-    LLMResponse,
-    ToolCallRequest,
-    _USAGE_PROMPT_TOKENS_SEMANTICS_NON_CACHED,
-)
+from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_COUNT_TOKENS_URL = "https://api.anthropic.com/v1/messages/count_tokens"
@@ -447,7 +442,6 @@ class AnthropicDirectProvider(LLMProvider):
             "total_tokens": total_input + output_tokens,
             "cache_read_input_tokens": cache_read,
             "cache_creation_input_tokens": cache_creation,
-            "prompt_tokens_semantics": _USAGE_PROMPT_TOKENS_SEMANTICS_NON_CACHED,
         }
 
         return LLMResponse(

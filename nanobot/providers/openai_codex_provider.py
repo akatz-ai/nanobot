@@ -14,12 +14,7 @@ import httpx
 from loguru import logger
 
 from oauth_cli_kit import get_token as get_codex_token
-from nanobot.providers.base import (
-    LLMProvider,
-    LLMResponse,
-    ToolCallRequest,
-    _USAGE_PROMPT_TOKENS_SEMANTICS_TOTAL,
-)
+from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.content import content_to_text
 
 DEFAULT_CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
@@ -865,7 +860,6 @@ async def _consume_sse(
                 "prompt_tokens": input_tokens,
                 "completion_tokens": output_tokens,
                 "cache_read_input_tokens": cached_tokens,
-                "prompt_tokens_semantics": _USAGE_PROMPT_TOKENS_SEMANTICS_TOTAL,
             }
         elif event_type in {"error", "response.failed", "response.incomplete"}:
             message = _extract_event_error(event)

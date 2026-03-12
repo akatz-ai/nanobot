@@ -35,3 +35,10 @@ Feature: Discord system status explains provider-authoritative context pressure 
     When the agent receives that overflow error
     Then the agent starts structured compaction
     And retries once with the compacted session state
+
+  Scenario: Operator can trigger a gateway restart from the system status message
+    Given the Discord system status message is configured
+    And the gateway supervisor is running
+    When the operator clicks the restart button on the system status message
+    Then nanobot requests a gateway restart via the supervisor restart path
+    And the operator receives a visible confirmation in Discord

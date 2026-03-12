@@ -1718,25 +1718,12 @@ async def create_or_clone_agent(payload: AgentMutationRequest):
 @app.post("/api/restart")
 async def restart_gateway():
     """Gracefully restart the gateway worker process."""
-    import signal as _signal
+    from nanobot.discord.system_status import request_gateway_restart
 
-    try:
-        from nanobot.daemon import GatewayDaemon
-
-        if GatewayDaemon.send_signal(_signal.SIGUSR1):
-            return {"status": "ok", "message": "Restart signal sent to gateway worker."}
-        else:
-            raise HTTPException(
-                status_code=503,
-                detail="Gateway process not running. Cannot send restart signal.",
-            )
-    except ImportError:
-        raise HTTPException(
-            status_code=501,
-            detail="Daemon module not available.",
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    ok, message = request_gateway_restart()
+    if ok:
+        return {"status": "ok", "message": message}
+    raise HTTPException(status_code=503, detail=message)
 
 
 @app.get("/api/agents/{name}/memory")

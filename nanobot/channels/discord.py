@@ -14,6 +14,7 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import DiscordConfig
+from nanobot.discord.system_status import SYSTEM_STATUS_RESTART_CUSTOM_ID, request_gateway_restart
 
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
@@ -342,6 +343,8 @@ class DiscordChannel(BaseChannel):
                 logger.info("Discord gateway READY")
             elif op == 0 and event_type == "MESSAGE_CREATE":
                 await self._handle_message_create(payload)
+            elif op == 0 and event_type == "INTERACTION_CREATE":
+                await self._handle_interaction_create(payload)
             elif op == 7:
                 # RECONNECT: exit loop to reconnect
                 logger.info("Discord gateway requested reconnect")
@@ -386,6 +389,67 @@ class DiscordChannel(BaseChannel):
                 await asyncio.sleep(interval_s)
 
         self._heartbeat_task = asyncio.create_task(heartbeat_loop())
+
+    async def _handle_interaction_create(self, payload: dict[str, Any]) -> None:
+        """Handle Discord component interactions for whitelisted controls."""
+        interaction_id = str(payload.get("id", "") or "")
+        interaction_token = str(payload.get("token", "") or "")
+        interaction_type = int(payload.get("type", 0) or 0)
+        data = payload.get("data") or {}
+        custom_id = str(data.get("custom_id", "") or "")
+        user = payload.get("member", {}).get("user") or payload.get("user") or {}
+        user_id = str(user.get("id", "") or "")
+
+        if interaction_type != 3 or custom_id != SYSTEM_STATUS_RESTART_CUSTOM_ID:
+            return
+        if not interaction_id or not interaction_token:
+            return
+        if user_id and not self.is_allowed(user_id):
+            await self._respond_to_interaction(
+                interaction_id,
+                interaction_token,
+                "You are not allowed to restart the gateway.",
+                ephemeral=True,
+            )
+            return
+
+        ok, message = request_gateway_restart()
+        content = (
+            f"↻ Restart requested. {message}"
+            if ok
+            else f"⚠ Restart failed. {message}"
+        )
+        await self._respond_to_interaction(
+            interaction_id,
+            interaction_token,
+            content,
+            ephemeral=True,
+        )
+
+    async def _respond_to_interaction(
+        self,
+        interaction_id: str,
+        interaction_token: str,
+        content: str,
+        *,
+        ephemeral: bool = False,
+    ) -> None:
+        if not self._http:
+            return
+        url = f"{DISCORD_API_BASE}/interactions/{interaction_id}/{interaction_token}/callback"
+        payload: dict[str, Any] = {
+            "type": 4,
+            "data": {
+                "content": content,
+            },
+        }
+        if ephemeral:
+            payload["data"]["flags"] = 64
+        try:
+            response = await self._http.post(url, json=payload)
+            response.raise_for_status()
+        except Exception as e:
+            logger.error("Error responding to Discord interaction: {}", e)
 
     async def _handle_message_create(self, payload: dict[str, Any]) -> None:
         """Handle incoming Discord messages."""

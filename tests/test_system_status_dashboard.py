@@ -1,6 +1,10 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
-from nanobot.discord.system_status import _channel_topic, _current_snapshot_tokens, collect_system_status, render_dashboard
+from nanobot.channels.discord import DiscordChannel
+from nanobot.bus.queue import MessageBus
+from nanobot.config.schema import DiscordConfig
+from nanobot.discord.system_status import SYSTEM_STATUS_RESTART_CUSTOM_ID, _channel_topic, _current_snapshot_tokens, collect_system_status, render_dashboard
 
 
 class _FakeSessions:
@@ -195,6 +199,50 @@ def test_channel_topic_uses_model_string_only():
     assert _channel_topic("nanobot-dev", "openai-codex/gpt-5.4") == "openai-codex/gpt-5.4"
 
 
+async def test_discord_restart_interaction_requests_gateway_restart():
+    channel = DiscordChannel(DiscordConfig(enabled=True, token="x", allow_from=["42"]), MessageBus())
+    channel._http = SimpleNamespace(post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda: None)))
+
+    payload = {
+        "id": "abc",
+        "token": "tok",
+        "type": 3,
+        "member": {"user": {"id": "42"}},
+        "data": {"custom_id": SYSTEM_STATUS_RESTART_CUSTOM_ID},
+    }
+
+    with patch("nanobot.channels.discord.request_gateway_restart", return_value=(True, "Restart signal sent to gateway worker.")) as restart:
+        await channel._handle_interaction_create(payload)
+
+    restart.assert_called_once()
+    channel._http.post.assert_awaited_once()
+    called_json = channel._http.post.await_args.kwargs["json"]
+    assert called_json["type"] == 4
+    assert called_json["data"]["flags"] == 64
+    assert "Restart requested" in called_json["data"]["content"]
+
+
+async def test_discord_restart_interaction_rejects_unauthorized_user():
+    channel = DiscordChannel(DiscordConfig(enabled=True, token="x", allow_from=["42"]), MessageBus())
+    channel._http = SimpleNamespace(post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda: None)))
+
+    payload = {
+        "id": "abc",
+        "token": "tok",
+        "type": 3,
+        "member": {"user": {"id": "99"}},
+        "data": {"custom_id": SYSTEM_STATUS_RESTART_CUSTOM_ID},
+    }
+
+    with patch("nanobot.channels.discord.request_gateway_restart") as restart:
+        await channel._handle_interaction_create(payload)
+
+    restart.assert_not_called()
+    channel._http.post.assert_awaited_once()
+    called_json = channel._http.post.await_args.kwargs["json"]
+    assert "not allowed" in called_json["data"]["content"].lower()
+
+
 def test_render_dashboard_shows_per_agent_thresholds_and_current_snapshot_disclaimer():
     status = collect_system_status(
         SimpleNamespace(
@@ -253,3 +301,6 @@ def test_render_dashboard_shows_per_agent_thresholds_and_current_snapshot_discla
     assert "Thresholds are shown per agent" in content
     assert "latest provider-reported input snapshot" in content
     assert "not a local estimate or historical trigger value" in content
+    button_row = rendered[0]["components"][1]
+    assert button_row["components"][0]["label"] == "Restart Gateway"
+    assert button_row["components"][0]["custom_id"] == SYSTEM_STATUS_RESTART_CUSTOM_ID

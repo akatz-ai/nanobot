@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from nanobot.daemon import GatewayDaemon
+
 import httpx
 from loguru import logger
 
@@ -25,6 +27,7 @@ if TYPE_CHECKING:
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
 COMPONENTS_V2_FLAG = 1 << 15  # 32768 — IS_COMPONENTS_V2
+SYSTEM_STATUS_RESTART_CUSTOM_ID = "system_status:restart_gateway"
 
 # ── Defaults ───────────────────────────────────────────────────────────────
 
@@ -350,10 +353,34 @@ def render_dashboard(status: SystemStatus) -> list[dict[str, Any]]:
                 {
                     "type": 10,  # Text Display
                     "content": content,
-                }
+                },
+                {
+                    "type": 1,
+                    "components": [
+                        {
+                            "type": 2,
+                            "style": 4,
+                            "label": "Restart Gateway",
+                            "custom_id": SYSTEM_STATUS_RESTART_CUSTOM_ID,
+                        }
+                    ],
+                },
             ],
         }
     ]
+
+
+def request_gateway_restart() -> tuple[bool, str]:
+    """Request a gateway restart via the supervisor restart path."""
+    try:
+        import signal as _signal
+
+        if GatewayDaemon.send_signal(_signal.SIGUSR1):
+            return True, "Restart signal sent to gateway worker."
+        return False, "Gateway process not running. Cannot send restart signal."
+    except Exception as exc:
+        logger.exception("SystemStatusDashboard: failed to request gateway restart")
+        return False, str(exc)
 
 
 class SystemStatusDashboard:

@@ -1102,6 +1102,75 @@ class AgentLoop:
             return origin_channel, origin_chat_id
         return channel, chat_id
 
+    async def _generate_foreground_compaction_self_summary(
+        self,
+        *,
+        prompt_assembly: PromptAssemblyResult,
+        previous_summary: str | None,
+    ):
+        from nanobot.session.compaction import (
+            MAX_SUMMARY_CHARS,
+            SummaryGenerationResult,
+            _hard_cap_summary,
+            _summary_has_required_sections,
+            _fallback_summary,
+        )
+
+        live_messages = [dict(message) for message in prompt_assembly.messages]
+        instruction = (
+            "Internal compaction task: produce the structured compaction continuity summary for this session now. "
+            "Use the currently assembled live prompt context above as the source of truth. "
+            "Summarize the broader arc of the compacted span, including earlier decisions, investigations, and transitions, "
+            "not just the most recent phase. Do not continue the conversation, do not answer the user, and do not mention "
+            "that this instruction exists. Return only the structured summary with these exact sections: ## Goal, "
+            "## Constraints & Preferences, ## Progress, ## Key Decisions, ## Next Steps, ## Critical Context."
+        )
+        if previous_summary:
+            instruction += (
+                "\n\nPrevious working summary to preserve if still relevant:\n<previous_summary>\n"
+                + previous_summary
+                + "\n</previous_summary>"
+            )
+
+        live_messages.append({"role": "system", "content": instruction})
+        chat_kwargs = {
+            "messages": live_messages,
+            "model": self.model,
+            "temperature": 0.0,
+            "max_tokens": 3000,
+        }
+        if self.reasoning_effort:
+            chat_kwargs["reasoning_effort"] = self.reasoning_effort
+
+        total_input_tokens = 0
+        total_output_tokens = 0
+        degraded = False
+        fallback_seed = "\n".join(
+            str(msg.get("content", "")) for msg in prompt_assembly.messages[-12:]
+        )
+
+        for _attempt in range(2):
+            response = await self.provider.chat(**chat_kwargs)
+            usage = response.usage if isinstance(response.usage, dict) else {}
+            total_input_tokens += int(effective_total_input_tokens(usage) or 0)
+            total_output_tokens += int(usage.get("completion_tokens", 0) or 0)
+            content = (response.content or "").strip()
+            if _summary_has_required_sections(content):
+                return SummaryGenerationResult(
+                    summary=_hard_cap_summary(content, MAX_SUMMARY_CHARS),
+                    status="degraded" if degraded else "succeeded",
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                )
+            degraded = True
+
+        return SummaryGenerationResult(
+            summary=_hard_cap_summary(_fallback_summary(fallback_seed, previous_summary=previous_summary), MAX_SUMMARY_CHARS),
+            status="degraded",
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+        )
+
     async def _run_structured_compaction(
         self,
         *,
@@ -1219,6 +1288,15 @@ class AgentLoop:
                         },
                     )
 
+                if prompt_assembly is None:
+                    prompt_assembly = self._build_current_context_messages(
+                        session,
+                        channel=channel,
+                        chat_id=chat_id,
+                        current_message=None,
+                        trim_if_needed=False,
+                    )
+
                 plan = plan_compaction(
                     session,
                     context_window=resolved_context_window,
@@ -1242,36 +1320,58 @@ class AgentLoop:
                         total_duration_ms=int((time.monotonic() - compaction_started_at) * 1000),
                     )
                 else:
-                    summary_messages = session.get_messages_slice(
-                        plan.summary_start,
-                        plan.summary_end,
-                    )
-                    summary_transcript = serialize_conversation(
-                        summary_messages,
-                        max_transcript_chars=100_000,
-                    )
-                    summary_prompt_estimate = max(512, len(summary_transcript) // 3) + 1_200
+                    summary_prompt_estimate = int(prompt_assembly.estimated_total_tokens) + 1_200
+                    summary_assembly = prompt_assembly
                     if summary_prompt_estimate + self._COMPACTION_RESERVE_TOKENS > resolved_context_window:
-                        self._refresh_estimated_token_snapshot(
+                        # The untrimmed prompt exceeds the context window.
+                        # Rebuild a trimmed version that fits, so the summary
+                        # generation LLM call can proceed.  This is the common
+                        # case when compaction fires — the session is large
+                        # *because* it needs compacting.
+                        logger.info(
+                            "Compaction summary prompt too large for {} "
+                            "(estimate={}, limit={}); rebuilding with trim",
+                            session.key,
+                            summary_prompt_estimate,
+                            resolved_context_window - self._COMPACTION_RESERVE_TOKENS,
+                        )
+                        trimmed_assembly = self._build_current_context_messages(
                             session,
                             channel=channel,
                             chat_id=chat_id,
+                            current_message=None,
+                            trim_if_needed=True,
                         )
-                        self.sessions.pop_compaction_plan(session)
-                        compaction_event.finalize(
-                            success=False,
-                            error="insufficient foreground summary reserve",
-                            total_duration_ms=int((time.monotonic() - compaction_started_at) * 1000),
-                        )
-                        self._get_compaction_logger(session).write(compaction_event)
-                        return
+                        trimmed_estimate = int(trimmed_assembly.estimated_total_tokens) + 1_200
+                        if trimmed_estimate + self._COMPACTION_RESERVE_TOKENS > resolved_context_window:
+                            # Even after trimming, the prompt is still too
+                            # large (e.g. system prompt alone exceeds budget).
+                            # Fall back to the original bail-out.
+                            logger.warning(
+                                "Compaction summary prompt still too large after trim for {} "
+                                "(estimate={}, limit={}); skipping compaction",
+                                session.key,
+                                trimmed_estimate,
+                                resolved_context_window - self._COMPACTION_RESERVE_TOKENS,
+                            )
+                            self._refresh_estimated_token_snapshot(
+                                session,
+                                channel=channel,
+                                chat_id=chat_id,
+                            )
+                            self.sessions.pop_compaction_plan(session)
+                            compaction_event.finalize(
+                                success=False,
+                                error="insufficient foreground summary reserve",
+                                total_duration_ms=int((time.monotonic() - compaction_started_at) * 1000),
+                            )
+                            self._get_compaction_logger(session).write(compaction_event)
+                            return
+                        summary_assembly = trimmed_assembly
 
-                    summary_result = await generate_compaction_summary_result(
-                        summary_messages,
-                        self.provider,
-                        self.model,
+                    summary_result = await self._generate_foreground_compaction_self_summary(
+                        prompt_assembly=summary_assembly,
                         previous_summary=plan.previous_summary,
-                        reasoning_effort=self.reasoning_effort,
                     )
                     summary_text = summary_result.summary
                     if plan.is_split_turn and plan.turn_start_index is not None:
@@ -1333,20 +1433,6 @@ class AgentLoop:
                     extract_end = max(extract_start, min(extract_end, total_messages))
 
                     extraction_ok = True
-                    self._active_compaction_event = compaction_event
-                    try:
-                        extraction_ok = await self._consolidate_memory(
-                            session,
-                            extraction_range=(extract_start, extract_end),
-                        )
-                    finally:
-                        self._active_compaction_event = None
-
-                    if not extraction_ok:
-                        logger.warning(
-                            "Structured compaction memory extraction failed for {}",
-                            session.key,
-                        )
                     set_memory_status = getattr(
                         self.sessions,
                         "set_compaction_memory_extraction_status",
@@ -1356,26 +1442,10 @@ class AgentLoop:
                         set_memory_status(
                             session.key,
                             int(entry.compaction_id),
-                            status="succeeded" if extraction_ok else "failed",
+                            status="disabled",
                         )
 
                     memory_compact_result = None
-                    try:
-                        memory_compact_result = await self.context.memory.compact_memory_md(
-                            provider=self.background_provider,
-                            model=self.background_model,
-                            reasoning_effort=self.reasoning_effort,
-                        )
-                        if memory_compact_result and memory_compact_result.get("success"):
-                            logger.info(
-                                "MEMORY.md compacted: {} -> {} tokens",
-                                memory_compact_result["before_tokens"],
-                                memory_compact_result["after_tokens"],
-                            )
-                        elif memory_compact_result:
-                            logger.warning("MEMORY.md compaction attempted but did not produce an update")
-                    except Exception:
-                        logger.exception("MEMORY.md compaction failed (non-fatal)")
 
                     self._refresh_estimated_token_snapshot(
                         session,
@@ -1434,7 +1504,7 @@ class AgentLoop:
                         compaction_event.data["memory_md_compaction"] = memory_compact_result
                     compaction_event.finalize(
                         success=True,
-                        error=None if extraction_ok else "memory extraction failed",
+                        error=None,
                         total_duration_ms=int((time.monotonic() - compaction_started_at) * 1000),
                     )
                     if extraction_ok and send_notices and notice_channel is not None and notice_chat_id is not None:

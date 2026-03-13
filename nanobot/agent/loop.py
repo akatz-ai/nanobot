@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
-from nanobot.agent.context import ContextBuilder, PromptAssemblyResult
+from nanobot.agent.context import ContextBuilder, PromptAssemblyResult, PromptContinuityState
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.batch import BatchTool
@@ -40,10 +40,15 @@ from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider, effective_total_input_tokens
 from nanobot.session.compaction import (
     _usage_snapshot_tokens,
+    apply_compaction_plan,
     compact_session,
     estimate_message_tokens,
     extract_file_ops,
     generate_compaction_summary,
+    generate_compaction_summary_result,
+    generate_turn_prefix_summary,
+    plan_compaction,
+    serialize_conversation,
 )
 from nanobot.session.compaction_log import CompactionEvent, CompactionLogger
 from nanobot.session.context_log import TurnContextLogger
@@ -115,6 +120,7 @@ class AgentLoop:
     _CONSOLIDATION_KEEP_COUNT = 25
     _COMPACTION_RESERVE_TOKENS = 16_384
     _COMPACTION_KEEP_RECENT_TOKENS = 20_000
+    _COMPACTION_CONTINUITY_TAIL_TOKENS = 4_096
     _EMERGENCY_TRIM_SAFETY_TOKENS = 4_096
     _PRUNE_PROTECTED_TOOLS = frozenset(
         {"memory_recall", "memory_save", "memory_graph", "memory_ingest"}
@@ -665,10 +671,24 @@ class AgentLoop:
     def _get_compaction_threshold(self) -> int:
         """Return the synchronous compaction trigger threshold."""
         context_window = max(int(self._get_context_window_size()), 1)
+        usable_context = max(512, context_window - self._COMPACTION_RESERVE_TOKENS)
         return max(
             512,
-            int(context_window * self._COMPACTION_THRESHOLD_RATIO),
+            int(usable_context * self._COMPACTION_THRESHOLD_RATIO),
         )
+
+    def _get_prompt_summary_budgets(
+        self,
+        *,
+        context_window: int | None = None,
+    ) -> tuple[int, int]:
+        effective_budget = max(
+            512,
+            int((context_window or self._get_context_window_size()) - self._COMPACTION_RESERVE_TOKENS),
+        )
+        working_budget = max(512, int(effective_budget * 0.03))
+        distilled_budget = max(1024, int(effective_budget * 0.06))
+        return working_budget, distilled_budget
 
     def _get_emergency_prompt_threshold(self) -> int | None:
         """Return the last-resort trim threshold.
@@ -721,6 +741,137 @@ class AgentLoop:
         if entry and entry.summary:
             return [entry.summary]
         return []
+
+    def _resolve_prompt_continuity(
+        self,
+        session: Session,
+        *,
+        history: list[dict[str, Any]],
+        context_window: int,
+    ) -> tuple[PromptContinuityState | None, list[dict[str, Any]]]:
+        working_budget, distilled_budget = self._get_prompt_summary_budgets(
+            context_window=context_window
+        )
+        resolver = getattr(self.sessions, "resolve_prompt_continuity", None)
+        if callable(resolver):
+            payload = resolver(
+                session.key,
+                working_summary_token_budget=working_budget,
+                distilled_summary_token_budget=distilled_budget,
+            )
+            if isinstance(payload, dict):
+                literal_tail_messages = payload.get("literal_tail_messages")
+                literal_tail = (
+                    list(literal_tail_messages)
+                    if isinstance(literal_tail_messages, list)
+                    else []
+                )
+                tail_count = min(len(history), len(literal_tail))
+                continuity_state = PromptContinuityState(
+                    distilled_summary=(
+                        str(payload.get("distilled_summary_text"))
+                        if isinstance(payload.get("distilled_summary_text"), str)
+                        and str(payload.get("distilled_summary_text")).strip()
+                        else None
+                    ),
+                    working_summary=(
+                        str(payload.get("working_summary_text"))
+                        if isinstance(payload.get("working_summary_text"), str)
+                        and str(payload.get("working_summary_text")).strip()
+                        else None
+                    ),
+                    literal_tail_messages=history[:tail_count],
+                    literal_tail_start_seq=payload.get("literal_tail_start_seq"),
+                    literal_tail_end_seq=payload.get("literal_tail_end_seq"),
+                )
+                remaining_history = history[tail_count:]
+                if (
+                    continuity_state.distilled_summary
+                    or continuity_state.working_summary
+                    or continuity_state.literal_tail_messages
+                ):
+                    return continuity_state, remaining_history
+
+        entry = session.get_last_compaction()
+        if entry and entry.summary:
+            return (
+                PromptContinuityState(working_summary=entry.summary),
+                history,
+            )
+        return None, history
+
+    def _update_prompt_summary_state_after_compaction(
+        self,
+        *,
+        session: Session,
+        entry,
+        context_window: int,
+    ) -> None:
+        get_state = getattr(self.sessions, "get_prompt_summary_state", None)
+        rebuild_state = getattr(self.sessions, "rebuild_prompt_summary_state", None)
+        upsert_state = getattr(self.sessions, "upsert_prompt_summary_state", None)
+        roll_working = getattr(self.sessions, "roll_working_summary_to_distilled", None)
+        if not callable(upsert_state):
+            return
+
+        working_budget, distilled_budget = self._get_prompt_summary_budgets(
+            context_window=context_window
+        )
+        current_state = get_state(session.key) if callable(get_state) else None
+        previous_working_id = (
+            int(current_state["working_compaction_id"])
+            if isinstance(current_state, dict) and current_state.get("working_compaction_id") is not None
+            else None
+        )
+        previous_working_tokens = (
+            int(current_state.get("working_summary_tokens_est", 0))
+            if isinstance(current_state, dict)
+            else 0
+        )
+        new_working_tokens = max(0, len(entry.summary or "") // 3)
+        distilled_state = current_state if isinstance(current_state, dict) else None
+
+        if (
+            previous_working_id is not None
+            and previous_working_id != getattr(entry, "compaction_id", None)
+            and previous_working_tokens + new_working_tokens > working_budget
+            and callable(roll_working)
+        ):
+            distilled_state = roll_working(
+                session.key,
+                source_working_compaction_id=previous_working_id,
+                reason="working summary token budget exceeded",
+                distilled_summary_token_budget=distilled_budget,
+            )
+        elif callable(rebuild_state):
+            distilled_state = rebuild_state(
+                session.key,
+                working_summary_token_budget=working_budget,
+                distilled_summary_token_budget=distilled_budget,
+            )
+
+        upsert_state(
+            session.key,
+            working_compaction_id=getattr(entry, "compaction_id", None),
+            distilled_compaction_id=(
+                distilled_state.get("distilled_compaction_id")
+                if isinstance(distilled_state, dict)
+                else None
+            ),
+            working_summary_text=entry.summary,
+            distilled_summary_text=(
+                distilled_state.get("distilled_summary_text")
+                if isinstance(distilled_state, dict)
+                else None
+            ),
+            working_summary_tokens_est=new_working_tokens,
+            distilled_summary_tokens_est=(
+                int(distilled_state.get("distilled_summary_tokens_est", 0))
+                if isinstance(distilled_state, dict)
+                else 0
+            ),
+            updated_at=getattr(entry, "timestamp", None),
+        )
 
     def _session_revision(self, session: Session) -> int | None:
         """Return the backend revision for freshness-aware snapshot metadata."""
@@ -786,15 +937,22 @@ class AgentLoop:
             context_window=context_window,
             protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
         )
+        continuity_state, history_after_tail = self._resolve_prompt_continuity(
+            session,
+            history=history,
+            context_window=context_window,
+        )
         messages = self._build_messages_with_prompt_budget(
             history=history,
+            continuity_state=continuity_state,
+            resolved_history=history_after_tail,
             current_message=current_message,
             skill_names=self.skill_names,
             channel=channel,
             chat_id=chat_id,
             memory_context=memory_context,
             resume_notice=resume_notice,
-            extra_system_messages=self._latest_compaction_system_messages(session),
+            extra_system_messages=None,
             trim_if_needed=trim_if_needed,
         )
         return self.context.build_prompt_assembly_result(
@@ -811,6 +969,7 @@ class AgentLoop:
                 else self._get_emergency_prompt_threshold() / max(context_window, 1)
             ),
             current_message=current_message,
+            continuity_state=continuity_state,
             total_tokens_override=self._estimate_prompt_tokens(messages),
         )
 
@@ -818,6 +977,8 @@ class AgentLoop:
         self,
         *,
         history: list[dict[str, Any]],
+        continuity_state: PromptContinuityState | None = None,
+        resolved_history: list[dict[str, Any]] | None = None,
         current_message: str | None,
         skill_names: list[str] | None = None,
         media: list[str] | None = None,
@@ -829,7 +990,7 @@ class AgentLoop:
         trim_if_needed: bool = True,
     ) -> list[dict[str, Any]]:
         """Build initial messages and only trim history as an emergency fallback."""
-        history_window = list(history)
+        history_window = list(resolved_history if resolved_history is not None else history)
         emergency_threshold = self._get_emergency_prompt_threshold()
         context_label = (
             f"{channel}:{chat_id}" if channel is not None and chat_id is not None else "unknown"
@@ -847,6 +1008,7 @@ class AgentLoop:
                 background_model=self.background_model,
                 memory_context=memory_context,
                 resume_notice=resume_notice,
+                continuity_state=continuity_state,
                 extra_system_messages=extra_system_messages,
             )
 
@@ -1057,20 +1219,17 @@ class AgentLoop:
                         },
                     )
 
-                entry = await compact_session(
-                    session=session,
-                    provider=self.background_provider,
-                    model=self.background_model,
-                    session_manager=self.sessions,
+                plan = plan_compaction(
+                    session,
                     context_window=resolved_context_window,
                     reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
                     keep_recent_tokens=self._COMPACTION_KEEP_RECENT_TOKENS,
+                    continuity_tail_tokens=self._COMPACTION_CONTINUITY_TAIL_TOKENS,
                     threshold_ratio=self._COMPACTION_THRESHOLD_RATIO,
-                    reasoning_effort=self.reasoning_effort,
                     force=True,
                 )
 
-                if entry is None:
+                if plan is None:
                     self._refresh_estimated_token_snapshot(
                         session,
                         channel=channel,
@@ -1079,10 +1238,85 @@ class AgentLoop:
                     self.sessions.pop_compaction_plan(session)
                     compaction_event.finalize(
                         success=True,
-                        error="structured no-op or summary failure",
+                        error="structured no-op",
                         total_duration_ms=int((time.monotonic() - compaction_started_at) * 1000),
                     )
                 else:
+                    summary_messages = session.get_messages_slice(
+                        plan.summary_start,
+                        plan.summary_end,
+                    )
+                    summary_transcript = serialize_conversation(
+                        summary_messages,
+                        max_transcript_chars=100_000,
+                    )
+                    summary_prompt_estimate = max(512, len(summary_transcript) // 3) + 1_200
+                    if summary_prompt_estimate + self._COMPACTION_RESERVE_TOKENS > resolved_context_window:
+                        self._refresh_estimated_token_snapshot(
+                            session,
+                            channel=channel,
+                            chat_id=chat_id,
+                        )
+                        self.sessions.pop_compaction_plan(session)
+                        compaction_event.finalize(
+                            success=False,
+                            error="insufficient foreground summary reserve",
+                            total_duration_ms=int((time.monotonic() - compaction_started_at) * 1000),
+                        )
+                        self._get_compaction_logger(session).write(compaction_event)
+                        return
+
+                    summary_result = await generate_compaction_summary_result(
+                        summary_messages,
+                        self.provider,
+                        self.model,
+                        previous_summary=plan.previous_summary,
+                        reasoning_effort=self.reasoning_effort,
+                    )
+                    summary_text = summary_result.summary
+                    if plan.is_split_turn and plan.turn_start_index is not None:
+                        if plan.turn_start_index < plan.first_kept_index:
+                            split_prefix_messages = session.get_messages_slice(
+                                plan.turn_start_index,
+                                plan.first_kept_index,
+                            )
+                            split_prefix = await generate_turn_prefix_summary(
+                                split_prefix_messages,
+                                self.provider,
+                                self.model,
+                                reasoning_effort=self.reasoning_effort,
+                            )
+                            summary_text = f"{summary_text}\n\n## Split Turn Prefix\n{split_prefix}"
+
+                    entry = apply_compaction_plan(
+                        session,
+                        plan=plan,
+                        summary_text=summary_text,
+                        summary_generation_provider=type(self.provider).__name__,
+                        summary_generation_model=self.model,
+                        summary_reserve_tokens=self._COMPACTION_RESERVE_TOKENS,
+                        summary_input_tokens=summary_result.input_tokens,
+                        summary_output_tokens=summary_result.output_tokens,
+                        continuity_status=summary_result.status,
+                        memory_extraction_status="pending",
+                    )
+                    self._update_prompt_summary_state_after_compaction(
+                        session=session,
+                        entry=entry,
+                        context_window=resolved_context_window,
+                    )
+                    self.sessions.set_compaction_plan(
+                        session,
+                        {
+                            "summary_start": plan.summary_start,
+                            "summary_end": plan.summary_end,
+                            "extract_start": plan.extract_start,
+                            "extract_end": plan.extract_end,
+                            "cut_point_type": "split_turn" if plan.is_split_turn else "clean",
+                            "continuity_tail_start_seq": plan.continuity_tail_start_seq,
+                            "continuity_tail_end_seq": plan.continuity_tail_end_seq,
+                        },
+                    )
                     plan_meta = self.sessions.pop_compaction_plan(session)
                     extract_start_raw = plan_meta.get("extract_start", previous_boundary)
                     extract_end_raw = plan_meta.get("extract_end", entry.first_kept_index)
@@ -1112,6 +1346,17 @@ class AgentLoop:
                         logger.warning(
                             "Structured compaction memory extraction failed for {}",
                             session.key,
+                        )
+                    set_memory_status = getattr(
+                        self.sessions,
+                        "set_compaction_memory_extraction_status",
+                        None,
+                    )
+                    if callable(set_memory_status) and getattr(entry, "compaction_id", None) is not None:
+                        set_memory_status(
+                            session.key,
+                            int(entry.compaction_id),
+                            status="succeeded" if extraction_ok else "failed",
                         )
 
                     memory_compact_result = None
@@ -1949,14 +2194,21 @@ class AgentLoop:
                 context_window=context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
+            continuity_state, history_after_tail = self._resolve_prompt_continuity(
+                session,
+                history=history,
+                context_window=context_window,
+            )
             messages = self._build_messages_with_prompt_budget(
                 history=history,
+                continuity_state=continuity_state,
+                resolved_history=history_after_tail,
                 current_message=None,
                 skill_names=self.skill_names,
                 channel=channel,
                 chat_id=chat_id,
                 resume_notice=self._RESUME_SYSTEM_MESSAGE,
-                extra_system_messages=self._latest_compaction_system_messages(session),
+                extra_system_messages=None,
                 trim_if_needed=trim_if_needed,
             )
             return self.context.build_prompt_assembly_result(
@@ -1971,6 +2223,7 @@ class AgentLoop:
                     None if self._get_emergency_prompt_threshold() is None else self._get_emergency_prompt_threshold() / max(context_window, 1)
                 ),
                 current_message=None,
+                continuity_state=continuity_state,
                 total_tokens_override=self._estimate_prompt_tokens(messages),
             )
 
@@ -2187,15 +2440,22 @@ class AgentLoop:
                     context_window=context_window,
                     protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
                 )
+                continuity_state, history_after_tail = self._resolve_prompt_continuity(
+                    session,
+                    history=history,
+                    context_window=context_window,
+                )
                 messages = self._build_messages_with_prompt_budget(
                     history=history,
+                    continuity_state=continuity_state,
+                    resolved_history=history_after_tail,
                     current_message=msg.content,
                     skill_names=self.skill_names,
                     channel=channel,
                     chat_id=chat_id,
                     memory_context=memory_context,
                     resume_notice=resume_notice,
-                    extra_system_messages=self._latest_compaction_system_messages(session),
+                    extra_system_messages=None,
                     trim_if_needed=trim_if_needed,
                 )
                 return self.context.build_prompt_assembly_result(
@@ -2210,6 +2470,7 @@ class AgentLoop:
                         None if self._get_emergency_prompt_threshold() is None else self._get_emergency_prompt_threshold() / max(context_window, 1)
                     ),
                     current_message=msg.content,
+                    continuity_state=continuity_state,
                     total_tokens_override=self._estimate_prompt_tokens(messages),
                 )
 
@@ -2458,8 +2719,15 @@ class AgentLoop:
                 context_window=_context_window,
                 protected_tools=set(self._PRUNE_PROTECTED_TOOLS),
             )
+            continuity_state, history_after_tail = self._resolve_prompt_continuity(
+                session,
+                history=history,
+                context_window=_context_window,
+            )
             messages = self._build_messages_with_prompt_budget(
                 history=history,
+                continuity_state=continuity_state,
+                resolved_history=history_after_tail,
                 current_message=msg.content,
                 skill_names=self.skill_names,
                 media=msg.media if msg.media else None,
@@ -2467,7 +2735,7 @@ class AgentLoop:
                 chat_id=msg.chat_id,
                 memory_context=memory_context,
                 resume_notice=resume_notice,
-                extra_system_messages=self._latest_compaction_system_messages(session),
+                extra_system_messages=None,
                 trim_if_needed=trim_if_needed,
             )
             return self.context.build_prompt_assembly_result(
@@ -2482,6 +2750,7 @@ class AgentLoop:
                     None if self._get_emergency_prompt_threshold() is None else self._get_emergency_prompt_threshold() / max(_context_window, 1)
                 ),
                 current_message=msg.content,
+                continuity_state=continuity_state,
                 total_tokens_override=self._estimate_prompt_tokens(messages),
             )
 

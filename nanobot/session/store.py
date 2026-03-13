@@ -84,15 +84,52 @@ CREATE TABLE IF NOT EXISTS compaction (
     tokens_before INTEGER NOT NULL DEFAULT 0,
     file_ops_json TEXT NOT NULL DEFAULT '{}',
     previous_summary TEXT,
+    summary_generation_model TEXT,
+    summary_generation_provider TEXT,
+    summary_reserve_tokens INTEGER,
+    summary_input_tokens INTEGER,
+    summary_output_tokens INTEGER,
+    continuity_tail_start_seq INTEGER,
+    continuity_tail_end_seq INTEGER,
+    summary_artifact_kind TEXT NOT NULL DEFAULT 'working',
+    continuity_status TEXT NOT NULL DEFAULT 'succeeded',
+    memory_extraction_status TEXT NOT NULL DEFAULT 'pending',
     created_at TEXT NOT NULL,
     CHECK (boundary_seq >= 0),
-    CHECK (tokens_before >= 0)
+    CHECK (tokens_before >= 0),
+    CHECK (summary_artifact_kind IN ('working', 'distilled')),
+    CHECK (continuity_status IN ('succeeded', 'degraded', 'failed')),
+    CHECK (memory_extraction_status IN ('pending', 'succeeded', 'failed'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_compaction_session_latest
     ON compaction(session_key, id DESC);
 CREATE INDEX IF NOT EXISTS idx_compaction_session_boundary
     ON compaction(session_key, boundary_seq DESC);
+
+CREATE TABLE IF NOT EXISTS prompt_summary_state (
+    session_key TEXT PRIMARY KEY REFERENCES session(key) ON DELETE CASCADE,
+    working_compaction_id INTEGER REFERENCES compaction(id) ON DELETE SET NULL,
+    distilled_compaction_id INTEGER REFERENCES compaction(id) ON DELETE SET NULL,
+    working_summary_text TEXT,
+    distilled_summary_text TEXT,
+    working_summary_tokens_est INTEGER NOT NULL DEFAULT 0,
+    distilled_summary_tokens_est INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS summary_rollup_event (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_key TEXT NOT NULL REFERENCES session(key) ON DELETE CASCADE,
+    source_working_compaction_id INTEGER REFERENCES compaction(id) ON DELETE SET NULL,
+    previous_distilled_compaction_id INTEGER REFERENCES compaction(id) ON DELETE SET NULL,
+    resulting_distilled_compaction_id INTEGER REFERENCES compaction(id) ON DELETE SET NULL,
+    reason TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_summary_rollup_event_session_created
+    ON summary_rollup_event(session_key, id DESC);
 
 CREATE TABLE IF NOT EXISTS provider_call (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -411,6 +448,61 @@ class SQLiteSessionManager(SessionManager):
                 "ALTER TABLE provider_call ADD COLUMN assembly_snapshot_id INTEGER REFERENCES prompt_assembly_snapshot(id) ON DELETE SET NULL"
             )
 
+        compaction_columns = {
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(compaction)").fetchall()
+        }
+        for column_name, column_sql in (
+            ("summary_generation_model", "TEXT"),
+            ("summary_generation_provider", "TEXT"),
+            ("summary_reserve_tokens", "INTEGER"),
+            ("summary_input_tokens", "INTEGER"),
+            ("summary_output_tokens", "INTEGER"),
+            ("continuity_tail_start_seq", "INTEGER"),
+            ("continuity_tail_end_seq", "INTEGER"),
+            ("summary_artifact_kind", "TEXT NOT NULL DEFAULT 'working'"),
+            ("continuity_status", "TEXT NOT NULL DEFAULT 'succeeded'"),
+            ("memory_extraction_status", "TEXT NOT NULL DEFAULT 'pending'"),
+        ):
+            if column_name not in compaction_columns:
+                self._conn.execute(
+                    f"ALTER TABLE compaction ADD COLUMN {column_name} {column_sql}"
+                )
+
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prompt_summary_state (
+                session_key TEXT PRIMARY KEY REFERENCES session(key) ON DELETE CASCADE,
+                working_compaction_id INTEGER REFERENCES compaction(id) ON DELETE SET NULL,
+                distilled_compaction_id INTEGER REFERENCES compaction(id) ON DELETE SET NULL,
+                working_summary_text TEXT,
+                distilled_summary_text TEXT,
+                working_summary_tokens_est INTEGER NOT NULL DEFAULT 0,
+                distilled_summary_tokens_est INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS summary_rollup_event (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_key TEXT NOT NULL REFERENCES session(key) ON DELETE CASCADE,
+                source_working_compaction_id INTEGER REFERENCES compaction(id) ON DELETE SET NULL,
+                previous_distilled_compaction_id INTEGER REFERENCES compaction(id) ON DELETE SET NULL,
+                resulting_distilled_compaction_id INTEGER REFERENCES compaction(id) ON DELETE SET NULL,
+                reason TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_summary_rollup_event_session_created
+                ON summary_rollup_event(session_key, id DESC)
+            """
+        )
+
 
     @staticmethod
     def _sha256_text(value: str | None) -> str | None:
@@ -453,7 +545,7 @@ class SQLiteSessionManager(SessionManager):
     def _latest_compaction_row_locked(self, session_key: str) -> sqlite3.Row | None:
         return self._conn.execute(
             """
-            SELECT id, summary
+            SELECT *
             FROM compaction
             WHERE session_key = ?
             ORDER BY id DESC
@@ -461,6 +553,537 @@ class SQLiteSessionManager(SessionManager):
             """,
             (session_key,),
         ).fetchone()
+
+    @staticmethod
+    def _estimate_summary_tokens(text: str | None) -> int:
+        if not isinstance(text, str):
+            return 0
+        return max(0, len(text) // 3)
+
+    @staticmethod
+    def _normalize_summary_text(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    def _compose_distilled_summary_text_locked(
+        self,
+        session_key: str,
+        *,
+        token_budget: int | None = None,
+    ) -> tuple[str | None, int, int | None]:
+        rows = self._conn.execute(
+            """
+            SELECT id, summary
+            FROM compaction
+            WHERE session_key = ? AND summary_artifact_kind = 'distilled'
+            ORDER BY id ASC
+            """,
+            (session_key,),
+        ).fetchall()
+        summaries = [
+            self._normalize_summary_text(row["summary"])
+            for row in rows
+            if row is not None
+        ]
+        filtered = [summary for summary in summaries if summary]
+        if not filtered:
+            return None, 0, None
+
+        combined = "\n\n".join(filtered)
+        if token_budget is not None and token_budget > 0:
+            max_chars = max(256, int(token_budget) * 3)
+            if len(combined) > max_chars:
+                combined = combined[: max_chars - 37].rstrip() + "\n\n[... distilled summary clipped for prompt budget ...]"
+        latest_id = rows[-1]["id"] if rows else None
+        latest_compaction_id = int(latest_id) if latest_id is not None else None
+        return combined, self._estimate_summary_tokens(combined), latest_compaction_id
+
+    def get_prompt_summary_state(self, session_key: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT *
+                FROM prompt_summary_state
+                WHERE session_key = ?
+                LIMIT 1
+                """,
+                (session_key,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def upsert_prompt_summary_state(
+        self,
+        session_key: str,
+        *,
+        working_compaction_id: int | None,
+        distilled_compaction_id: int | None,
+        working_summary_text: str | None,
+        distilled_summary_text: str | None,
+        working_summary_tokens_est: int,
+        distilled_summary_tokens_est: int,
+        updated_at: str | None = None,
+    ) -> dict[str, Any]:
+        now_iso = updated_at or datetime.now().isoformat()
+        payload = {
+            "session_key": session_key,
+            "working_compaction_id": working_compaction_id,
+            "distilled_compaction_id": distilled_compaction_id,
+            "working_summary_text": self._normalize_summary_text(working_summary_text),
+            "distilled_summary_text": self._normalize_summary_text(distilled_summary_text),
+            "working_summary_tokens_est": max(0, int(working_summary_tokens_est)),
+            "distilled_summary_tokens_est": max(0, int(distilled_summary_tokens_est)),
+            "updated_at": now_iso,
+        }
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO prompt_summary_state (
+                    session_key,
+                    working_compaction_id,
+                    distilled_compaction_id,
+                    working_summary_text,
+                    distilled_summary_text,
+                    working_summary_tokens_est,
+                    distilled_summary_tokens_est,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_key) DO UPDATE SET
+                    working_compaction_id = excluded.working_compaction_id,
+                    distilled_compaction_id = excluded.distilled_compaction_id,
+                    working_summary_text = excluded.working_summary_text,
+                    distilled_summary_text = excluded.distilled_summary_text,
+                    working_summary_tokens_est = excluded.working_summary_tokens_est,
+                    distilled_summary_tokens_est = excluded.distilled_summary_tokens_est,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    payload["session_key"],
+                    payload["working_compaction_id"],
+                    payload["distilled_compaction_id"],
+                    payload["working_summary_text"],
+                    payload["distilled_summary_text"],
+                    payload["working_summary_tokens_est"],
+                    payload["distilled_summary_tokens_est"],
+                    payload["updated_at"],
+                ),
+            )
+            self._conn.commit()
+        return payload
+
+    def record_summary_rollup_event(
+        self,
+        session_key: str,
+        *,
+        source_working_compaction_id: int,
+        previous_distilled_compaction_id: int | None,
+        resulting_distilled_compaction_id: int,
+        reason: str,
+        created_at: str | None = None,
+    ) -> int:
+        now_iso = created_at or datetime.now().isoformat()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO summary_rollup_event (
+                    session_key,
+                    source_working_compaction_id,
+                    previous_distilled_compaction_id,
+                    resulting_distilled_compaction_id,
+                    reason,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_key,
+                    int(source_working_compaction_id),
+                    int(previous_distilled_compaction_id)
+                    if previous_distilled_compaction_id is not None
+                    else None,
+                    int(resulting_distilled_compaction_id),
+                    reason,
+                    now_iso,
+                ),
+            )
+            self._conn.commit()
+            return int(cursor.lastrowid)
+
+    def list_summary_rollup_events(self, session_key: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT *
+                FROM summary_rollup_event
+                WHERE session_key = ?
+                ORDER BY id ASC
+                """,
+                (session_key,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def roll_working_summary_to_distilled(
+        self,
+        session_key: str,
+        *,
+        source_working_compaction_id: int,
+        reason: str,
+        distilled_summary_token_budget: int | None = None,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            state = self.get_prompt_summary_state(session_key)
+            previous_distilled_compaction_id = (
+                int(state["distilled_compaction_id"])
+                if state is not None and state.get("distilled_compaction_id") is not None
+                else None
+            )
+            self._conn.execute(
+                """
+                UPDATE compaction
+                SET summary_artifact_kind = 'distilled'
+                WHERE session_key = ? AND id = ?
+                """,
+                (session_key, int(source_working_compaction_id)),
+            )
+            self._conn.commit()
+            self.record_summary_rollup_event(
+                session_key,
+                source_working_compaction_id=int(source_working_compaction_id),
+                previous_distilled_compaction_id=previous_distilled_compaction_id,
+                resulting_distilled_compaction_id=int(source_working_compaction_id),
+                reason=reason,
+            )
+            return self.rebuild_prompt_summary_state(
+                session_key,
+                distilled_summary_token_budget=distilled_summary_token_budget,
+            )
+
+    def rebuild_prompt_summary_state(
+        self,
+        session_key: str,
+        *,
+        working_summary_token_budget: int | None = None,
+        distilled_summary_token_budget: int | None = None,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            latest_working_row = self._conn.execute(
+                """
+                SELECT id, summary, created_at
+                FROM compaction
+                WHERE session_key = ? AND summary_artifact_kind = 'working'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (session_key,),
+            ).fetchone()
+            fallback_latest_row = self._conn.execute(
+                """
+                SELECT id, summary, created_at
+                FROM compaction
+                WHERE session_key = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (session_key,),
+            ).fetchone()
+
+            working_row = latest_working_row or fallback_latest_row
+            working_summary_text = (
+                self._normalize_summary_text(working_row["summary"])
+                if working_row is not None
+                else None
+            )
+            if working_summary_text and working_summary_token_budget is not None and working_summary_token_budget > 0:
+                max_chars = max(256, int(working_summary_token_budget) * 3)
+                if len(working_summary_text) > max_chars:
+                    working_summary_text = working_summary_text[: max_chars - 35].rstrip() + "\n\n[... working summary clipped for prompt budget ...]"
+            working_summary_tokens_est = self._estimate_summary_tokens(working_summary_text)
+            working_compaction_id = (
+                int(working_row["id"]) if working_row is not None and working_row["id"] is not None else None
+            )
+            distilled_summary_text, distilled_summary_tokens_est, distilled_compaction_id = (
+                self._compose_distilled_summary_text_locked(
+                    session_key,
+                    token_budget=distilled_summary_token_budget,
+                )
+            )
+            if (
+                latest_working_row is None
+                and fallback_latest_row is not None
+                and distilled_compaction_id is None
+                and working_compaction_id is not None
+            ):
+                distilled_compaction_id = None
+
+            if working_summary_text is None and distilled_summary_text is None:
+                self._conn.execute(
+                    "DELETE FROM prompt_summary_state WHERE session_key = ?",
+                    (session_key,),
+                )
+                self._conn.commit()
+                return None
+
+            updated_at = (
+                str(working_row["created_at"])
+                if working_row is not None and working_row["created_at"] is not None
+                else datetime.now().isoformat()
+            )
+            self._conn.execute(
+                """
+                INSERT INTO prompt_summary_state (
+                    session_key,
+                    working_compaction_id,
+                    distilled_compaction_id,
+                    working_summary_text,
+                    distilled_summary_text,
+                    working_summary_tokens_est,
+                    distilled_summary_tokens_est,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_key) DO UPDATE SET
+                    working_compaction_id = excluded.working_compaction_id,
+                    distilled_compaction_id = excluded.distilled_compaction_id,
+                    working_summary_text = excluded.working_summary_text,
+                    distilled_summary_text = excluded.distilled_summary_text,
+                    working_summary_tokens_est = excluded.working_summary_tokens_est,
+                    distilled_summary_tokens_est = excluded.distilled_summary_tokens_est,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    session_key,
+                    working_compaction_id,
+                    distilled_compaction_id,
+                    working_summary_text,
+                    distilled_summary_text,
+                    working_summary_tokens_est,
+                    distilled_summary_tokens_est,
+                    updated_at,
+                ),
+            )
+            self._conn.commit()
+            return {
+                "session_key": session_key,
+                "working_compaction_id": working_compaction_id,
+                "distilled_compaction_id": distilled_compaction_id,
+                "working_summary_text": working_summary_text,
+                "distilled_summary_text": distilled_summary_text,
+                "working_summary_tokens_est": working_summary_tokens_est,
+                "distilled_summary_tokens_est": distilled_summary_tokens_est,
+                "updated_at": updated_at,
+            }
+
+    def record_compaction_event(
+        self,
+        session: Session,
+        *,
+        summary: str,
+        first_kept_index: int,
+        tokens_before: int,
+        file_ops: dict[str, list[str]] | None = None,
+        previous_summary: str | None = None,
+        timestamp: str | None = None,
+        summary_generation_provider: str | None = None,
+        summary_generation_model: str | None = None,
+        summary_reserve_tokens: int | None = None,
+        summary_input_tokens: int | None = None,
+        summary_output_tokens: int | None = None,
+        continuity_tail_start_seq: int | None = None,
+        continuity_tail_end_seq: int | None = None,
+        summary_artifact_kind: str = "working",
+        continuity_status: str = "succeeded",
+        memory_extraction_status: str = "pending",
+    ) -> CompactionEntry:
+        entry = CompactionEntry(
+            summary=summary,
+            first_kept_index=int(first_kept_index),
+            tokens_before=max(0, int(tokens_before)),
+            file_ops={
+                "read_files": list((file_ops or {}).get("read_files", [])),
+                "modified_files": list((file_ops or {}).get("modified_files", [])),
+            },
+            previous_summary=previous_summary,
+            timestamp=timestamp or datetime.now().isoformat(),
+            summary_generation_provider=summary_generation_provider,
+            summary_generation_model=summary_generation_model,
+            summary_reserve_tokens=summary_reserve_tokens,
+            summary_input_tokens=summary_input_tokens,
+            summary_output_tokens=summary_output_tokens,
+            continuity_tail_start_seq=continuity_tail_start_seq,
+            continuity_tail_end_seq=continuity_tail_end_seq,
+            summary_artifact_kind=summary_artifact_kind,
+            continuity_status=continuity_status,
+            memory_extraction_status=memory_extraction_status,
+        )
+        payload = entry.to_dict()
+        now = datetime.now()
+        now_iso = now.isoformat()
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._upsert_session_row_locked(
+                    session,
+                    updated_at=now_iso,
+                    jsonl_path=str(session._path) if session._path else None,
+                    preserve_existing_message_count=True,
+                    bump_revision=False,
+                )
+                cursor = self._conn.execute(
+                    """
+                    INSERT INTO compaction (
+                        session_key,
+                        boundary_seq,
+                        summary,
+                        tokens_before,
+                        file_ops_json,
+                        previous_summary,
+                        summary_generation_model,
+                        summary_generation_provider,
+                        summary_reserve_tokens,
+                        summary_input_tokens,
+                        summary_output_tokens,
+                        continuity_tail_start_seq,
+                        continuity_tail_end_seq,
+                        summary_artifact_kind,
+                        continuity_status,
+                        memory_extraction_status,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session.key,
+                        payload["first_kept_index"],
+                        payload["summary"],
+                        payload["tokens_before"],
+                        json.dumps(payload["file_ops"], ensure_ascii=False, sort_keys=True),
+                        payload["previous_summary"],
+                        payload["summary_generation_model"],
+                        payload["summary_generation_provider"],
+                        payload["summary_reserve_tokens"],
+                        payload["summary_input_tokens"],
+                        payload["summary_output_tokens"],
+                        payload["continuity_tail_start_seq"],
+                        payload["continuity_tail_end_seq"],
+                        payload["summary_artifact_kind"],
+                        payload["continuity_status"],
+                        payload["memory_extraction_status"],
+                        payload["timestamp"],
+                    ),
+                )
+                compaction_id = int(cursor.lastrowid)
+                entry.compaction_id = compaction_id
+                payload["compaction_id"] = compaction_id
+                self._conn.execute(
+                    "UPDATE session SET updated_at = ?, revision = revision + 1 WHERE key = ?",
+                    (now_iso, session.key),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+        session.compactions.append(payload)
+        session.updated_at = now
+        session._persisted_compaction_count = len(session.compactions)
+        session._persisted_compactions_sig = session._compactions_signature()
+        self._sync_session_tracking(session)
+        return entry
+
+    def set_compaction_memory_extraction_status(
+        self,
+        session_key: str,
+        compaction_id: int,
+        *,
+        status: str,
+    ) -> None:
+        normalized = str(status or "").strip().lower() or "pending"
+        if normalized not in {"pending", "succeeded", "failed"}:
+            normalized = "pending"
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE compaction
+                SET memory_extraction_status = ?
+                WHERE session_key = ? AND id = ?
+                """,
+                (normalized, session_key, int(compaction_id)),
+            )
+            self._conn.commit()
+
+        session = self._cache.get(session_key)
+        if session is None:
+            return
+        for index, compaction in enumerate(session.compactions):
+            if not isinstance(compaction, dict):
+                continue
+            if int(compaction.get("compaction_id") or -1) != int(compaction_id):
+                continue
+            updated = dict(compaction)
+            updated["memory_extraction_status"] = normalized
+            session.compactions[index] = updated
+            session._persisted_compactions_sig = session._compactions_signature()
+            break
+
+    def resolve_prompt_continuity(
+        self,
+        session_key: str,
+        *,
+        working_summary_token_budget: int | None = None,
+        distilled_summary_token_budget: int | None = None,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            state = self.get_prompt_summary_state(session_key)
+            if state is None:
+                state = self.rebuild_prompt_summary_state(
+                    session_key,
+                    working_summary_token_budget=working_summary_token_budget,
+                    distilled_summary_token_budget=distilled_summary_token_budget,
+                )
+
+            latest_compaction = self._latest_compaction_row_locked(session_key)
+            if latest_compaction is None:
+                return state
+
+            tail_start = latest_compaction["continuity_tail_start_seq"]
+            tail_end = latest_compaction["continuity_tail_end_seq"]
+            literal_tail_messages: list[dict[str, Any]] = []
+            literal_tail_count = 0
+            if tail_start is not None and tail_end is not None:
+                start_seq = max(0, int(tail_start))
+                end_seq = max(start_seq, int(tail_end))
+                if end_seq > start_seq:
+                    rows = self._conn.execute(
+                        """
+                        SELECT raw_json
+                        FROM message
+                        WHERE session_key = ? AND seq >= ? AND seq < ?
+                        ORDER BY seq ASC
+                        """,
+                        (session_key, start_seq, end_seq),
+                    ).fetchall()
+                    for row in rows:
+                        try:
+                            payload = json.loads(row["raw_json"])
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(payload, dict):
+                            literal_tail_messages.append(payload)
+                    literal_tail_count = len(literal_tail_messages)
+
+            return {
+                **(state or {"session_key": session_key}),
+                "literal_tail_messages": literal_tail_messages,
+                "literal_tail_count": literal_tail_count,
+                "literal_tail_start_seq": (
+                    int(tail_start) if tail_start is not None else None
+                ),
+                "literal_tail_end_seq": (
+                    int(tail_end) if tail_end is not None else None
+                ),
+            }
 
     def _latest_prune_event_id_locked(self, session_key: str) -> int | None:
         row = self._conn.execute(
@@ -806,7 +1429,7 @@ class SQLiteSessionManager(SessionManager):
         with self._lock:
             row = self._conn.execute(
                 """
-                SELECT id, session_key, boundary_seq, summary, tokens_before, file_ops_json, previous_summary, created_at
+                SELECT *
                 FROM compaction
                 WHERE session_key = ? AND id = ?
                 LIMIT 1
@@ -820,6 +1443,7 @@ class SQLiteSessionManager(SessionManager):
             payload["file_ops"] = json.loads(payload.pop("file_ops_json") or "{}")
         except json.JSONDecodeError:
             payload["file_ops"] = {}
+        payload["compaction_id"] = payload.get("id")
         return payload
 
     def list_tool_prune_events(self, session_key: str) -> list[dict[str, Any]]:
@@ -876,7 +1500,7 @@ class SQLiteSessionManager(SessionManager):
         with self._lock:
             compaction_rows = self._conn.execute(
                 """
-                SELECT id, session_key, boundary_seq, summary, tokens_before, created_at
+                SELECT *
                 FROM compaction
                 WHERE session_key = ?
                 ORDER BY id ASC
@@ -1390,7 +2014,7 @@ class SQLiteSessionManager(SessionManager):
         compactions: list[dict[str, Any]] = []
         for compaction_row in self._conn.execute(
             """
-            SELECT boundary_seq, summary, tokens_before, file_ops_json, previous_summary, created_at
+            SELECT *
             FROM compaction
             WHERE session_key = ?
             ORDER BY id ASC
@@ -1403,12 +2027,23 @@ class SQLiteSessionManager(SessionManager):
                 file_ops = {}
             compactions.append(
                 {
+                    "compaction_id": compaction_row["id"],
                     "summary": compaction_row["summary"],
                     "first_kept_index": max(0, int(compaction_row["boundary_seq"])),
                     "tokens_before": max(0, int(compaction_row["tokens_before"])),
                     "file_ops": file_ops if isinstance(file_ops, dict) else {},
                     "previous_summary": compaction_row["previous_summary"],
                     "timestamp": compaction_row["created_at"],
+                    "summary_generation_provider": compaction_row["summary_generation_provider"],
+                    "summary_generation_model": compaction_row["summary_generation_model"],
+                    "summary_reserve_tokens": compaction_row["summary_reserve_tokens"],
+                    "summary_input_tokens": compaction_row["summary_input_tokens"],
+                    "summary_output_tokens": compaction_row["summary_output_tokens"],
+                    "continuity_tail_start_seq": compaction_row["continuity_tail_start_seq"],
+                    "continuity_tail_end_seq": compaction_row["continuity_tail_end_seq"],
+                    "summary_artifact_kind": compaction_row["summary_artifact_kind"],
+                    "continuity_status": compaction_row["continuity_status"],
+                    "memory_extraction_status": compaction_row["memory_extraction_status"],
                 }
             )
 
@@ -1479,6 +2114,7 @@ class SQLiteSessionManager(SessionManager):
         return session
 
     def _bind_sqlite_session(self, session: Session) -> None:
+        setattr(session, "_manager", self)
         if getattr(session, "_sqlite_bound", False):
             return
         session.add_message = MethodType(self._session_add_message, session)
@@ -1605,70 +2241,38 @@ class SQLiteSessionManager(SessionManager):
         file_ops: dict[str, list[str]] | None = None,
         previous_summary: str | None = None,
         timestamp: str | None = None,
+        compaction_id: int | None = None,
+        summary_generation_provider: str | None = None,
+        summary_generation_model: str | None = None,
+        summary_reserve_tokens: int | None = None,
+        summary_input_tokens: int | None = None,
+        summary_output_tokens: int | None = None,
+        continuity_tail_start_seq: int | None = None,
+        continuity_tail_end_seq: int | None = None,
+        summary_artifact_kind: str = "working",
+        continuity_status: str = "succeeded",
+        memory_extraction_status: str = "pending",
     ) -> CompactionEntry:
-        entry = CompactionEntry(
+        _ = compaction_id
+        return self.record_compaction_event(
+            session,
             summary=summary,
-            first_kept_index=int(first_kept_index),
-            tokens_before=max(0, int(tokens_before)),
-            file_ops={
-                "read_files": list((file_ops or {}).get("read_files", [])),
-                "modified_files": list((file_ops or {}).get("modified_files", [])),
-            },
+            first_kept_index=first_kept_index,
+            tokens_before=tokens_before,
+            file_ops=file_ops,
             previous_summary=previous_summary,
-            timestamp=timestamp or datetime.now().isoformat(),
+            timestamp=timestamp,
+            summary_generation_provider=summary_generation_provider,
+            summary_generation_model=summary_generation_model,
+            summary_reserve_tokens=summary_reserve_tokens,
+            summary_input_tokens=summary_input_tokens,
+            summary_output_tokens=summary_output_tokens,
+            continuity_tail_start_seq=continuity_tail_start_seq,
+            continuity_tail_end_seq=continuity_tail_end_seq,
+            summary_artifact_kind=summary_artifact_kind,
+            continuity_status=continuity_status,
+            memory_extraction_status=memory_extraction_status,
         )
-        payload = entry.to_dict()
-        now = datetime.now()
-        now_iso = now.isoformat()
-
-        with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                self._upsert_session_row_locked(
-                    session,
-                    updated_at=now_iso,
-                    jsonl_path=str(session._path) if session._path else None,
-                    preserve_existing_message_count=True,
-                    bump_revision=False,
-                )
-                self._conn.execute(
-                    """
-                    INSERT INTO compaction (
-                        session_key,
-                        boundary_seq,
-                        summary,
-                        tokens_before,
-                        file_ops_json,
-                        previous_summary,
-                        created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        session.key,
-                        payload["first_kept_index"],
-                        payload["summary"],
-                        payload["tokens_before"],
-                        json.dumps(payload["file_ops"], ensure_ascii=False, sort_keys=True),
-                        payload["previous_summary"],
-                        payload["timestamp"],
-                    ),
-                )
-                self._conn.execute(
-                    "UPDATE session SET updated_at = ?, revision = revision + 1 WHERE key = ?",
-                    (now_iso, session.key),
-                )
-                self._conn.commit()
-            except Exception:
-                self._conn.rollback()
-                raise
-
-        session.compactions.append(payload)
-        session.updated_at = now
-        session._persisted_compaction_count = len(session.compactions)
-        session._persisted_compactions_sig = session._compactions_signature()
-        self._sync_session_tracking(session)
-        return entry
 
     def _session_clear(self, session: Session) -> None:
         now = datetime.now()
@@ -1688,6 +2292,14 @@ class SQLiteSessionManager(SessionManager):
                     jsonl_path=str(session._path) if session._path else None,
                 )
                 self._conn.execute("DELETE FROM compaction WHERE session_key = ?", (session.key,))
+                self._conn.execute(
+                    "DELETE FROM prompt_summary_state WHERE session_key = ?",
+                    (session.key,),
+                )
+                self._conn.execute(
+                    "DELETE FROM summary_rollup_event WHERE session_key = ?",
+                    (session.key,),
+                )
                 self._conn.execute("DELETE FROM message WHERE session_key = ?", (session.key,))
                 self._conn.commit()
             except Exception:
@@ -1872,6 +2484,14 @@ class SQLiteSessionManager(SessionManager):
                     )
 
             if rewrite_compactions:
+                self._conn.execute(
+                    "DELETE FROM prompt_summary_state WHERE session_key = ?",
+                    (session.key,),
+                )
+                self._conn.execute(
+                    "DELETE FROM summary_rollup_event WHERE session_key = ?",
+                    (session.key,),
+                )
                 self._conn.execute("DELETE FROM compaction WHERE session_key = ?", (session.key,))
                 for compaction in session.compactions:
                     entry = CompactionEntry.from_dict(compaction)
@@ -1885,9 +2505,19 @@ class SQLiteSessionManager(SessionManager):
                             tokens_before,
                             file_ops_json,
                             previous_summary,
+                            summary_generation_model,
+                            summary_generation_provider,
+                            summary_reserve_tokens,
+                            summary_input_tokens,
+                            summary_output_tokens,
+                            continuity_tail_start_seq,
+                            continuity_tail_end_seq,
+                            summary_artifact_kind,
+                            continuity_status,
+                            memory_extraction_status,
                             created_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             session.key,
@@ -1896,6 +2526,16 @@ class SQLiteSessionManager(SessionManager):
                             payload["tokens_before"],
                             json.dumps(payload["file_ops"], ensure_ascii=False, sort_keys=True),
                             payload["previous_summary"],
+                            payload["summary_generation_model"],
+                            payload["summary_generation_provider"],
+                            payload["summary_reserve_tokens"],
+                            payload["summary_input_tokens"],
+                            payload["summary_output_tokens"],
+                            payload["continuity_tail_start_seq"],
+                            payload["continuity_tail_end_seq"],
+                            payload["summary_artifact_kind"],
+                            payload["continuity_status"],
+                            payload["memory_extraction_status"],
                             payload["timestamp"],
                         ),
                     )

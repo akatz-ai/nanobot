@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nanobot.agent import context as context_module
-from nanobot.agent.context import ContextBuilder
+from nanobot.agent.context import ContextBuilder, PromptContinuityState
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
@@ -514,7 +514,7 @@ def test_prompt_assembly_result_classifies_static_dynamic_and_history_sections(t
     )
 
     assert assembly.session_key == "discord:123"
-    assert assembly.budget.compaction_trigger_tokens == 150_000
+    assert assembly.budget.compaction_trigger_tokens == 137_712
     assert assembly.pre_compaction_snapshot["trigger_snapshot"] == "pre_compaction"
     assert assembly.pre_compaction_snapshot["stable_cached_prefix_tokens"] > 0
     assert assembly.pre_compaction_snapshot["dynamic_turn_tokens"] > 0
@@ -527,3 +527,67 @@ def test_prompt_assembly_result_classifies_static_dynamic_and_history_sections(t
     assert "current_user" in kinds
     assert "history_user" in kinds
     assert "history_assistant" in kinds
+
+
+def test_prompt_assembly_orders_distilled_then_working_then_literal_tail_then_history(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_workspace(workspace)
+    builder = ContextBuilder(workspace)
+
+    continuity_state = PromptContinuityState(
+        distilled_summary=_structured_summary("Distilled"),
+        working_summary=_structured_summary("Working"),
+        literal_tail_messages=[
+            {"role": "user", "content": "tail-user"},
+            {"role": "assistant", "content": "tail-assistant"},
+        ],
+        literal_tail_start_seq=10,
+        literal_tail_end_seq=12,
+    )
+    history = [
+        {"role": "user", "content": "visible-user"},
+        {"role": "assistant", "content": "visible-assistant"},
+    ]
+
+    messages = builder.build_messages(
+        history=history,
+        current_message="current question",
+        channel="discord",
+        chat_id="123",
+        continuity_state=continuity_state,
+    )
+    assembly = builder.build_prompt_assembly_result(
+        session_key="discord:123",
+        provider_name="FakeProvider",
+        model_name="openai-codex/gpt-5.4",
+        messages=messages,
+        context_window=200_000,
+        reserve_tokens=16_384,
+        compaction_threshold_ratio=0.75,
+        emergency_trim_ratio=None,
+        current_message="current question",
+        continuity_state=continuity_state,
+    )
+
+    system_messages = _system_contents(messages)
+    assert any("Distilled" in content for content in system_messages)
+    assert any("Working" in content for content in system_messages)
+
+    distilled_index = next(i for i, msg in enumerate(messages) if msg.get("role") == "system" and "Distilled" in str(msg.get("content")))
+    working_index = next(i for i, msg in enumerate(messages) if msg.get("role") == "system" and "Working" in str(msg.get("content")))
+    tail_user_index = next(i for i, msg in enumerate(messages) if msg.get("content") == "tail-user")
+    visible_user_index = next(i for i, msg in enumerate(messages) if msg.get("content") == "visible-user")
+
+    assert distilled_index < working_index < tail_user_index < visible_user_index
+
+    distilled_section = next(section for section in assembly.sections if section.kind == "distilled_summary")
+    working_section = next(section for section in assembly.sections if section.kind == "working_summary")
+    tail_sections = [
+        section for section in assembly.sections
+        if section.metadata.get("continuity_layer") == "literal_tail"
+    ]
+
+    assert distilled_section.source == "compaction:distilled"
+    assert working_section.source == "compaction:working"
+    assert [section.role for section in tail_sections] == ["user", "assistant"]

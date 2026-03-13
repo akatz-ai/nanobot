@@ -19,6 +19,7 @@ from nanobot.session.compaction import (
 )
 from nanobot.session.compaction_log import load_compaction_log
 from nanobot.session.manager import SessionManager
+from nanobot.session.store import SQLiteSessionManager
 
 
 def _structured_summary(label: str = "Summary") -> str:
@@ -145,6 +146,61 @@ async def test_full_structured_compaction_flow(tmp_path: Path) -> None:
     reloaded = loop.sessions.get_or_create(session.key)
     assert len(reloaded.compactions) == 1
     assert reloaded.get_last_compaction() is not None
+
+
+@pytest.mark.asyncio
+async def test_foreground_self_summary_path_uses_foreground_provider_for_normal_compaction(
+    tmp_path: Path,
+) -> None:
+    foreground_provider = MagicMock()
+    foreground_provider.get_default_model.return_value = "foreground-model"
+    foreground_provider.chat = AsyncMock(
+        return_value=LLMResponse(content=_structured_summary("Foreground"))
+    )
+
+    background_provider = MagicMock()
+    background_provider.get_default_model.return_value = "background-model"
+    background_provider.chat = AsyncMock(
+        return_value=LLMResponse(content=_structured_summary("Background"))
+    )
+
+    manager = SQLiteSessionManager(tmp_path)
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=foreground_provider,
+        background_provider=background_provider,
+        workspace=tmp_path,
+        model="foreground-model",
+        background_model="background-model",
+        session_manager=manager,
+    )
+    loop.tools.get_definitions = MagicMock(return_value=[])
+    loop._consolidate_memory = AsyncMock(return_value=True)
+    loop.context.memory.compact_memory_md = AsyncMock(return_value=None)
+
+    session = manager.get_or_create("cli:foreground")
+    payload = "x" * 6000
+    for i in range(40):
+        session.add_message("user", f"Question {i} {payload}")
+        session.add_message("assistant", f"Answer {i} {payload}")
+
+    await loop._run_structured_compaction(
+        session=session,
+        channel="cli",
+        chat_id="foreground",
+        input_tokens=loop._get_compaction_threshold() + 1,
+        context_window=loop._get_context_window_size(),
+        reason="provider usage trigger",
+        send_notices=False,
+        prompt_assembly=None,
+    )
+
+    assert foreground_provider.chat.await_count >= 1
+    background_provider.chat.assert_not_awaited()
+
+    latest = session.get_last_compaction()
+    assert latest is not None
+    assert latest.summary_generation_model == "foreground-model"
 
 
 @pytest.mark.asyncio
@@ -799,7 +855,7 @@ async def test_finalize_prompt_for_send_never_uses_emergency_trim_build_path(tmp
                 reserve_tokens=16_384,
                 effective_prompt_budget=183_616,
                 compaction_threshold_ratio=0.75,
-                compaction_trigger_tokens=150_000,
+                compaction_trigger_tokens=137_712,
                 emergency_trim_ratio=0.9,
                 emergency_trigger_tokens=180_000,
             ),

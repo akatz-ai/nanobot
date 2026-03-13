@@ -256,6 +256,164 @@ def test_compaction_persists_and_get_history_respects_boundary(
     assert compaction_rows[0]["tokens_before"] == 200
 
 
+def test_compaction_row_supports_summary_state_metadata_fields(
+    sqlite_manager: SQLiteSessionManager,
+) -> None:
+    session = sqlite_manager.get_or_create("cli:ledger")
+    session.checkpoint(
+        [
+            {"role": "user", "content": "u0"},
+            {"role": "assistant", "content": "a0"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+        ]
+    )
+
+    entry = sqlite_manager.record_compaction_event(
+        session,
+        summary="## Goal\nLedger\n\n## Progress\n### Done\n- [x] A\n\n## Next Steps\n1. B",
+        first_kept_index=2,
+        tokens_before=120,
+        file_ops={"read_files": ["a.py"], "modified_files": ["b.py"]},
+        previous_summary=None,
+        summary_generation_provider="ForegroundProvider",
+        summary_generation_model="foreground-model",
+        summary_reserve_tokens=16_384,
+        summary_input_tokens=1_024,
+        summary_output_tokens=256,
+        continuity_tail_start_seq=2,
+        continuity_tail_end_seq=4,
+        summary_artifact_kind="working",
+        continuity_status="degraded",
+        memory_extraction_status="failed",
+    )
+
+    compaction = sqlite_manager.get_compaction(session.key, int(entry.compaction_id or 0))
+
+    assert compaction is not None
+    assert compaction["summary_generation_provider"] == "ForegroundProvider"
+    assert compaction["summary_generation_model"] == "foreground-model"
+    assert compaction["summary_reserve_tokens"] == 16_384
+    assert compaction["summary_input_tokens"] == 1_024
+    assert compaction["summary_output_tokens"] == 256
+    assert compaction["continuity_tail_start_seq"] == 2
+    assert compaction["continuity_tail_end_seq"] == 4
+    assert compaction["summary_artifact_kind"] == "working"
+    assert compaction["continuity_status"] == "degraded"
+    assert compaction["memory_extraction_status"] == "failed"
+
+
+def test_prompt_summary_state_round_trips_and_rebuilds(
+    sqlite_manager: SQLiteSessionManager,
+) -> None:
+    session = sqlite_manager.get_or_create("cli:summary-state")
+    session.checkpoint(
+        [
+            {"role": "user", "content": "u0"},
+            {"role": "assistant", "content": "a0"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+        ]
+    )
+    distilled_entry = sqlite_manager.record_compaction_event(
+        session,
+        summary="## Goal\nDistilled\n\n## Progress\n### Done\n- [x] older\n\n## Next Steps\n1. keep going",
+        first_kept_index=2,
+        tokens_before=90,
+        continuity_tail_start_seq=2,
+        continuity_tail_end_seq=4,
+        summary_artifact_kind="distilled",
+        continuity_status="succeeded",
+        memory_extraction_status="succeeded",
+    )
+    working_entry = sqlite_manager.record_compaction_event(
+        session,
+        summary="## Goal\nWorking\n\n## Progress\n### Done\n- [x] recent\n\n## Next Steps\n1. continue",
+        first_kept_index=4,
+        tokens_before=60,
+        previous_summary=distilled_entry.summary,
+        continuity_tail_start_seq=4,
+        continuity_tail_end_seq=6,
+        summary_artifact_kind="working",
+        continuity_status="succeeded",
+        memory_extraction_status="pending",
+    )
+
+    state = sqlite_manager.upsert_prompt_summary_state(
+        session.key,
+        working_compaction_id=int(working_entry.compaction_id or 0),
+        distilled_compaction_id=int(distilled_entry.compaction_id or 0),
+        working_summary_text=working_entry.summary,
+        distilled_summary_text=distilled_entry.summary,
+        working_summary_tokens_est=32,
+        distilled_summary_tokens_est=24,
+    )
+
+    assert state["working_compaction_id"] == int(working_entry.compaction_id or 0)
+    assert state["distilled_compaction_id"] == int(distilled_entry.compaction_id or 0)
+
+    sqlite_manager._conn.execute(
+        "DELETE FROM prompt_summary_state WHERE session_key = ?",
+        (session.key,),
+    )
+    sqlite_manager._conn.commit()
+
+    rebuilt = sqlite_manager.rebuild_prompt_summary_state(session.key)
+
+    assert rebuilt is not None
+    assert rebuilt["working_compaction_id"] == int(working_entry.compaction_id or 0)
+    assert rebuilt["distilled_compaction_id"] == int(distilled_entry.compaction_id or 0)
+    assert "Working" in str(rebuilt["working_summary_text"])
+    assert "Distilled" in str(rebuilt["distilled_summary_text"])
+
+
+def test_summary_rollup_event_is_recorded_on_working_to_distilled_rollover(
+    sqlite_manager: SQLiteSessionManager,
+) -> None:
+    session = sqlite_manager.get_or_create("cli:rollup")
+    session.checkpoint(
+        [
+            {"role": "user", "content": "u0"},
+            {"role": "assistant", "content": "a0"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+        ]
+    )
+    working_entry = sqlite_manager.record_compaction_event(
+        session,
+        summary="## Goal\nWorking One\n\n## Progress\n### Done\n- [x] A\n\n## Next Steps\n1. B",
+        first_kept_index=2,
+        tokens_before=100,
+        continuity_tail_start_seq=2,
+        continuity_tail_end_seq=4,
+        summary_artifact_kind="working",
+    )
+    sqlite_manager.upsert_prompt_summary_state(
+        session.key,
+        working_compaction_id=int(working_entry.compaction_id or 0),
+        distilled_compaction_id=None,
+        working_summary_text=working_entry.summary,
+        distilled_summary_text=None,
+        working_summary_tokens_est=10_000,
+        distilled_summary_tokens_est=0,
+    )
+
+    rebuilt = sqlite_manager.roll_working_summary_to_distilled(
+        session.key,
+        source_working_compaction_id=int(working_entry.compaction_id or 0),
+        reason="working summary token budget exceeded",
+    )
+    events = sqlite_manager.list_summary_rollup_events(session.key)
+
+    assert rebuilt is not None
+    assert events
+    assert events[0]["source_working_compaction_id"] == int(working_entry.compaction_id or 0)
+    assert events[0]["resulting_distilled_compaction_id"] == int(working_entry.compaction_id or 0)
+    assert rebuilt["distilled_compaction_id"] == int(working_entry.compaction_id or 0)
+
+
 def test_tool_pruning_matches_jsonl_behavior(tmp_path: Path) -> None:
     sqlite_manager = SQLiteSessionManager(tmp_path / "sqlite")
     jsonl_manager = SessionManager(tmp_path / "jsonl")
@@ -415,7 +573,15 @@ def test_jsonl_migration_preserves_session_content_exactly(tmp_path: Path) -> No
     reloaded = sqlite_manager.get_or_create(key)
 
     assert reloaded.messages == baseline.messages
-    assert reloaded.compactions == baseline.compactions
+    assert [entry["summary"] for entry in reloaded.compactions] == [
+        entry["summary"] for entry in baseline.compactions
+    ]
+    assert [entry["first_kept_index"] for entry in reloaded.compactions] == [
+        entry["first_kept_index"] for entry in baseline.compactions
+    ]
+    assert [entry["tokens_before"] for entry in reloaded.compactions] == [
+        entry["tokens_before"] for entry in baseline.compactions
+    ]
     assert reloaded.metadata == baseline.metadata
     assert reloaded.last_consolidated == baseline.last_consolidated
     assert reloaded.created_at == baseline.created_at

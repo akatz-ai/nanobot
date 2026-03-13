@@ -28,6 +28,17 @@ class CompactionEntry:
     file_ops: dict[str, list[str]]
     previous_summary: str | None
     timestamp: str
+    compaction_id: int | None = None
+    summary_generation_provider: str | None = None
+    summary_generation_model: str | None = None
+    summary_reserve_tokens: int | None = None
+    summary_input_tokens: int | None = None
+    summary_output_tokens: int | None = None
+    continuity_tail_start_seq: int | None = None
+    continuity_tail_end_seq: int | None = None
+    summary_artifact_kind: str = "working"
+    continuity_status: str = "succeeded"
+    memory_extraction_status: str = "pending"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CompactionEntry:
@@ -69,6 +80,42 @@ class CompactionEntry:
             else datetime.now().isoformat()
         )
 
+        def _optional_int(key: str) -> int | None:
+            raw = data.get(key)
+            if raw is None:
+                return None
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+
+        summary_artifact_kind_raw = data.get("summary_artifact_kind")
+        summary_artifact_kind = (
+            str(summary_artifact_kind_raw).strip().lower()
+            if isinstance(summary_artifact_kind_raw, str) and summary_artifact_kind_raw.strip()
+            else "working"
+        )
+        if summary_artifact_kind not in {"working", "distilled"}:
+            summary_artifact_kind = "working"
+
+        continuity_status_raw = data.get("continuity_status")
+        continuity_status = (
+            str(continuity_status_raw).strip().lower()
+            if isinstance(continuity_status_raw, str) and continuity_status_raw.strip()
+            else "succeeded"
+        )
+        if continuity_status not in {"succeeded", "degraded", "failed"}:
+            continuity_status = "succeeded"
+
+        memory_extraction_status_raw = data.get("memory_extraction_status")
+        memory_extraction_status = (
+            str(memory_extraction_status_raw).strip().lower()
+            if isinstance(memory_extraction_status_raw, str) and memory_extraction_status_raw.strip()
+            else "pending"
+        )
+        if memory_extraction_status not in {"pending", "succeeded", "failed"}:
+            memory_extraction_status = "pending"
+
         return cls(
             summary=summary,
             first_kept_index=first_kept_index,
@@ -76,6 +123,25 @@ class CompactionEntry:
             file_ops=file_ops,
             previous_summary=previous_summary,
             timestamp=timestamp,
+            compaction_id=_optional_int("compaction_id"),
+            summary_generation_provider=(
+                str(data.get("summary_generation_provider"))
+                if isinstance(data.get("summary_generation_provider"), str)
+                else None
+            ),
+            summary_generation_model=(
+                str(data.get("summary_generation_model"))
+                if isinstance(data.get("summary_generation_model"), str)
+                else None
+            ),
+            summary_reserve_tokens=_optional_int("summary_reserve_tokens"),
+            summary_input_tokens=_optional_int("summary_input_tokens"),
+            summary_output_tokens=_optional_int("summary_output_tokens"),
+            continuity_tail_start_seq=_optional_int("continuity_tail_start_seq"),
+            continuity_tail_end_seq=_optional_int("continuity_tail_end_seq"),
+            summary_artifact_kind=summary_artifact_kind,
+            continuity_status=continuity_status,
+            memory_extraction_status=memory_extraction_status,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -89,6 +155,17 @@ class CompactionEntry:
             },
             "previous_summary": self.previous_summary,
             "timestamp": self.timestamp,
+            "compaction_id": self.compaction_id,
+            "summary_generation_provider": self.summary_generation_provider,
+            "summary_generation_model": self.summary_generation_model,
+            "summary_reserve_tokens": self.summary_reserve_tokens,
+            "summary_input_tokens": self.summary_input_tokens,
+            "summary_output_tokens": self.summary_output_tokens,
+            "continuity_tail_start_seq": self.continuity_tail_start_seq,
+            "continuity_tail_end_seq": self.continuity_tail_end_seq,
+            "summary_artifact_kind": self.summary_artifact_kind,
+            "continuity_status": self.continuity_status,
+            "memory_extraction_status": self.memory_extraction_status,
         }
 
 
@@ -463,6 +540,17 @@ class Session:
         file_ops: dict[str, list[str]] | None = None,
         previous_summary: str | None = None,
         timestamp: str | None = None,
+        compaction_id: int | None = None,
+        summary_generation_provider: str | None = None,
+        summary_generation_model: str | None = None,
+        summary_reserve_tokens: int | None = None,
+        summary_input_tokens: int | None = None,
+        summary_output_tokens: int | None = None,
+        continuity_tail_start_seq: int | None = None,
+        continuity_tail_end_seq: int | None = None,
+        summary_artifact_kind: str = "working",
+        continuity_status: str = "succeeded",
+        memory_extraction_status: str = "pending",
     ) -> CompactionEntry:
         """Append a compaction entry and persist it directly to JSONL when bound."""
         entry = CompactionEntry(
@@ -475,6 +563,17 @@ class Session:
             },
             previous_summary=previous_summary,
             timestamp=timestamp or datetime.now().isoformat(),
+            compaction_id=compaction_id,
+            summary_generation_provider=summary_generation_provider,
+            summary_generation_model=summary_generation_model,
+            summary_reserve_tokens=summary_reserve_tokens,
+            summary_input_tokens=summary_input_tokens,
+            summary_output_tokens=summary_output_tokens,
+            continuity_tail_start_seq=continuity_tail_start_seq,
+            continuity_tail_end_seq=continuity_tail_end_seq,
+            summary_artifact_kind=summary_artifact_kind,
+            continuity_status=continuity_status,
+            memory_extraction_status=memory_extraction_status,
         )
         payload = entry.to_dict()
         self.compactions.append(payload)
@@ -742,6 +841,7 @@ class SessionManager:
         if session is None:
             session = Session(key=key)
         session.bind_path(self._get_session_path(key))
+        setattr(session, "_manager", self)
         if session._persisted_count == 0 and session._path and session._path.exists():
             session.mark_persisted()
 

@@ -10,8 +10,10 @@ from nanobot.session.compaction import (
     UPDATE_SUMMARIZATION_PROMPT,
     extract_file_ops,
     generate_compaction_summary,
+    plan_compaction,
     serialize_conversation,
 )
+from nanobot.session.manager import Session
 
 
 def test_serialize_conversation_mixed_messages() -> None:
@@ -304,3 +306,31 @@ async def test_generate_compaction_summary_recompresses_oversized_output() -> No
     assert "## Goal" in summary
     assert "## Progress" in summary
     assert "## Next Steps" in summary
+
+
+def test_compaction_planning_returns_tail_bounds_and_previous_summary() -> None:
+    session = Session(key="cli:plan")
+    for idx in range(8):
+        role = "user" if idx % 2 == 0 else "assistant"
+        session.add_message(role, f"msg-{idx} " + ("x" * 2000))
+    session.append_compaction(
+        summary="## Goal\nPrevious\n\n## Progress\n### Done\n- [x] done\n\n## Next Steps\n1. continue",
+        first_kept_index=2,
+        tokens_before=100,
+        continuity_tail_start_seq=2,
+        continuity_tail_end_seq=4,
+    )
+
+    plan = plan_compaction(
+        session,
+        context_window=20_000,
+        reserve_tokens=2_000,
+        keep_recent_tokens=4_000,
+        continuity_tail_tokens=1_500,
+        force=True,
+    )
+
+    assert plan is not None
+    assert plan.previous_summary is not None
+    assert plan.continuity_tail_start_seq == plan.first_kept_index
+    assert plan.continuity_tail_end_seq >= plan.continuity_tail_start_seq

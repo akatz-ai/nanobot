@@ -62,6 +62,15 @@ class PromptAssemblyResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class PromptContinuityState:
+    distilled_summary: str | None = None
+    working_summary: str | None = None
+    literal_tail_messages: list[dict[str, Any]] = field(default_factory=list)
+    literal_tail_start_seq: int | None = None
+    literal_tail_end_seq: int | None = None
+
+
 class ContextBuilder:
     """
     Builds the context (system prompt + messages) for the agent.
@@ -340,6 +349,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         background_model: str | None = None,
         memory_context: str | None = None,
         resume_notice: str | None = None,
+        continuity_state: PromptContinuityState | None = None,
         extra_system_messages: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
@@ -356,6 +366,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             background_model: Live background model for compaction/memory tasks.
             memory_context: Optional retrieved snippets for this turn only.
             resume_notice: Optional restart note injected as a separate system message.
+            continuity_state: Optional structured prompt continuity layers.
             extra_system_messages: Optional additional per-turn system messages.
 
         Returns:
@@ -371,27 +382,32 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         if long_term_memory:
             messages.append({"role": "system", "content": long_term_memory})
 
-        compaction_summaries: list[str] = []
-        other_extra_messages: list[str] = []
-        if extra_system_messages:
+        injected_legacy_summaries = False
+        if continuity_state:
+            if continuity_state.distilled_summary:
+                messages.append({"role": "system", "content": continuity_state.distilled_summary})
+            if continuity_state.working_summary:
+                messages.append({"role": "system", "content": continuity_state.working_summary})
+            if continuity_state.literal_tail_messages:
+                messages.extend(continuity_state.literal_tail_messages)
+        elif extra_system_messages:
             for content in extra_system_messages:
-                if not content:
-                    continue
-                if self._is_compaction_summary(content):
-                    compaction_summaries.append(content)
-                else:
-                    other_extra_messages.append(content)
+                if content and self._is_compaction_summary(content):
+                    messages.append({"role": "system", "content": content})
+                    injected_legacy_summaries = True
 
-        for content in compaction_summaries:
-            messages.append({"role": "system", "content": content})
-
-        # History
+        # History after the retained literal tail
         messages.extend(history)
 
         if resume_notice:
             messages.append({"role": "system", "content": resume_notice})
-        for content in other_extra_messages:
-            messages.append({"role": "system", "content": content})
+        if extra_system_messages:
+            for content in extra_system_messages:
+                if not content:
+                    continue
+                if injected_legacy_summaries and self._is_compaction_summary(content):
+                    continue
+                messages.append({"role": "system", "content": content})
 
         if current_message is None:
             if resume_notice:
@@ -484,6 +500,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         compaction_threshold_ratio: float,
         emergency_trim_ratio: float | None,
         current_message: str | None,
+        continuity_state: PromptContinuityState | None = None,
         provider_observed_total_tokens: int | None = None,
         compaction_candidate_range: tuple[int, int] | None = None,
         total_tokens_override: int | None = None,
@@ -496,6 +513,32 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             (idx for idx, msg in enumerate(messages) if msg.get("role") != "system"),
             len(messages),
         )
+        distilled_index: int | None = None
+        working_index: int | None = None
+        literal_tail_indexes: set[int] = set()
+        if continuity_state is not None:
+            next_system_index = 1
+            memory_candidate = messages[1] if len(messages) > 1 else None
+            memory_content = (
+                self._content_to_text(memory_candidate.get("content"))
+                if isinstance(memory_candidate, dict)
+                else ""
+            )
+            long_term_memory = bool(
+                isinstance(memory_candidate, dict)
+                and memory_candidate.get("role") == "system"
+                and ("<memory_file_data>" in memory_content or "Long-term Memory" in memory_content)
+            )
+            if long_term_memory:
+                next_system_index = 2
+            if continuity_state.distilled_summary:
+                distilled_index = next_system_index
+                next_system_index += 1
+            if continuity_state.working_summary:
+                working_index = next_system_index
+            history_start = first_non_system
+            literal_tail_count = len(continuity_state.literal_tail_messages or [])
+            literal_tail_indexes = set(range(history_start, history_start + literal_tail_count))
 
         for idx, message in enumerate(messages):
             role = str(message.get("role") or "")
@@ -516,6 +559,12 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
                 elif "<memory_file_data>" in text or "Long-term Memory" in text:
                     kind = "memory_md"
                     source = "MEMORY.md"
+                elif continuity_state is not None and idx == distilled_index:
+                    kind = "distilled_summary"
+                    source = "compaction:distilled"
+                elif continuity_state is not None and idx == working_index:
+                    kind = "working_summary"
+                    source = "compaction:working"
                 elif self._is_compaction_summary(text):
                     kind = "session_summary"
                     source = "compaction:latest"
@@ -538,14 +587,26 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
                     cache_scope = "history"
                     kind = "history_user"
                     source = f"history:user:{idx}"
+                    if idx in literal_tail_indexes:
+                        metadata["continuity_layer"] = "literal_tail"
+                        metadata["literal_tail_start_seq"] = continuity_state.literal_tail_start_seq
+                        metadata["literal_tail_end_seq"] = continuity_state.literal_tail_end_seq
             elif role == "assistant":
                 cache_scope = "history"
                 kind = "history_assistant"
                 source = f"history:assistant:{idx}"
+                if idx in literal_tail_indexes:
+                    metadata["continuity_layer"] = "literal_tail"
+                    metadata["literal_tail_start_seq"] = continuity_state.literal_tail_start_seq
+                    metadata["literal_tail_end_seq"] = continuity_state.literal_tail_end_seq
             elif role == "tool":
                 cache_scope = "history"
                 kind = "history_tool"
                 source = f"history:tool:{idx}"
+                if idx in literal_tail_indexes:
+                    metadata["continuity_layer"] = "literal_tail"
+                    metadata["literal_tail_start_seq"] = continuity_state.literal_tail_start_seq
+                    metadata["literal_tail_end_seq"] = continuity_state.literal_tail_end_seq
 
             section = PromptSection(
                 kind=kind,
@@ -568,7 +629,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
                 visible_history_tokens += estimated_tokens
 
         effective_prompt_budget = max(512, context_window - reserve_tokens)
-        compaction_trigger_tokens = max(512, int(context_window * compaction_threshold_ratio))
+        compaction_trigger_tokens = max(512, int(effective_prompt_budget * compaction_threshold_ratio))
         emergency_trigger_tokens = (
             max(512, int(context_window * emergency_trim_ratio))
             if emergency_trim_ratio is not None

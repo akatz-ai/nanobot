@@ -9,7 +9,7 @@ from typing import Any
 
 from loguru import logger
 
-from nanobot.providers.base import LLMProvider
+from nanobot.providers.base import LLMProvider, effective_total_input_tokens
 from nanobot.session.manager import CompactionEntry, Session, SessionManager
 
 
@@ -122,6 +122,16 @@ class CompactionPlan:
     is_split_turn: bool
     turn_start_index: int | None
     previous_summary: str | None
+    continuity_tail_start_seq: int
+    continuity_tail_end_seq: int
+
+
+@dataclass
+class SummaryGenerationResult:
+    summary: str
+    status: str
+    input_tokens: int
+    output_tokens: int
 
 
 def _tool_call_name(tool_call: Any) -> str:
@@ -431,9 +441,31 @@ async def generate_compaction_summary(
     max_transcript_chars: int = 100_000,
     reasoning_effort: str | None = None,
 ) -> str:
+    result = await generate_compaction_summary_result(
+        messages,
+        provider,
+        model,
+        previous_summary=previous_summary,
+        max_transcript_chars=max_transcript_chars,
+        reasoning_effort=reasoning_effort,
+    )
+    return result.summary
+
+
+async def generate_compaction_summary_result(
+    messages: list[dict[str, Any]],
+    provider: LLMProvider,
+    model: str,
+    previous_summary: str | None = None,
+    max_transcript_chars: int = 100_000,
+    reasoning_effort: str | None = None,
+) -> SummaryGenerationResult:
     """Generate a structured compaction summary from conversation history."""
     transcript = serialize_conversation(messages, max_transcript_chars=max_transcript_chars)
     effective_previous_summary = previous_summary
+    total_input_tokens = 0
+    total_output_tokens = 0
+    degraded = False
     if (
         isinstance(effective_previous_summary, str)
         and len(effective_previous_summary) > MAX_PREVIOUS_SUMMARY_CHARS
@@ -474,6 +506,9 @@ async def generate_compaction_summary(
         if reasoning_effort:
             chat_kwargs["reasoning_effort"] = reasoning_effort
         response = await provider.chat(**chat_kwargs)
+        usage = response.usage if isinstance(response.usage, dict) else {}
+        total_input_tokens += effective_total_input_tokens(usage)
+        total_output_tokens += int(usage.get("completion_tokens", 0) or 0)
         content = (response.content or "").strip()
         if _summary_has_required_sections(content):
             if len(content) > MAX_SUMMARY_CHARS:
@@ -492,16 +527,27 @@ async def generate_compaction_summary(
                 )
             if len(content) > MAX_SUMMARY_CHARS:
                 content = _hard_cap_summary(content, MAX_SUMMARY_CHARS)
-            return content
+            return SummaryGenerationResult(
+                summary=content,
+                status="degraded" if degraded else "succeeded",
+                input_tokens=total_input_tokens,
+                output_tokens=total_output_tokens,
+            )
         logger.warning(
             "Compaction summary malformed (attempt {}/{}): {}",
             attempt + 1,
             attempts,
             content[:200],
         )
+        degraded = True
 
     fallback = _fallback_summary(transcript, previous_summary=effective_previous_summary)
-    return _hard_cap_summary(fallback, MAX_SUMMARY_CHARS)
+    return SummaryGenerationResult(
+        summary=_hard_cap_summary(fallback, MAX_SUMMARY_CHARS),
+        status="degraded",
+        input_tokens=total_input_tokens,
+        output_tokens=total_output_tokens,
+    )
 
 
 async def generate_turn_prefix_summary(
@@ -694,11 +740,12 @@ def should_compact(
     threshold_ratio: float = 0.75,
 ) -> bool:
     """Decide whether normal compaction should run based on provider-backed usage."""
-    _ = (messages, reserve_tokens)
-    threshold = context_window * threshold_ratio
-    if last_input_tokens is None:
-        return False
-    return float(last_input_tokens) > float(threshold)
+    usable_context = max(512, int(context_window) - max(0, int(reserve_tokens)))
+    threshold = usable_context * threshold_ratio
+    observed_tokens = last_input_tokens
+    if observed_tokens is None:
+        observed_tokens = sum(estimate_message_tokens(msg) for msg in messages)
+    return float(observed_tokens) > float(threshold)
 
 
 def _usage_snapshot_tokens(
@@ -747,19 +794,38 @@ def _decision_tokens_with_pruning_ceiling(
     return None
 
 
-async def compact_session(
+def _find_continuity_tail_end(
+    messages: list[dict[str, Any]],
+    *,
+    start_index: int,
+    max_tail_tokens: int,
+) -> int:
+    if start_index >= len(messages):
+        return start_index
+    running = 0
+    end_index = start_index
+    for idx in range(start_index, len(messages)):
+        message_tokens = estimate_message_tokens(messages[idx])
+        projected = running + message_tokens
+        if idx > start_index and projected > max_tail_tokens:
+            break
+        running = projected
+        end_index = idx + 1
+        if running >= max_tail_tokens:
+            break
+    return max(start_index, end_index)
+
+
+def plan_compaction(
     session: Session,
-    provider: LLMProvider,
-    model: str,
-    session_manager: SessionManager | None = None,
+    *,
     context_window: int = 200_000,
     reserve_tokens: int = 16_384,
     keep_recent_tokens: int = 20_000,
+    continuity_tail_tokens: int = 4_096,
     threshold_ratio: float = 0.75,
-    reasoning_effort: str | None = None,
     force: bool = False,
-) -> CompactionEntry | None:
-    """Run structured compaction and persist a CompactionEntry when successful."""
+) -> CompactionPlan | None:
     last_input_tokens = _usage_snapshot_tokens(session)
     baseline_messages, _ = session.get_history(
         max_messages=max(1, session.get_visible_message_count()),
@@ -779,6 +845,8 @@ async def compact_session(
         fallback_tokens=last_input_tokens,
         default_to_estimate=force,
     )
+    if not force and decision_tokens is None:
+        return None
     if not force and not should_compact(
         pressure_messages,
         context_window=context_window,
@@ -798,29 +866,122 @@ async def compact_session(
     if cut_point is None:
         return None
 
-    plan = CompactionPlan(
+    summary_end = cut_point.first_kept_index
+    if summary_end <= after_index:
+        return None
+
+    continuity_tail_start = summary_end
+    continuity_tail_end = _find_continuity_tail_end(
+        session.messages,
+        start_index=continuity_tail_start,
+        max_tail_tokens=max(256, int(continuity_tail_tokens)),
+    )
+
+    return CompactionPlan(
         summary_start=after_index,
-        summary_end=cut_point.first_kept_index,
+        summary_end=summary_end,
         first_kept_index=cut_point.first_kept_index,
         extract_start=after_index,
         extract_end=cut_point.first_kept_index,
         is_split_turn=cut_point.is_split_turn,
         turn_start_index=cut_point.turn_start_index,
         previous_summary=previous.summary if previous else None,
+        continuity_tail_start_seq=continuity_tail_start,
+        continuity_tail_end_seq=continuity_tail_end,
     )
 
-    if plan.summary_end <= plan.summary_start:
+
+def apply_compaction_plan(
+    session: Session,
+    *,
+    plan: CompactionPlan,
+    summary_text: str,
+    summary_generation_provider: str | None = None,
+    summary_generation_model: str | None = None,
+    summary_reserve_tokens: int | None = None,
+    summary_input_tokens: int | None = None,
+    summary_output_tokens: int | None = None,
+    continuity_status: str = "succeeded",
+    memory_extraction_status: str = "pending",
+) -> CompactionEntry:
+    summary_messages = session.get_messages_slice(plan.summary_start, plan.summary_end)
+    file_ops = extract_file_ops(summary_messages)
+    tokens_before = sum(estimate_message_tokens(msg) for msg in summary_messages)
+
+    manager = getattr(session, "_manager", None)
+    if manager is not None and hasattr(manager, "record_compaction_event"):
+        return manager.record_compaction_event(
+            session,
+            summary=summary_text,
+            first_kept_index=plan.first_kept_index,
+            tokens_before=tokens_before,
+            file_ops=file_ops,
+            previous_summary=plan.previous_summary,
+            summary_generation_provider=summary_generation_provider,
+            summary_generation_model=summary_generation_model,
+            summary_reserve_tokens=summary_reserve_tokens,
+            summary_input_tokens=summary_input_tokens,
+            summary_output_tokens=summary_output_tokens,
+            continuity_tail_start_seq=plan.continuity_tail_start_seq,
+            continuity_tail_end_seq=plan.continuity_tail_end_seq,
+            summary_artifact_kind="working",
+            continuity_status=continuity_status,
+            memory_extraction_status=memory_extraction_status,
+        )
+
+    return session.append_compaction(
+        summary=summary_text,
+        first_kept_index=plan.first_kept_index,
+        tokens_before=tokens_before,
+        file_ops=file_ops,
+        previous_summary=plan.previous_summary,
+        summary_generation_provider=summary_generation_provider,
+        summary_generation_model=summary_generation_model,
+        summary_reserve_tokens=summary_reserve_tokens,
+        summary_input_tokens=summary_input_tokens,
+        summary_output_tokens=summary_output_tokens,
+        continuity_tail_start_seq=plan.continuity_tail_start_seq,
+        continuity_tail_end_seq=plan.continuity_tail_end_seq,
+        summary_artifact_kind="working",
+        continuity_status=continuity_status,
+        memory_extraction_status=memory_extraction_status,
+    )
+
+
+async def compact_session(
+    session: Session,
+    provider: LLMProvider,
+    model: str,
+    session_manager: SessionManager | None = None,
+    context_window: int = 200_000,
+    reserve_tokens: int = 16_384,
+    keep_recent_tokens: int = 20_000,
+    threshold_ratio: float = 0.75,
+    reasoning_effort: str | None = None,
+    force: bool = False,
+) -> CompactionEntry | None:
+    """Run structured compaction and persist a CompactionEntry when successful."""
+    plan = plan_compaction(
+        session,
+        context_window=context_window,
+        reserve_tokens=reserve_tokens,
+        keep_recent_tokens=keep_recent_tokens,
+        threshold_ratio=threshold_ratio,
+        force=force,
+    )
+    if plan is None:
         return None
 
     summary_messages = session.get_messages_slice(plan.summary_start, plan.summary_end)
     try:
-        summary = await generate_compaction_summary(
+        summary_result = await generate_compaction_summary_result(
             summary_messages,
             provider,
             model,
             previous_summary=plan.previous_summary,
             reasoning_effort=reasoning_effort,
         )
+        summary = summary_result.summary
         if plan.is_split_turn and plan.turn_start_index is not None:
             if plan.turn_start_index < plan.first_kept_index:
                 split_prefix_messages = session.get_messages_slice(
@@ -843,15 +1004,17 @@ async def compact_session(
             session.metadata.pop("usage_snapshot", None)
         return None
 
-    file_ops = extract_file_ops(summary_messages)
-    tokens_before = int(decision_tokens)
-
-    entry = session.append_compaction(
-        summary=summary,
-        first_kept_index=plan.first_kept_index,
-        tokens_before=tokens_before,
-        file_ops=file_ops,
-        previous_summary=plan.previous_summary,
+    entry = apply_compaction_plan(
+        session,
+        plan=plan,
+        summary_text=summary,
+        summary_generation_provider=type(provider).__name__,
+        summary_generation_model=model,
+        summary_reserve_tokens=reserve_tokens,
+        summary_input_tokens=summary_result.input_tokens,
+        summary_output_tokens=summary_result.output_tokens,
+        continuity_status=summary_result.status,
+        memory_extraction_status="pending",
     )
 
     plan_payload = {
@@ -860,6 +1023,8 @@ async def compact_session(
         "extract_start": plan.extract_start,
         "extract_end": plan.extract_end,
         "cut_point_type": "split_turn" if plan.is_split_turn else "clean",
+        "continuity_tail_start_seq": plan.continuity_tail_start_seq,
+        "continuity_tail_end_seq": plan.continuity_tail_end_seq,
     }
     if session_manager is not None:
         session_manager.set_compaction_plan(session, plan_payload)
